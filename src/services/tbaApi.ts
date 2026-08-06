@@ -49,6 +49,41 @@ export async function fetchEvents(year: number = 2026) {
   }
 }
 
+/**
+ * Official qualification rankings for an event.
+ *
+ * Used to seed the picklist's eight alliance captains from real standings.
+ * Returns an ordered list of team numbers (rank 1 first), or an empty array
+ * when no TBA key is set or rankings aren't published yet — callers fall back
+ * to ranking by our own scouting data.
+ */
+export async function fetchEventRankings(eventKey: string): Promise<number[]> {
+  try {
+    const key = effectiveTbaKey();
+    if (!key) return [];
+    const response = await fetch(`${TBA_BASE_URL}/event/${eventKey}/rankings`, {
+      headers: { 'X-TBA-Auth-Key': key },
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      console.error('TBA fetchEventRankings failed', response.status, text);
+      return [];
+    }
+
+    const data = await response.json();
+    const rankings: any[] = data?.rankings || [];
+    return rankings
+      .slice()
+      .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))
+      .map((r) => Number(String(r.team_key || '').replace(/^frc/, '')))
+      .filter((n) => Number.isFinite(n) && n > 0);
+  } catch (error) {
+    console.error('Error fetching rankings:', error);
+    return [];
+  }
+}
+
 export async function fetchEventMatches(eventKey: string) {
   try {
     const key = effectiveTbaKey();

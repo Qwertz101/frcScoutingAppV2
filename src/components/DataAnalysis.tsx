@@ -2,7 +2,9 @@ import { useState, useMemo, useEffect } from 'react';
 import { ScoutingData } from '../types';
 import { DataService } from '../services/dataService';
 import { fetchServerScouting, deleteScoutingFromServer, deletePitDataFromServer, performFullRefresh, fetchPitData, listPitImages, listPitFiles, getPitListingDiagnostics } from '../services/syncService';
-import { ArrowLeft, BarChart3, Download } from 'lucide-react';
+import { mapServerRow } from '../services/scoutingRows';
+import { ArrowLeft, BarChart3, Download, Upload } from 'lucide-react';
+import { previewImport, commitImport, ImportPreview } from '../services/statsImport';
 import { getRuntimeTbaKey, setRuntimeTbaKey } from '../services/tbaApi';
 
 interface DataAnalysisProps {
@@ -60,6 +62,10 @@ export function DataAnalysis({ onBack }: DataAnalysisProps) {
   const [showTeleop, setShowTeleop] = useState(true);
   const [manualTeams, setManualTeams] = useState(() => DataService.getTeams());
   const [serverPitTeams, setServerPitTeams] = useState<string[]>([]);
+  // Stats-CSV import: preview first so the user confirms before anything is written.
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importResult, setImportResult] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -69,44 +75,7 @@ export function DataAnalysis({ onBack }: DataAnalysisProps) {
         // Fetch scouting data immediately so the table appears without delay
         const serverRows: any[] = await fetchServerScouting();
         if (!mounted) return;
-        const mapped = serverRows.map((r: any) => {
-          const rawAuto = r.payload?.auto || {};
-          const legacyAutoSum = (rawAuto.l1 || 0) + (rawAuto.l2 || 0) + (rawAuto.l3 || 0) + (rawAuto.l4 || 0) + (typeof rawAuto.net === 'number' ? rawAuto.net : (rawAuto.net ? 1 : 0));
-          const autoFuel = typeof rawAuto.fuel === 'number' ? rawAuto.fuel : legacyAutoSum;
-
-          const rawTele = r.payload?.teleop || {};
-          const legacyTeleSum = (rawTele.l1 || 0) + (rawTele.l2 || 0) + (rawTele.l3 || 0) + (rawTele.l4 || 0) + (typeof rawTele.net === 'number' ? rawTele.net : (rawTele.net ? 1 : 0)) + (typeof rawTele.prosser === 'number' ? rawTele.prosser : (rawTele.prosser ? 1 : 0));
-
-          return {
-            id: r.id,
-            matchKey: r.match_key,
-            teamKey: r.team_key,
-            scouter: r.scouter_name,
-            alliance: r.alliance,
-            position: r.position,
-            auto: {
-              fuel: autoFuel,
-              neutralZone: !!rawAuto.neutralZone,
-              depot: !!rawAuto.depot,
-              outpost: !!rawAuto.outpost,
-              // preserve the original climbed value (string level or legacy boolean/number)
-              climbed: rawAuto.climbed,
-            },
-            // prefer explicit match-level climb saved in payload (either top-level or inside endgame)
-            matchClimbed: r.payload?.matchClimbed ?? r.payload?.endgame?.climb ?? (typeof rawAuto.climbed === 'string' ? rawAuto.climbed : (rawAuto.climbed ? 'level1' : 'didnt_climb')),
-            teleop: {
-              offence: {
-                fuel: (typeof rawTele.offence?.fuel === 'number') ? rawTele.offence.fuel : legacyTeleSum,
-              },
-              defense: {
-                defense: rawTele.defense?.defense ?? 'na',
-                duration: rawTele.defense?.duration ?? 0,
-              },
-            },
-            defense: r.payload?.defense || 'none',
-            timestamp: r.timestamp ? Date.parse(r.timestamp) : Date.now(),
-          } as any;
-        });
+        const mapped = serverRows.map(mapServerRow);
         setRows(mapped as ScoutingData[]);
         setServerError(null);
         // if a TBA key exists, attempt to fetch OPRs for the currently selected event
@@ -461,6 +430,39 @@ export function DataAnalysis({ onBack }: DataAnalysisProps) {
     setShowPitView(false);
   };
 
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-picking the same file
+    if (!file) return;
+    setImportError(null);
+    setImportResult(null);
+    try {
+      const preview = previewImport(await file.text());
+      setImportPreview(preview);
+    } catch (err: any) {
+      setImportError(String(err?.message || err));
+    }
+  };
+
+  const confirmImport = async () => {
+    if (!importPreview) return;
+    try {
+      const { created, keptReal, synced, syncError } = await commitImport(importPreview.aggregates);
+      setImportResult(
+        `Imported ${importPreview.teams} teams — created ${created} reconstructed match rows, kept ${keptReal} real scouted rows. ` +
+          (synced
+            ? 'Synced to server.'
+            : `Saved locally only — server sync failed (${syncError}). It will retry automatically.`)
+      );
+      setRows(DataService.getScoutingData() as ScoutingData[]);
+      setMatchesVersion((v) => v + 1);
+    } catch (err: any) {
+      setImportError(String(err?.message || err));
+    } finally {
+      setImportPreview(null);
+    }
+  };
+
   const exportToCSV = () => {
     const headers = ['Team', 'Count'];
     if (showAuto) headers.push('Auto Avg Fuel', 'Auto Climb (max, %)', 'Tele Climb (max, %)');
@@ -609,7 +611,61 @@ export function DataAnalysis({ onBack }: DataAnalysisProps) {
 
   return (
     <div className="min-h-screen bg-gray-50 p-4">
+      {importPreview && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-lg w-full p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Import team stats?</h3>
+            <p className="text-sm text-gray-700 mb-3">
+              This will read <strong>{importPreview.teams} teams</strong> and create{' '}
+              <strong>{importPreview.rowsToCreate} reconstructed match rows</strong>.
+            </p>
+            <div className="text-sm text-gray-700 bg-amber-50 border border-amber-200 rounded p-3 mb-3">
+              The CSV stores <strong>season averages only</strong>. Each team's auto/teleop
+              averages, climb rates and death counts will be reproduced exactly, but the
+              match-to-match <strong>spread is reconstructed, not observed</strong>. Rows are
+              flagged as reconstructed and labelled throughout the app.
+            </div>
+            {importPreview.teamsWithoutSchedule.length > 0 && (
+              <p className="text-sm text-gray-600 mb-3">
+                {importPreview.teamsWithoutSchedule.length} team(s) are not in the loaded match
+                schedule and will be skipped: {importPreview.teamsWithoutSchedule.slice(0, 8).join(', ')}
+                {importPreview.teamsWithoutSchedule.length > 8 ? '…' : ''}
+              </p>
+            )}
+            <p className="text-xs text-gray-500 mb-4">
+              Previously imported rows are replaced. Genuinely scouted rows are kept.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setImportPreview(null)}
+                className="px-4 py-2 rounded border border-gray-300 text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmImport}
+                className="px-4 py-2 rounded bg-cyan-600 hover:bg-cyan-700 text-white"
+              >
+                Import
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="max-w-7xl mx-auto">
+        {importError && (
+          <div className="bg-red-50 border border-red-200 text-red-800 rounded-lg p-3 mb-4 text-sm">
+            Import failed: {importError}
+          </div>
+        )}
+        {importResult && (
+          <div className="bg-green-50 border border-green-200 text-green-800 rounded-lg p-3 mb-4 text-sm flex items-center justify-between">
+            <span>{importResult}</span>
+            <button onClick={() => setImportResult(null)} className="underline">
+              Dismiss
+            </button>
+          </div>
+        )}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <button onClick={onBack} className="p-2 rounded bg-gray-100 hover:bg-gray-200 mr-2">
@@ -644,6 +700,16 @@ export function DataAnalysis({ onBack }: DataAnalysisProps) {
               <Download className="w-4 h-4" />
               Export CSV
             </button>
+            <label className="flex items-center gap-2 bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-2 rounded-lg transition-colors cursor-pointer">
+              <Upload className="w-4 h-4" />
+              Import CSV
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                className="hidden"
+                onChange={handleImportFile}
+              />
+            </label>
             <button
               onClick={async () => {
                 setLoadingServer(true);

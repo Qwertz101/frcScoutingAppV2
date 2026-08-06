@@ -1,18 +1,19 @@
 import { useState } from 'react';
 import { User } from '../types';
-import { Settings, Users, BarChart3, Calendar, ArrowLeft } from 'lucide-react';
+import { Settings, Users, BarChart3, Calendar, ListOrdered, ArrowLeft } from 'lucide-react';
 import { ScouterManagement } from './ScouterManagement';
 import { fetchServerScouters, performFullRefresh } from '../services/syncService';
 import { SyncControl } from './SyncControl';
 import { DataAnalysis } from './DataAnalysis';
 import { MatchSelection } from './MatchSelection';
+import { ScoutShell } from './scout/ScoutShell';
 
 interface AdminPanelProps {
   user: User;
   onLogout: () => void;
 }
 
-type AdminView = 'menu' | 'scouters' | 'analysis' | 'matches';
+type AdminView = 'menu' | 'scouters' | 'analysis' | 'matches' | 'picklist';
 
 export function AdminPanel({ user, onLogout }: AdminPanelProps) {
   const [currentView, setCurrentView] = useState<AdminView>('menu');
@@ -39,6 +40,13 @@ export function AdminPanel({ user, onLogout }: AdminPanelProps) {
       icon: Calendar,
       color: 'bg-purple-600 hover:bg-purple-700',
     },
+    {
+      id: 'picklist',
+      title: 'Scout Workspace',
+      description: 'Field ranking, picklist, analysis, strategy and forecast',
+      icon: ListOrdered,
+      color: 'bg-cyan-600 hover:bg-cyan-700',
+    },
   ];
 
   if (currentView === 'scouters') {
@@ -51,6 +59,10 @@ export function AdminPanel({ user, onLogout }: AdminPanelProps) {
 
   if (currentView === 'matches') {
     return <MatchSelection onBack={() => setCurrentView('menu')} />;
+  }
+
+  if (currentView === 'picklist') {
+    return <ScoutShell onBack={() => setCurrentView('menu')} />;
   }
 
   return (

@@ -147,6 +147,11 @@ async function pushPendingToServer(options?: { batchSize?: number; maxRetries?: 
             teleop: r.teleop,
             endgame,
             defense: r.defense,
+            // Provenance for rows reconstructed by the stats-CSV importer.
+            // Must round-trip so the UI can keep labelling them as synthetic.
+            ...(r.synthetic
+              ? { synthetic: true, syntheticSource: r.syntheticSource }
+              : {}),
           },
           client_id: r.clientId,
           timestamp: new Date(r.timestamp || r.createdAt).toISOString(),

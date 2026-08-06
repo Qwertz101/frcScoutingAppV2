@@ -1,0 +1,1773 @@
+/*
+ * Charging Champions design system — scoped to the Picklist screen.
+ *
+ * Everything lives under `.picklist-root` so none of these tokens leak into
+ * the rest of the app, which still uses its original Tailwind styling.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Anton&family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,700;1,400&display=swap');
+
+.picklist-root {
+  /* Brand palette — from the Brand Guide "COLOR PALETTE" page */
+  --cyan-500: #00baff;
+  --blue-600: #1179ee;
+  --teal-500: #33becc;
+  --teal-100: #a2dfd9;
+  --gray-200: #d9d9d9;
+
+  --font-display: 'Anton', sans-serif;
+  --font-body: 'Plus Jakarta Sans', sans-serif;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 16px rgba(17, 121, 238, 0.12);
+
+  /* Light theme */
+  --page: #f5fbfd;
+  --text: #000;
+  --text-muted: #4a4a4a;
+  --text-faint: #8a9aa3;
+  --card-bg: #fff;
+  --card-alt: #f0f7fa;
+  --border: #e6eef2;
+  --border-strong: #d9d9d9;
+  --pill-bg: #eaf4f8;
+
+  font-family: var(--font-body);
+  background: var(--page);
+  color: var(--text);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+  transition: background 0.15s ease-out;
+  -webkit-font-smoothing: antialiased;
+}
+
+.picklist-root.dark {
+  --page: #0b1114;
+  --text: #fff;
+  --text-muted: rgba(255, 255, 255, 0.7);
+  --text-faint: rgba(255, 255, 255, 0.45);
+  --card-bg: #151d21;
+  --card-alt: #1b262b;
+  --border: #26343a;
+  --border-strong: #35474f;
+  --pill-bg: #24323a;
+}
+
+.picklist-root *,
+.picklist-root *::before,
+.picklist-root *::after {
+  box-sizing: border-box;
+}
+
+/* ---------- header ---------- */
+
+.pl-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 0;
+  background: #000;
+  color: #fff;
+  padding: 8px 16px;
+  min-height: 56px;
+  flex: none;
+}
+
+.pl-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 20px;
+}
+
+.pl-bolt {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  display: block;
+}
+
+.pl-brand-name {
+  font-family: var(--font-display);
+  font-size: 17px;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+.pl-brand-sub {
+  font-size: 8.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--teal-500);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.pl-header-spacer {
+  flex: 1;
+  min-width: 8px;
+}
+
+.pl-header-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.pl-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 9px;
+  background: var(--cyan-500);
+  box-shadow: 0 0 0 3px rgba(0, 186, 255, 0.25);
+  flex: none;
+}
+
+.pl-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.7);
+  white-space: nowrap;
+}
+
+.pl-ghost-btn {
+  background: transparent;
+  color: #fff;
+  border: 1.5px solid rgba(255, 255, 255, 0.35);
+  border-radius: var(--radius-pill);
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 6px 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pl-ghost-btn:hover {
+  border-color: #fff;
+}
+
+.pl-ghost-btn.active {
+  background: var(--teal-500);
+  border-color: var(--teal-500);
+}
+
+.pl-team-input {
+  width: 68px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1.5px solid rgba(255, 255, 255, 0.35);
+  border-radius: var(--radius-pill);
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px 10px;
+}
+
+/* ---------- page shell ---------- */
+
+.pl-body {
+  flex: 1;
+  padding: 20px 18px 32px;
+  min-width: 0;
+}
+
+.pl-title-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.pl-eyebrow {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--teal-500);
+}
+
+.pl-h1 {
+  font-family: var(--font-display);
+  font-size: 38px;
+  line-height: 1.02;
+  margin: 0;
+}
+
+.pl-lede {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--text-muted);
+  flex: 0 1 460px;
+  line-height: 1.45;
+  text-align: right;
+}
+
+.pl-card {
+  background: var(--card-bg);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.pl-card-head {
+  padding: 13px 16px 11px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pl-card-label {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.pl-card-hint {
+  font-size: 9.5px;
+  font-weight: 500;
+  color: var(--text-faint);
+}
+
+.pl-pill-btn {
+  border: 1.5px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--card-bg);
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 8px 15px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+}
+
+.pl-pill-btn:hover {
+  border-color: var(--text);
+  color: var(--text);
+}
+
+.pl-empty {
+  padding: 16px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* ---------- alliance board ---------- */
+
+.pl-alliances {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.pl-alliance {
+  background: var(--card-bg);
+  border: 1.5px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.pl-alliance.ours {
+  background: var(--card-alt);
+  border-color: var(--cyan-500);
+}
+
+.pl-alliance-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pl-alliance-idx {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.pl-alliance-open {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.pl-alliance-teams {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pl-captain {
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1;
+  padding: 3px 8px;
+  border-radius: 7px;
+  background: #000;
+  color: #fff;
+}
+
+.pl-captain.empty {
+  background: var(--pill-bg);
+  color: var(--text-faint);
+  font-size: 13px;
+  font-family: var(--font-body);
+  font-weight: 700;
+  padding: 7px 10px;
+}
+
+.pl-pick {
+  font-family: var(--font-display);
+  font-size: 20px;
+  line-height: 1;
+  padding: 4px 9px;
+  border-radius: 7px;
+  background: var(--pill-bg);
+  color: var(--text);
+  border: 1.5px solid var(--border-strong);
+  cursor: pointer;
+}
+
+.pl-pick:hover {
+  border-color: #000;
+}
+
+.pl-alliance-foot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+}
+
+.pl-alliance-depth {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.pl-alliance-strength {
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+/* ---------- pool ---------- */
+
+.pl-pool {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 12px 16px 14px;
+}
+
+.pl-pool-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  border: 1.5px solid var(--border-strong);
+  background: var(--card-bg);
+  cursor: pointer;
+  font-family: var(--font-body);
+}
+
+.pl-pool-chip:hover {
+  border-color: var(--blue-600);
+}
+
+.pl-pool-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pl-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 9px;
+  flex: none;
+}
+
+.pl-pool-team {
+  font-family: var(--font-display);
+  font-size: 15px;
+  color: var(--text);
+}
+
+.pl-pool-mean {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+/* ---------- our alliance / advisor ---------- */
+
+.pl-two-col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.pl-dark-card {
+  background: #000;
+  color: #fff;
+  border-radius: 14px;
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pl-dark-card .pl-card-label {
+  color: var(--teal-500);
+}
+
+.pl-big-num {
+  font-family: var(--font-display);
+  font-size: 40px;
+  line-height: 0.9;
+}
+
+.pl-rule {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.pl-note-light {
+  margin: 0;
+  font-size: 10.5px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.75);
+  line-height: 1.45;
+  text-wrap: pretty;
+}
+
+.pl-offer {
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.pl-offer-cap {
+  font-family: var(--font-display);
+  font-size: 17px;
+  flex: none;
+  width: 52px;
+}
+
+.pl-offer-why {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--text-muted);
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.pl-rec {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  padding: 4px 9px;
+  border-radius: var(--radius-pill);
+  color: #fff;
+  flex: none;
+}
+
+/* ---------- tier lists ---------- */
+
+.pl-columns {
+  display: grid;
+  grid-template-columns: minmax(200px, 240px) minmax(340px, 1fr) minmax(220px, 270px);
+  gap: 14px;
+  align-items: start;
+}
+
+.pl-tier-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 16px;
+  color: #fff;
+}
+
+.pl-tier-head.tier1 {
+  background: var(--cyan-500);
+}
+
+.pl-tier-head.tier2 {
+  background: var(--teal-500);
+}
+
+.pl-tier-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+}
+
+.pl-tier-count {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.pl-tier-row {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.pl-tier-row.taken {
+  opacity: 0.45;
+}
+
+.pl-tier-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pl-tier-team {
+  font-family: var(--font-display);
+  font-size: 19px;
+  line-height: 1;
+  flex: none;
+  cursor: grab;
+}
+
+.pl-tier-team.struck {
+  text-decoration: line-through;
+}
+
+.pl-tier-mean {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  flex: none;
+}
+
+.pl-badge {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+}
+
+.pl-tag {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border-radius: var(--radius-pill);
+}
+
+.pl-tags {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.pl-note {
+  margin: 0;
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--text-muted);
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.pl-icon-btn {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border-strong);
+  background: var(--card-bg);
+  color: var(--text);
+  font-size: 10px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
+
+.pl-icon-btn:hover {
+  border-color: var(--blue-600);
+  color: var(--blue-600);
+}
+
+.pl-icon-btn.danger:hover {
+  border-color: #000;
+  background: #000;
+  color: #fff;
+}
+
+.pl-move-btn {
+  height: 22px;
+  flex: none;
+  padding: 0 7px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border-strong);
+  background: var(--card-bg);
+  color: var(--text-muted);
+  font-size: 9.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.pl-move-btn:hover {
+  border-color: var(--teal-500);
+  color: var(--teal-500);
+}
+
+.pl-spacer {
+  flex: 1;
+}
+
+/* ---------- do not pick ---------- */
+
+.pl-dnp-mark {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--text);
+  transform: rotate(45deg);
+}
+
+.pl-dnp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.pl-dnp-team {
+  font-family: var(--font-display);
+  font-size: 16px;
+  color: var(--text-faint);
+  text-decoration: line-through;
+}
+
+.pl-dnp-reason {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  flex: 1;
+  line-height: 1.3;
+  background: none;
+  border: none;
+  font-family: var(--font-body);
+  padding: 0;
+  min-width: 0;
+}
+
+.pl-dnp-reason:focus {
+  outline: 1px solid var(--border-strong);
+  border-radius: 4px;
+}
+
+.pl-link-btn {
+  background: none;
+  border: none;
+  color: var(--blue-600);
+  font-size: 10.5px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+}
+
+/* ---------- projected alliance ---------- */
+
+.pl-projected {
+  background: var(--card-bg);
+  border-radius: 14px;
+  box-shadow: var(--shadow-md);
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pl-roster {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pl-roster-team {
+  font-family: var(--font-display);
+  font-size: 19px;
+  padding: 2px 9px;
+  border-radius: 7px;
+  background: var(--card-alt);
+  border: 1.5px solid var(--pill-bg);
+  color: var(--text);
+}
+
+.pl-roster-team.backup {
+  background: var(--card-bg);
+  border-color: var(--border-strong);
+  color: var(--text-faint);
+}
+
+.pl-gradient-num {
+  font-family: var(--font-display);
+  font-size: 52px;
+  line-height: 0.9;
+  background: linear-gradient(135deg, var(--cyan-500) 0%, var(--blue-600) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/*
+ * Same visual grammar as .pl-dist (DistributionBar): a pill track, a gradient
+ * band, whisker end-caps, and a center marker. Kept as separate rules because
+ * this chart shows an alliance's floor–ceiling range rather than a team's IQR,
+ * but the two must read as the same design language, not two different charts.
+ */
+.pl-range {
+  position: relative;
+  height: 26px;
+  margin-bottom: 6px;
+}
+
+.pl-range-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 6px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: var(--border);
+}
+
+.pl-range-band {
+  position: absolute;
+  top: 50%;
+  height: 14px;
+  transform: translateY(-50%);
+  border-radius: 7px;
+  background: linear-gradient(90deg, var(--cyan-500), var(--blue-600));
+  min-width: 3px;
+}
+
+.pl-range-whisker {
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: 20px;
+  transform: translate(-50%, -50%);
+  background: var(--text-faint);
+}
+
+.pl-range-marker {
+  position: absolute;
+  top: 50%;
+  width: 3px;
+  height: 26px;
+  transform: translate(-50%, -50%);
+  background: var(--text);
+}
+
+.pl-range-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+/* ---------- picklist tree ---------- */
+
+.pl-tree {
+  background: var(--card-bg);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
+  padding: 16px 18px;
+  margin-top: 14px;
+}
+
+.pl-tree-row {
+  display: grid;
+  grid-template-columns: 110px 40px 110px 110px auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.pl-slot {
+  height: 52px;
+  border-radius: 9px;
+  border: 1.5px dashed var(--border-strong);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  text-align: center;
+  padding: 0 6px;
+}
+
+.pl-slot.over {
+  border-color: var(--blue-600);
+  background: var(--card-alt);
+}
+
+.pl-slot-hint {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+
+.pl-slot-team {
+  font-family: var(--font-display);
+  font-size: 20px;
+  line-height: 1;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text);
+  padding: 0;
+}
+
+.pl-slot-mean {
+  font-size: 8.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.pl-slot-warn {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.pl-slot.us {
+  border: none;
+  background: #000;
+  color: #fff;
+}
+
+.pl-slot.us .pl-slot-team {
+  color: #fff;
+}
+
+.pl-slot-us-label {
+  font-size: 7.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.pl-connector {
+  height: 2px;
+  background: var(--border-strong);
+}
+
+.pl-tree-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pl-trio {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.pl-trio strong {
+  font-family: var(--font-display);
+  font-size: 19px;
+  color: var(--text);
+  font-weight: 400;
+}
+
+/* ---------- top nav ---------- */
+
+.pl-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 2px;
+}
+
+.pl-nav-btn {
+  background: transparent;
+  border: none;
+  border-bottom: 3px solid transparent;
+  color: rgba(255, 255, 255, 0.55);
+  font-family: var(--font-body);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pl-nav-btn:hover {
+  color: #fff;
+}
+
+.pl-nav-btn.active {
+  color: #fff;
+  border-bottom-color: var(--cyan-500);
+}
+
+/* ---------- distribution bar ---------- */
+
+/*
+ * Geometry ported from the design source. Element heights come in as custom
+ * properties from DistributionBar.tsx so the whole plot scales with the row
+ * height while keeping the authored proportions.
+ */
+.pl-dist {
+  position: relative;
+  margin: 0 10px 0 16px;
+  min-width: 90px;
+}
+
+.pl-dist-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: var(--dist-track-h, 6px);
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: var(--border);
+}
+
+/* The gradient itself is per-team and set inline — it encodes where that
+   robot's quartiles fall inside its own range. */
+.pl-dist-band {
+  position: absolute;
+  top: 50%;
+  height: var(--dist-band-h, 16px);
+  transform: translateY(-50%);
+  border-radius: 7px;
+  min-width: 3px;
+}
+
+/* Floor / ceiling. Deliberately not centre-shifted: the design anchors these
+   at the mark itself so they sit just inside the band's feathered ends. */
+.pl-dist-whisker {
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: var(--dist-whisker-h, 22px);
+  transform: translateY(-50%);
+  background: var(--text-faint);
+}
+
+.pl-dist-median {
+  position: absolute;
+  top: 50%;
+  width: 3px;
+  height: var(--dist-median-h, 30px);
+  transform: translate(-50%, -50%);
+  background: var(--text);
+}
+
+.pl-dist-threshold {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 1px;
+  background: var(--teal-100);
+}
+
+.pl-dist-death {
+  position: absolute;
+  top: 50%;
+  width: 4px;
+  height: var(--dist-death-h, 42px);
+  transform: translate(-50%, -50%);
+  border-radius: 2px;
+  background: var(--text);
+}
+
+.pl-dist-outlier {
+  position: absolute;
+  top: 50%;
+  width: var(--dist-outlier-d, 18px);
+  height: var(--dist-outlier-d, 18px);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--text);
+  color: var(--card-bg);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 0 2px var(--card-bg);
+}
+
+.pl-dist-nodata {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.pl-dist-axis {
+  position: relative;
+  height: 14px;
+  /* Must match .pl-dist's own horizontal margin exactly — this axis is a
+     shared 0..scaleMax reference for the .pl-dist bars beneath it, so its
+     0%/100% ticks have to land on the same pixels the bars' 0%/100% do. */
+  margin: 0 10px 0 16px;
+}
+
+.pl-dist-axis span {
+  position: absolute;
+  transform: translateX(-50%);
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--text-faint);
+}
+
+/* ---------- legend ---------- */
+
+.pl-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.pl-legend > span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Mirrors the band's own percentile gradient at a fixed set of stops. */
+.pl-legend-band {
+  width: 36px;
+  height: 8px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    #00baff 15%,
+    #1179ee 35%,
+    #1179ee 65%,
+    #00baff 85%,
+    transparent 100%
+  );
+}
+
+.pl-legend-median { width: 2.5px; height: 14px; background: var(--text); }
+.pl-legend-whisker { width: 2px; height: 14px; background: var(--text-faint); }
+.pl-legend-death { width: 4px; height: 14px; background: #000; border-radius: 2px; }
+
+.pl-legend-out {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #000;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+/* ---------- field ranking table ---------- */
+
+.pl-sort {
+  border: 1.5px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--card-bg);
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px 13px;
+  cursor: pointer;
+}
+
+.pl-sort.active {
+  background: var(--cyan-500);
+  border-color: var(--cyan-500);
+  color: #fff;
+}
+
+/* Column widths from the design source. The avg-points track is 132px because
+   its sub-label ("auto 45 · climb 0%") is nowrap — at the old 108px it ran
+   straight under the reliability strip. */
+.pl-rank-head,
+.pl-rank-row {
+  display: grid;
+  grid-template-columns: 44px 92px minmax(130px, 1fr) 96px 132px 100px 132px 88px;
+  align-items: center;
+  gap: 0;
+  padding: 0 14px;
+}
+
+.pl-rank-head {
+  height: 44px;
+  background: var(--card-alt);
+  border-bottom: 1px solid var(--border-strong);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  /* Lives inside .pl-rank-scroll so it shares the scrollbar gutter with the
+     rows (see FieldRanking.tsx) — sticky keeps it pinned while scrolling. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.pl-rank-scroll {
+  max-height: calc(100vh - 340px);
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.pl-rank-row {
+  height: 62px;
+  border-bottom: 1px solid var(--border);
+}
+
+.pl-rank-row:hover { background: var(--card-alt); }
+.pl-rank-row.us { background: color-mix(in srgb, var(--cyan-500) 10%, transparent); }
+.pl-rank-row.dnp { opacity: 0.45; }
+
+/* Insets match .pl-dist's margins so the caption lines up with the bar. */
+.pl-rank-head-dist {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px 0 16px;
+  min-width: 0;
+}
+
+.pl-rank-head-rp {
+  color: var(--teal-500);
+  white-space: nowrap;
+}
+
+.pl-rank-num {
+  font-family: var(--font-display);
+  font-size: 20px;
+  color: var(--text-muted);
+}
+
+.pl-rank-team {
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1.05;
+  color: var(--text);
+}
+
+.pl-rank-team:hover { color: var(--blue-600); }
+
+.pl-rank-sub {
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.pl-rank-mean {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  padding-right: 8px;
+}
+
+.pl-rank-mean-num { font-family: var(--font-display); font-size: 22px; line-height: 1; }
+.pl-rank-mean-sub { font-size: 9px; font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+
+.pl-rank-tags {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding-left: 10px;
+}
+
+.pl-rank-flags,
+.pl-rank-rel {
+  display: flex;
+  justify-content: center;
+  /* Guard: a long strip clips at its column instead of painting over the
+     neighbouring cells. */
+  min-width: 0;
+  overflow: hidden;
+}
+
+.pl-rank-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.pl-act {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1.5px solid var(--border-strong);
+  background: var(--card-bg);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
+
+.pl-act:hover { border-color: var(--blue-600); color: var(--blue-600); }
+.pl-act.on { background: var(--cyan-500); border-color: var(--cyan-500); color: #fff; }
+.pl-act.on.danger { background: #000; border-color: #000; }
+
+.pl-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 5px 8px;
+  border-radius: var(--radius-pill);
+  background: #000;
+  color: #fff;
+  white-space: nowrap;
+}
+
+.pl-flag-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  color: #000;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.pl-dash { font-size: 10.5px; color: var(--text-faint); }
+
+.pl-rel { display: flex; gap: 2px; }
+
+.pl-rel-cell {
+  width: 6px;
+  height: 24px;
+  border-radius: 2px;
+  background: var(--border);
+}
+
+.pl-rel-cell.ok { background: var(--teal-500); }
+.pl-rel-cell.high { background: var(--cyan-500); }
+.pl-rel-cell.low { background: var(--text-faint); }
+.pl-rel-cell.dead { background: #000; }
+.pl-rel-cell.empty { background: var(--border); }
+
+.pl-synth-note {
+  margin-top: 14px;
+  max-width: 900px;
+  border-left: 3px solid var(--blue-600);
+  padding-left: 10px;
+}
+
+/* ---------- team analysis ---------- */
+
+.pl-stat-row { display: flex; gap: 22px; flex-wrap: wrap; }
+.pl-stat { display: flex; flex-direction: column; gap: 2px; }
+
+.pl-stat-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.pl-stat-num { font-family: var(--font-display); font-size: 22px; }
+
+.pl-cmp-head,
+.pl-cmp-row {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 14px;
+  align-items: center;
+}
+
+.pl-cmp-head { margin-bottom: 6px; }
+
+.pl-cmp-row { padding: 10px 0; border-top: 1px solid var(--border); }
+
+.pl-cmp-label { display: flex; align-items: center; gap: 8px; }
+
+.pl-cmp-team {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: var(--font-display);
+  font-size: 19px;
+  color: var(--text);
+}
+
+.pl-cmp-team:hover { color: var(--blue-600); }
+
+.pl-cmp-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  padding: 4px 12px 0;
+}
+
+.pl-warn { color: var(--blue-600); font-weight: 700; }
+
+.pl-pctl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 6px;
+  padding: 12px 16px 16px;
+}
+
+.pl-pctl {
+  display: grid;
+  grid-template-columns: 48px 1fr 28px;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 3px 0;
+  font-family: var(--font-body);
+}
+
+.pl-pctl-team { font-family: var(--font-display); font-size: 15px; color: var(--text); text-align: left; }
+
+.pl-pctl-bar {
+  height: 7px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+  display: block;
+}
+
+.pl-pctl-bar span { display: block; height: 100%; border-radius: 999px; }
+.pl-pctl-val { font-size: 10px; font-weight: 700; color: var(--text-muted); text-align: right; }
+
+/* ---------- deep dive ---------- */
+
+.pl-dd-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.pl-dd-stat {
+  background: var(--card-bg);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pl-dd-stat-num { font-family: var(--font-display); font-size: 26px; line-height: 1; }
+
+.pl-mbm {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  height: 160px;
+  padding-top: 8px;
+}
+
+.pl-mbm.synthetic .pl-mbm-stack { opacity: 0.75; border: 1px dashed var(--border-strong); }
+
+.pl-mbm-col {
+  flex: 1;
+  min-width: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  height: 100%;
+}
+
+.pl-mbm-stack {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column-reverse;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--card-alt);
+}
+
+.pl-mbm-auto { background: var(--blue-600); display: block; width: 100%; }
+.pl-mbm-tele { background: var(--cyan-500); display: block; width: 100%; }
+.pl-mbm-tower { background: var(--teal-500); display: block; width: 100%; }
+
+.pl-mbm-dead {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(45deg, #000, #000 3px, transparent 3px, transparent 7px);
+  opacity: 0.55;
+}
+
+.pl-mbm-label {
+  font-size: 8.5px;
+  font-weight: 700;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.pl-mbm-key {
+  display: flex;
+  gap: 14px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding-top: 10px;
+}
+
+.pl-mbm-key span { display: flex; align-items: center; gap: 5px; }
+.pl-mbm-key i { width: 10px; height: 10px; border-radius: 2px; display: block; }
+
+/* ---------- match strategy ---------- */
+
+.pl-verdict {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) 1fr;
+  gap: 20px;
+  border-radius: 14px;
+  padding: 18px 20px;
+  color: #fff;
+  align-items: center;
+}
+
+.pl-verdict.good { background: linear-gradient(135deg, var(--cyan-500), var(--blue-600)); }
+.pl-verdict.bad { background: #000; }
+
+.pl-verdict-num { font-family: var(--font-display); font-size: 46px; line-height: 1; }
+.pl-verdict-text { font-size: 11.5px; font-weight: 600; opacity: 0.9; }
+
+.pl-verdict-bars { display: flex; flex-direction: column; gap: 8px; }
+
+.pl-verdict-bar {
+  display: grid;
+  grid-template-columns: 130px 1fr 44px;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.pl-verdict-track {
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  display: block;
+  overflow: hidden;
+}
+
+.pl-verdict-track span { display: block; height: 100%; border-radius: 999px; }
+.pl-verdict-track .us { background: #fff; }
+.pl-verdict-track .them { background: rgba(255, 255, 255, 0.55); }
+
+.pl-energized {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 6px 10px;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.16);
+  align-self: flex-start;
+}
+
+.pl-energized.on { background: #fff; color: var(--blue-600); }
+
+.pl-ms-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 130px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.pl-ms-team { display: flex; flex-direction: column; gap: 1px; }
+
+.pl-ms-total {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--card-alt);
+}
+
+.pl-ms-total-num { font-family: var(--font-display); font-size: 28px; line-height: 1; }
+
+/* ---------- rank forecast ---------- */
+
+.pl-forecast-cases {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 12px;
+}
+
+.pl-forecast-case {
+  background: var(--card-bg);
+  border: 1.5px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-body);
+}
+
+.pl-forecast-case.active { box-shadow: var(--shadow-md); }
+.pl-forecast-seed { font-family: var(--font-display); font-size: 32px; line-height: 1; }
+
+.pl-forecast-table { display: flex; flex-direction: column; }
+
+.pl-forecast-head,
+.pl-forecast-row {
+  display: grid;
+  grid-template-columns: 56px 90px 1fr 90px 80px 130px;
+  align-items: center;
+  gap: 10px;
+  padding: 0 16px;
+}
+
+.pl-forecast-head {
+  height: 40px;
+  background: var(--card-alt);
+  border-bottom: 1px solid var(--border-strong);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.pl-forecast-row {
+  height: 46px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.pl-forecast-row.captain { background: color-mix(in srgb, var(--cyan-500) 7%, transparent); }
+.pl-forecast-row.us { background: color-mix(in srgb, var(--blue-600) 14%, transparent); }
+
+.pl-forecast-flag {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 1400px) {
+  /*
+   * Role column collapses first. The template drops to SEVEN tracks to match
+   * the seven items that remain once the role cell is display:none — a hidden
+   * grid item is removed from the grid entirely, so leaving an eighth (0-width)
+   * track would shift Actions back into it and collapse it to zero width.
+   * Avg-points keeps 124px for its nowrap sub-label.
+   */
+  .pl-rank-head,
+  .pl-rank-row {
+    grid-template-columns: 38px 78px minmax(90px, 1fr) 80px 124px 100px 92px;
+  }
+  .pl-rank-tags,
+  .pl-rank-head span:nth-child(7) { display: none; }
+}
+
+@media (max-width: 1100px) {
+  .pl-columns {
+    grid-template-columns: 1fr;
+  }
+  .pl-alliances {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .pl-verdict { grid-template-columns: 1fr; }
+  .pl-ms-row { grid-template-columns: 90px 1fr; }
+  .pl-ms-row .pl-tags { display: none; }
+}
+
+@media (max-width: 860px) {
+  /*
+   * An eight-column table does not fit 375px. Rather than shrink columns until
+   * their contents overlap, each row becomes a stacked card: identity and score
+   * on the first line, the distribution across the full width beneath.
+   * Flags, the reliability strip and role tags are dropped — they need width to
+   * be readable at all, and they are all available on the team deep dive.
+   */
+  .pl-rank-head { display: none; }
+
+  .pl-rank-scroll { max-height: none; }
+
+  .pl-rank-row {
+    grid-template-columns: 30px 1fr auto;
+    grid-template-areas:
+      'rank team actions'
+      'dist dist dist';
+    height: auto;
+    padding: 10px 12px;
+    row-gap: 4px;
+    align-items: center;
+  }
+
+  .pl-rank-row > :nth-child(1) { grid-area: rank; }
+  .pl-rank-row > :nth-child(3) { grid-area: dist; }
+  .pl-rank-row > :nth-child(8) { grid-area: actions; }
+
+  /* Reserve room on the right so the team's sub-label cannot run under the
+     average, which shares this grid area. */
+  .pl-rank-row > :nth-child(2) {
+    grid-area: team;
+    min-width: 0;
+    padding-right: 78px;
+  }
+
+  .pl-rank-sub {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* flags, reliability strip, role tags */
+  .pl-rank-flags,
+  .pl-rank-rel,
+  .pl-rank-tags { display: none; }
+
+  /* Average moves inline beside the team number. */
+  .pl-rank-row > :nth-child(5) {
+    grid-area: team;
+    justify-self: end;
+    align-self: center;
+    text-align: right;
+    padding-right: 8px;
+  }
+
+  .pl-rank-team { font-size: 19px; }
+  .pl-rank-mean-num { font-size: 18px; }
+  /* auto/climb detail is available on the team deep dive */
+  .pl-rank-mean-sub { display: none; }
+
+  .pl-dist {
+    margin: 2px 0 0;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .pl-forecast-head,
+  .pl-forecast-row { grid-template-columns: 40px 1fr 70px; }
+  .pl-forecast-head span:nth-child(n + 4),
+  .pl-forecast-row > span:nth-child(n + 4) { display: none; }
+
+  .pl-cmp-head,
+  .pl-cmp-row { grid-template-columns: 1fr; }
+  .pl-cmp-meta { padding-left: 0; }
+
+  .pl-verdict-bar { grid-template-columns: 96px 1fr 40px; font-size: 10px; }
+  .pl-stat-row { gap: 14px; }
+  .pl-mbm { height: 120px; }
+}
+
+@media (max-width: 720px) {
+  .pl-two-col {
+    grid-template-columns: 1fr;
+  }
+  .pl-alliances {
+    grid-template-columns: 1fr;
+  }
+  .pl-lede {
+    text-align: left;
+    flex-basis: 100%;
+  }
+  .pl-tree-row {
+    grid-template-columns: 1fr;
+  }
+  .pl-connector {
+    display: none;
+  }
+}
