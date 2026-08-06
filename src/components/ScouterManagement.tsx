@@ -3,7 +3,6 @@ import { Scouter } from '../types';
 import { uuidv4 } from '../utils/uuid';
 // DataService not required here; scouters persisted via useLocalStorage
 import { useLocalStorage } from '../hooks/useLocalStorage';
-import { ArrowLeft, Plus, Trash2, Users } from 'lucide-react';
 import { DataService } from '../services/dataService';
 import { readableMatchLabel } from '../utils/match';
 import { pushScoutersToServer, performFullRefresh } from '../services/syncService';
@@ -12,6 +11,14 @@ import { pushScoutersToServer, performFullRefresh } from '../services/syncServic
 interface ScouterManagementProps {
   onBack: () => void;
 }
+
+/**
+ * Shared column track for the scouter table. The mockup specifies
+ * Scouter | Alliance | Position | Mode | Remove; the app also carries a
+ * "matches scouted" drill-in and an inline Edit action, so those get their
+ * own tracks at the end.
+ */
+const SCOUTER_COLS = 'minmax(150px,2fr) 96px 110px 92px 96px 136px';
 
 export function ScouterManagement({ onBack }: ScouterManagementProps) {
   const [scouters, setScouters] = useLocalStorage<Scouter[]>('frc-scouters', []);
@@ -57,8 +64,6 @@ export function ScouterManagement({ onBack }: ScouterManagementProps) {
     setNewScouter({ name: '', alliance: 'red', position: 1, isRemote: false });
   };
 
-  
-
   // auto-refresh when this view loads
   React.useEffect(() => {
     let mounted = true;
@@ -79,8 +84,6 @@ export function ScouterManagement({ onBack }: ScouterManagementProps) {
     return () => { mounted = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  
 
   const openScoutedMatches = (scouterName: string) => {
     try {
@@ -146,304 +149,251 @@ export function ScouterManagement({ onBack }: ScouterManagementProps) {
     cancelEdit();
   };
 
+  const activeScouters = scouters.filter(s => !s.deletedAt);
+
+  const scoutedCounts = (name: string) => {
+    const selectedEvent = DataService.getSelectedEvent();
+    const allMatches = (DataService.getMatches() || []).filter((m: any) => !m.deletedAt);
+    const matchesForEvent = selectedEvent
+      ? allMatches.filter((m: any) => !m.event_key || m.event_key === selectedEvent)
+      : allMatches;
+    const total = matchesForEvent.length;
+    const scouting = DataService.getScoutingData() || [];
+    const scoutedKeys = Array.from(new Set(
+      scouting
+        .filter((r: any) => (r.scouter || '').toLowerCase() === name.toLowerCase())
+        .map((r: any) => r.matchKey)
+    ));
+    const scoutedCount = scoutedKeys.filter((k: string) => matchesForEvent.some((m: any) => m.key === k)).length;
+    return { scoutedCount, total };
+  };
+
   return (
-    <div className="min-h-screen bg-gray-50 p-4">
-      <div className="max-w-4xl mx-auto">
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-3">
-              <button
-                onClick={onBack}
-                className="flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors"
-              >
-                <ArrowLeft className="w-5 h-5" />
-                Back to Admin Panel
-              </button>
-            </div>
-          
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <Users className="w-8 h-8 text-blue-600" />
-              <h1 className="text-2xl font-bold text-gray-900">Scouter Management</h1>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={async () => {
-                  setStatusMessage(null);
-                  setIsRefreshing(true);
-                  try {
-                    await performFullRefresh({ reload: false });
-                    // success: show no popup; spinner will disappear
-                  } catch (e: any) {
-                    setStatusMessage(e?.message || String(e));
-                  } finally {
-                    setIsRefreshing(false);
-                  }
-                }}
-                disabled={isRefreshing}
-                className={`bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md flex items-center gap-2 ${isRefreshing ? 'opacity-80' : ''}`}
-              >
-                {isRefreshing ? (
-                  <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
-                  </svg>
-                ) : null}
-                <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
-              </button>
-            </div>
-          </div>
+    <section className="cc-page">
+      <div className="cc-page-head">
+        <div className="cc-page-titles">
+          <button className="cc-back" onClick={onBack}>← Back to Admin Panel</button>
+          <h1 className="cc-h1">SCOUTER MANAGEMENT</h1>
         </div>
-        {statusMessage && (
-          <div className="mt-4 p-3 bg-yellow-50 text-yellow-800 rounded">
-            <strong>Sync status:</strong> {statusMessage}
+        <button
+          className="cc-btn-primary"
+          disabled={isRefreshing}
+          onClick={async () => {
+            setStatusMessage(null);
+            setIsRefreshing(true);
+            try {
+              await performFullRefresh({ reload: false });
+              // success: show no popup; spinner will disappear
+            } catch (e: any) {
+              setStatusMessage(e?.message || String(e));
+            } finally {
+              setIsRefreshing(false);
+            }
+          }}
+        >
+          {isRefreshing ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
+
+      {statusMessage && (
+        <div className="cc-banner info">
+          <strong>Sync status:</strong> {statusMessage}
+        </div>
+      )}
+
+      {/* Add New Scouter Form */}
+      <div className="cc-card">
+        <span className="cc-eyebrow">Add new scouter</span>
+        <form onSubmit={addScouter} className="cc-form-grid">
+          <div className="cc-field">
+            <label className="cc-label" htmlFor="name">Name</label>
+            <input
+              type="text"
+              id="name"
+              className="cc-input"
+              value={newScouter.name}
+              onChange={(e) => setNewScouter({ ...newScouter, name: e.target.value })}
+              placeholder="Scouter name"
+              required
+            />
           </div>
-        )}
 
-        {/* Add New Scouter Form */}
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <h2 className="text-xl font-bold text-gray-900 mb-4">Add New Scouter</h2>
-          <form onSubmit={addScouter} className="grid md:grid-cols-5 gap-4 items-end">
-            <div>
-              <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-1">
-                Name
-              </label>
-              <input
-                type="text"
-                id="name"
-                value={newScouter.name}
-                onChange={(e) => setNewScouter({ ...newScouter, name: e.target.value })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="Scouter name"
-                required
-              />
-            </div>
-            
-            <div>
-              <label htmlFor="alliance" className="block text-sm font-medium text-gray-700 mb-1">
-                Alliance
-              </label>
-              <select
-                id="alliance"
-                value={newScouter.alliance}
-                onChange={(e) => setNewScouter({ ...newScouter, alliance: e.target.value as 'red' | 'blue' })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              >
-                <option value="red">Red</option>
-                <option value="blue">Blue</option>
-              </select>
-            </div>
-
-            <div>
-              <label htmlFor="position" className="block text-sm font-medium text-gray-700 mb-1">
-                Position
-              </label>
-              <select
-                id="position"
-                value={newScouter.position}
-                onChange={(e) => setNewScouter({ ...newScouter, position: Number(e.target.value) as 1 | 2 | 3 })}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              >
-                <option value={1}>Team 1</option>
-                <option value={2}>Team 2</option>
-                <option value={3}>Team 3</option>
-              </select>
-            </div>
-
-            <div className="flex items-center">
-              <input
-                type="checkbox"
-                id="isRemote"
-                checked={newScouter.isRemote}
-                onChange={(e) => setNewScouter({ ...newScouter, isRemote: e.target.checked })}
-                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 mr-2"
-              />
-              <label htmlFor="isRemote" className="text-sm text-gray-700">
-                Remote
-              </label>
-            </div>
-
-            <button
-              type="submit"
-              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md transition-colors flex items-center gap-2"
+          <div className="cc-field">
+            <label className="cc-label" htmlFor="alliance">Alliance</label>
+            <select
+              id="alliance"
+              className="cc-select"
+              value={newScouter.alliance}
+              onChange={(e) => setNewScouter({ ...newScouter, alliance: e.target.value as 'red' | 'blue' })}
             >
-              <Plus className="w-4 h-4" />
-              Add
-            </button>
-          </form>
+              <option value="red">Red</option>
+              <option value="blue">Blue</option>
+            </select>
+          </div>
+
+          <div className="cc-field">
+            <label className="cc-label" htmlFor="position">Position</label>
+            <select
+              id="position"
+              className="cc-select"
+              value={newScouter.position}
+              onChange={(e) => setNewScouter({ ...newScouter, position: Number(e.target.value) as 1 | 2 | 3 })}
+            >
+              <option value={1}>Team 1</option>
+              <option value={2}>Team 2</option>
+              <option value={3}>Team 3</option>
+            </select>
+          </div>
+
+          <label className="cc-check" htmlFor="isRemote" style={{ paddingBottom: 11 }}>
+            <input
+              type="checkbox"
+              id="isRemote"
+              checked={newScouter.isRemote}
+              onChange={(e) => setNewScouter({ ...newScouter, isRemote: e.target.checked })}
+            />
+            <span>Remote</span>
+          </label>
+
+          <button type="submit" className="cc-btn-grad">+ Add</button>
+        </form>
+      </div>
+
+      {/* Scouters List */}
+      <div className="cc-card flush">
+        <div className="cc-card-head">
+          <span className="cc-eyebrow">Current scouters</span>
+          <span className="cc-card-count">{activeScouters.length} assigned</span>
         </div>
 
-        {/* Scouters List */}
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <h2 className="text-xl font-bold text-gray-900 mb-4">Current Scouters</h2>
-          
-          {scouters.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
-              No scouters assigned yet. Add some scouters above.
+        {activeScouters.length === 0 ? (
+          <div className="cc-empty">No scouters assigned yet. Add some scouters above.</div>
+        ) : (
+          <>
+            <div className="cc-thead" style={{ gridTemplateColumns: SCOUTER_COLS }}>
+              <span>Scouter</span>
+              <span>Alliance</span>
+              <span>Position</span>
+              <span>Mode</span>
+              <span>Scouted</span>
+              <span style={{ justifySelf: 'end' }}>Actions</span>
             </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-gray-200">
-                      <th className="text-left py-3 font-medium text-gray-900">Matches Scouted</th>
-                      <th className="text-left py-3 font-medium text-gray-900">Name</th>
-                      <th className="text-left py-3 font-medium text-gray-900">Alliance</th>
-                      <th className="text-left py-3 font-medium text-gray-900">Position</th>
-                      <th className="text-left py-3 font-medium text-gray-900">Type</th>
-                      <th className="text-left py-3 font-medium text-gray-900">Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                  {scouters.filter(s => !s.deletedAt).map((scouter) => (
-                    <tr key={scouter.id} className="border-b border-gray-100">
-                        {editingId === scouter.id ? (
-                        <>
-                            <td className="py-3">
-                              <div className="text-sm text-gray-600">-</div>
-                            </td>
-                          <td className="py-3">
-                            <input
-                              type="text"
-                              value={editValues.name}
-                              onChange={(e) => setEditValues({ ...editValues, name: e.target.value })}
-                              className="w-full px-2 py-1 border border-gray-300 rounded-md"
-                            />
-                          </td>
-                          <td className="py-3">
-                            <select
-                              value={editValues.alliance}
-                              onChange={(e) => setEditValues({ ...editValues, alliance: e.target.value as 'red' | 'blue' })}
-                              className="px-2 py-1 border border-gray-300 rounded-md"
-                            >
-                              <option value="red">Red</option>
-                              <option value="blue">Blue</option>
-                            </select>
-                          </td>
-                          <td className="py-3">
-                            <select
-                              value={editValues.position}
-                              onChange={(e) => setEditValues({ ...editValues, position: Number(e.target.value) as 1 | 2 | 3 })}
-                              className="px-2 py-1 border border-gray-300 rounded-md"
-                            >
-                              <option value={1}>Team 1</option>
-                              <option value={2}>Team 2</option>
-                              <option value={3}>Team 3</option>
-                            </select>
-                          </td>
-                          <td className="py-3">
-                            <label className="flex items-center gap-2">
-                              <input
-                                type="checkbox"
-                                checked={editValues.isRemote}
-                                onChange={(e) => setEditValues({ ...editValues, isRemote: e.target.checked })}
-                                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                              />
-                              <span className="text-sm text-gray-700">Remote</span>
-                            </label>
-                          </td>
-                          <td className="py-3 flex items-center gap-2">
-                            <button
-                              onClick={() => saveEdit(scouter.id)}
-                              className="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded-md"
-                            >
-                              Save
-                            </button>
-                            <button
-                              onClick={cancelEdit}
-                              className="bg-gray-200 hover:bg-gray-300 text-gray-800 px-3 py-1 rounded-md"
-                            >
-                              Cancel
-                            </button>
-                          </td>
-                        </>
-                      ) : (
-                        <>
-                          {/* Matches scouted count */}
-                          <td className="py-3">
-                            {(() => {
-                              try {
-                                const selectedEvent = DataService.getSelectedEvent();
-                                const allMatches = (DataService.getMatches() || []).filter((m: any) => !m.deletedAt);
-                                const matchesForEvent = selectedEvent ? allMatches.filter((m: any) => !m.event_key || m.event_key === selectedEvent) : allMatches;
-                                const total = matchesForEvent.length;
-                                const scouting = DataService.getScoutingData() || [];
-                                const scoutedKeys = Array.from(new Set(scouting.filter((r: any) => (r.scouter || '').toLowerCase() === scouter.name.toLowerCase()).map((r: any) => r.matchKey)));
-                                const scoutedCount = scoutedKeys.filter((k: string) => matchesForEvent.some((m: any) => m.key === k)).length;
-                                return (
-                                  <button onClick={() => openScoutedMatches(scouter.name)} className="text-sm text-blue-600 hover:underline">
-                                    {scoutedCount}/{total}
-                                  </button>
-                                );
-                              } catch (e) {
-                                return <div className="text-sm text-gray-600">0/0</div>;
-                              }
-                            })()}
-                          </td>
-                          <td className="py-3 text-gray-900">{scouter.name}</td>
-                          <td className="py-3">
-                            <span className={`px-2 py-1 text-xs font-medium rounded text-white ${
-                              scouter.alliance === 'red' ? 'bg-red-500' : 'bg-blue-500'
-                            }`}>
-                              {scouter.alliance.toUpperCase()}
-                            </span>
-                          </td>
-                          <td className="py-3 text-gray-900">Team {scouter.position}</td>
-                          <td className="py-3">
-                            <span className={`px-2 py-1 text-xs font-medium rounded ${
-                              scouter.isRemote 
-                                ? 'bg-orange-100 text-orange-800' 
-                                : 'bg-green-100 text-green-800'
-                            }`}>
-                              {scouter.isRemote ? 'Remote' : 'In-Person'}
-                            </span>
-                          </td>
-                          <td className="py-3 flex items-center gap-3">
-                            <button
-                              onClick={() => startEdit(scouter)}
-                              className="text-blue-600 hover:text-blue-900 transition-colors"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => removeScouter(scouter.id)}
-                              className="text-red-600 hover:text-red-900 transition-colors"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          </td>
-                        </>
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-        {showScoutedModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-6 w-full max-w-md">
-              <h3 className="text-lg font-semibold mb-2">Matches scouted by {modalScouterName}</h3>
-              <div className="max-h-64 overflow-y-auto mb-4">
-                {modalScoutedMatches.length === 0 ? (
-                  <div className="text-sm text-gray-600">No matches scouted yet.</div>
-                ) : (
-                  <ul className="list-disc pl-5 text-sm">
-                    {modalScoutedMatches.map(m => (
-                      <li key={m.matchKey} className="py-1">{m.label} <span className="text-xs text-gray-400">({m.matchKey})</span></li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              <div className="flex justify-end">
-                <button onClick={() => { setShowScoutedModal(false); setModalScoutedMatches([]); setModalScouterName(null); }} className="px-3 py-2 rounded bg-gray-200 hover:bg-gray-300">Close</button>
-              </div>
-            </div>
-          </div>
+
+            {activeScouters.map((scouter) => (
+              editingId === scouter.id ? (
+                <div key={scouter.id} className="cc-trow edit" style={{ gridTemplateColumns: '1fr' }}>
+                  <div className="cc-row">
+                    <input
+                      type="text"
+                      className="cc-input"
+                      value={editValues.name}
+                      onChange={(e) => setEditValues({ ...editValues, name: e.target.value })}
+                    />
+                    <select
+                      className="cc-select"
+                      style={{ width: 'auto' }}
+                      value={editValues.alliance}
+                      onChange={(e) => setEditValues({ ...editValues, alliance: e.target.value as 'red' | 'blue' })}
+                    >
+                      <option value="red">Red</option>
+                      <option value="blue">Blue</option>
+                    </select>
+                    <select
+                      className="cc-select"
+                      style={{ width: 'auto' }}
+                      value={editValues.position}
+                      onChange={(e) => setEditValues({ ...editValues, position: Number(e.target.value) as 1 | 2 | 3 })}
+                    >
+                      <option value={1}>Team 1</option>
+                      <option value={2}>Team 2</option>
+                      <option value={3}>Team 3</option>
+                    </select>
+                    <label className="cc-check">
+                      <input
+                        type="checkbox"
+                        checked={editValues.isRemote}
+                        onChange={(e) => setEditValues({ ...editValues, isRemote: e.target.checked })}
+                      />
+                      <span>Remote</span>
+                    </label>
+                    <button className="cc-btn-sm-primary" onClick={() => saveEdit(scouter.id)}>Save</button>
+                    <button className="cc-btn-outline" onClick={cancelEdit}>Cancel</button>
+                  </div>
+                </div>
+              ) : (
+                <div key={scouter.id} className="cc-trow" style={{ gridTemplateColumns: SCOUTER_COLS }}>
+                  <span style={{ fontSize: 13.5, fontWeight: 700 }}>{scouter.name}</span>
+                  <span className={`cc-tag ${scouter.alliance === 'red' ? 'red' : 'blue'}`}>
+                    {scouter.alliance}
+                  </span>
+                  <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-muted)' }}>
+                    Team {scouter.position}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 10,
+                      fontWeight: 800,
+                      letterSpacing: '0.08em',
+                      textTransform: 'uppercase',
+                      color: scouter.isRemote ? 'var(--teal-500)' : 'var(--text-muted)',
+                    }}
+                  >
+                    {scouter.isRemote ? 'Remote' : 'On-site'}
+                  </span>
+                  <span>
+                    {(() => {
+                      try {
+                        const { scoutedCount, total } = scoutedCounts(scouter.name);
+                        return (
+                          <button className="cc-link-count" onClick={() => openScoutedMatches(scouter.name)}>
+                            {scoutedCount}/{total}
+                          </button>
+                        );
+                      } catch (e) {
+                        return <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>0/0</span>;
+                      }
+                    })()}
+                  </span>
+                  <span style={{ justifySelf: 'end', display: 'flex', gap: 8 }}>
+                    <button className="cc-btn-del" onClick={() => startEdit(scouter)}>Edit</button>
+                    <button className="cc-btn-del" onClick={() => removeScouter(scouter.id)}>Del</button>
+                  </span>
+                </div>
+              )
+            ))}
+          </>
         )}
       </div>
-    </div>
+
+      {showScoutedModal && (
+        <div className="cc-modal-backdrop">
+          <div className="cc-modal">
+            <h3>MATCHES SCOUTED BY {modalScouterName}</h3>
+            <div style={{ maxHeight: 256, overflowY: 'auto' }}>
+              {modalScoutedMatches.length === 0 ? (
+                <p>No matches scouted yet.</p>
+              ) : (
+                <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13 }}>
+                  {modalScoutedMatches.map(m => (
+                    <li key={m.matchKey} style={{ padding: '3px 0' }}>
+                      {m.label}{' '}
+                      <span style={{ fontSize: 11, color: 'var(--text-faint)' }}>({m.matchKey})</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="cc-modal-actions">
+              <button
+                className="cc-btn-outline"
+                onClick={() => { setShowScoutedModal(false); setModalScoutedMatches([]); setModalScouterName(null); }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }

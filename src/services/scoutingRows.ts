@@ -7,7 +7,8 @@ import { fetchServerScouting } from './syncService';
  *
  * The payload shape has changed across seasons, so this keeps the legacy
  * fallbacks (`l1..l4`, `net`, `prosser`) alongside the current `fuel` fields.
- * Shared by DataAnalysis and the Picklist so both read identical numbers.
+ * Shared by the Scout workspace and the stats CSV export so both read
+ * identical numbers.
  */
 export function mapServerRow(r: any): ScoutingData {
   const rawAuto = r.payload?.auto || {};

@@ -3,12 +3,16 @@ import { Event, Match } from '../types';
 import { fetchEvents, fetchEventMatches, getRuntimeTbaKey, setRuntimeTbaKey, clearRuntimeTbaKey } from '../services/tbaApi';
 import { DataService } from '../services/dataService';
 import { migrateLocalToServer, pushMatchesToServer, deleteMatchesFromServer, fetchServerMatches, performFullRefresh } from '../services/syncService';
-import { ArrowLeft, Calendar, Search, Download } from 'lucide-react';
 import { readableMatchLabel, compareMatches } from '../utils/match';
 
 interface MatchSelectionProps {
   onBack: () => void;
 }
+
+/** Shared column track for the match table (mockup: 70px 1fr 1fr 64px). */
+const MATCH_COLS = '70px 1fr 1fr 64px';
+
+const teamList = (keys: string[]) => keys.map(t => t.replace('frc', '')).join(' · ');
 
 export function MatchSelection({ onBack }: MatchSelectionProps) {
   const [events, setEvents] = useState<Event[]>([]);
@@ -132,369 +136,293 @@ export function MatchSelection({ onBack }: MatchSelectionProps) {
 
   const sortedMatches = [...matches].sort(compareMatches);
 
+  const queuedKeys = new Set(serverMatches.map((r: any) => r.key));
+  const queuedLabels = serverMatches.map((r: any) => readableMatchLabel(r));
+  const selectedEventName = events.find(e => e.key === selectedEvent)?.name || selectedEvent;
+
   return (
-    <div className="min-h-screen bg-gray-50 p-4">
-      <div className="max-w-6xl mx-auto">
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <div className="flex items-center justify-between mb-4">
+    <section className="cc-page">
+      <div className="cc-page-titles">
+        <button className="cc-back" onClick={onBack}>← Back to Admin Panel</button>
+        <h1 className="cc-h1">MATCH SELECTION</h1>
+      </div>
+
+      {/* Server queued matches panel */}
+      <div className="cc-card cc-banner-card">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+          <span className="cc-eyebrow">Queued matches on server</span>
+          <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-muted)' }}>
+            {serverMatches.length === 0
+              ? 'No queued matches found on server.'
+              : `${serverMatches.length} matches queued · ${queuedLabels.join(', ')}`}
+          </span>
+        </div>
+        <button
+          className="cc-btn-primary"
+          disabled={serverLoading}
+          onClick={async () => {
+            setServerLoading(true);
+            try {
+              await performFullRefresh({ reload: false });
+              const rows = await fetchServerMatches();
+              setServerMatches(rows as any[]);
+            } catch (e) {
+              console.error('Failed to refresh server matches', e);
+              setServerMatches([]);
+            } finally {
+              setServerLoading(false);
+            }
+          }}
+        >
+          {serverLoading ? 'Loading…' : 'Refresh'}
+        </button>
+      </div>
+
+      <div className="cc-two-col">
+        {/* Events List */}
+        <div className="cc-card">
+          <span className="cc-eyebrow">Available events</span>
+
+          <div className="cc-row">
+            <input
+              type="text"
+              className="cc-input"
+              placeholder="Search events…"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
             <button
-              onClick={onBack}
-              className="flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors"
+              className="cc-btn-sm-primary"
+              onClick={checkAvailableEvents}
+              disabled={loading}
+              aria-busy={loading}
             >
-              <ArrowLeft className="w-5 h-5" />
-              Back to Admin Panel
+              {loading ? 'Checking…' : 'Check events'}
             </button>
           </div>
-          <div className="flex items-center gap-3">
-            <Calendar className="w-8 h-8 text-blue-600" />
-            <h1 className="text-2xl font-bold text-gray-900">Match Selection</h1>
+
+          <div className="cc-row">
+            <input
+              type="password"
+              className="cc-input"
+              value={runtimeKey}
+              onChange={(e) => setRuntimeKey(e.target.value)}
+              placeholder="TBA API key"
+              aria-label="The Blue Alliance API key"
+            />
+            <button
+              className="cc-btn-dark"
+              onClick={() => { setRuntimeTbaKey(runtimeKey); checkAvailableEvents(); }}
+            >
+              Save &amp; load
+            </button>
+            <button
+              className="cc-btn-outline"
+              onClick={() => { clearRuntimeTbaKey(); setRuntimeKey(''); }}
+            >
+              Clear
+            </button>
           </div>
+
+          {loading ? (
+            <div className="cc-empty">Loading events…</div>
+          ) : (
+            <div className="cc-event-list">
+              {filteredEvents.map((event) => (
+                <button
+                  key={event.key}
+                  className={`cc-event-row${selectedEvent === event.key ? ' selected' : ''}`}
+                  onClick={() => handleEventSelect(event.key)}
+                >
+                  <span className="cc-event-name">{event.name}</span>
+                  <span className="cc-event-meta">
+                    {event.key} · {new Date(event.start_date).toLocaleDateString()} –{' '}
+                    {new Date(event.end_date).toLocaleDateString()}
+                  </span>
+                </button>
+              ))}
+              {filteredEvents.length === 0 && (
+                <div className="cc-empty">No events found matching your search.</div>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Server queued matches panel */}
-        <div className="bg-white rounded-lg shadow-md p-6 mt-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-bold text-gray-900">Queued Matches on Server</h2>
-            <div>
-              <button
-                onClick={async () => {
-                  setServerLoading(true);
-                  try {
-                    await performFullRefresh({ reload: false });
-                    const rows = await fetchServerMatches();
-                    setServerMatches(rows as any[]);
-                  } catch (e) {
-                    console.error('Failed to refresh server matches', e);
-                    setServerMatches([]);
-                  } finally {
-                    setServerLoading(false);
-                  }
-                }}
-                className="px-3 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700"
-              >
-                {serverLoading ? 'Loading...' : 'Refresh'}
+        {/* Matches List */}
+        <div className="cc-card flush">
+          <div className="cc-card-head">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+              <span className="cc-eyebrow">Matches {selectedEvent && `(${matches.length})`}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--text-muted)' }}>
+                {selectedEvent ? selectedEventName : 'No event selected'}
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              {matches.length > 0 && (
+                <button
+                  className="cc-btn-grad"
+                  style={{ padding: '10px 16px', fontSize: 11 }}
+                  disabled={saving}
+                  onClick={async () => {
+                    setSaving(true);
+                    setSaveResult(null);
+                    try {
+                      // attach currently selected event to the matches so they are organized server-side
+                      const withEvent = sortedMatches.map(m => ({ ...m, event_key: selectedEvent || DataService.getSelectedEvent() }));
+                      DataService.saveMatches(withEvent as any[]);
+                      // Attempt to push matches directly and report how many were synced
+                      const synced = await pushMatchesToServer(withEvent as any[]);
+                      // Also run migrateLocalToServer to ensure any pending scouting is pushed
+                      const migrateResult = await migrateLocalToServer();
+                      setSaveResult(`matches synced: ${synced}; ${migrateResult}`);
+                    } catch (e: any) {
+                      setSaveResult(String(e?.message || e));
+                    } finally {
+                      setSaving(false);
+                      setTimeout(() => setSaveResult(null), 5000);
+                    }
+                  }}
+                >
+                  {saving ? 'Saving…' : 'Save matches'}
+                </button>
+              )}
+              <button className="cc-btn-outline" onClick={() => setShowConfirmClear(true)}>
+                Clear queue
               </button>
             </div>
           </div>
 
-          <div className="max-h-64 overflow-y-auto space-y-3">
-            {serverMatches.length === 0 ? (
-              <div className="text-gray-500">No queued matches found on server.</div>
-              ) : (
-                Object.entries(serverMatches.reduce((acc: any, cur: any) => {
-                  const key = cur.event_key || 'unknown';
-                  if (!acc[key]) acc[key] = [];
-                  acc[key].push(cur);
-                  return acc;
-                }, {})).map(([eventKey, rows]: any) => (
-                  <div key={eventKey} className="border border-gray-100 rounded p-3">
-                    <div className="font-medium text-sm text-gray-700 mb-2">Event: {eventKey}</div>
-                    <div className="text-sm text-gray-600">
-                          {rows.map((r: any) => (
-                        <div key={r.key} className="flex items-center justify-between py-1">
-                          <div>{readableMatchLabel(r)}</div>
-                          <div className="text-xs text-gray-500">{r.key}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ))
-              )}
-          </div>
-        </div>
+          {saveResult && <div className="cc-banner info" style={{ margin: '12px 20px 0' }}>{saveResult}</div>}
 
-        <div className="grid lg:grid-cols-2 gap-6">
-          {/* Events List */}
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="mb-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-xl font-bold text-gray-900">Available Events</h2>
-              </div>
-
-              {/* Controls split into two responsive rows: search+check on first line, key controls on second */}
-              <div className="mt-3 w-full flex flex-col gap-2">
-                <div className="flex items-center gap-2 w-full">
-                  <div className="relative flex-1 min-w-0">
-                    <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                    <input
-                      type="text"
-                      placeholder="Search events..."
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="pl-10 pr-4 h-10 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full"
-                    />
-                  </div>
-
-                  <button
-                    onClick={checkAvailableEvents}
-                    disabled={loading}
-                    aria-busy={loading}
-                    className={`flex items-center gap-2 px-3 rounded-md text-sm transition-colors h-10 flex-shrink-0 ${loading ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}
-                  >
-                    {loading ? (
-                      <svg className="animate-spin h-4 w-4 text-white" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
-                      </svg>
-                    ) : (
-                      <Download className="w-4 h-4" />
-                    )}
-                    <span>{loading ? 'Checking...' : 'Check available events'}</span>
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-2 w-full flex-wrap sm:flex-nowrap sm:justify-end">
-                  <input
-                    type="password"
-                    value={runtimeKey}
-                    onChange={(e) => setRuntimeKey(e.target.value)}
-                    placeholder="TBA API key"
-                    className="px-2 h-10 border border-gray-300 rounded-md text-sm w-full sm:w-64 truncate min-w-0"
-                    aria-label="The Blue Alliance API key"
-                  />
-                  <button
-                    onClick={() => { setRuntimeTbaKey(runtimeKey); checkAvailableEvents(); }}
-                    className="px-3 h-10 bg-green-600 text-white rounded-md text-sm hover:bg-green-700 whitespace-nowrap flex-shrink-0"
-                  >
-                    Save & Load
-                  </button>
-                  <button
-                    onClick={() => { clearRuntimeTbaKey(); setRuntimeKey(''); }}
-                    className="px-3 h-10 bg-gray-200 text-sm rounded-md hover:bg-gray-300 whitespace-nowrap flex-shrink-0"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
+          {!selectedEvent ? (
+            <div className="cc-empty-lg">
+              <span className="cc-empty-mark">▦</span>
+              <span style={{ fontSize: 13, color: 'var(--text-faint)' }}>Select an event to view matches</span>
             </div>
-
-            {loading ? (
-              <div className="text-center py-8">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto"></div>
-                <p className="text-gray-600 mt-2">Loading events...</p>
+          ) : matches.length === 0 ? (
+            <div className="cc-empty">
+              {loading ? 'Loading matches…' : 'Matches for this event are not yet released by The Blue Alliance.'}
+            </div>
+          ) : (
+            <>
+              <div className="cc-thead" style={{ gridTemplateColumns: MATCH_COLS }}>
+                <span>Match</span>
+                <span>Red alliance</span>
+                <span>Blue alliance</span>
+                <span style={{ justifySelf: 'end' }}>Queue</span>
               </div>
-            ) : (
-              <div className="space-y-3 max-h-96 overflow-y-auto">
-                {filteredEvents.map((event) => (
-                  <div
-                    key={event.key}
-                    onClick={() => handleEventSelect(event.key)}
-                    className={`p-4 border-2 rounded-lg cursor-pointer transition-colors ${
-                      selectedEvent === event.key
-                        ? 'border-blue-500 bg-blue-50'
-                        : 'border-gray-200 hover:border-blue-300'
-                    }`}
-                  >
-                    <h3 className="font-semibold text-gray-900">{event.name}</h3>
-                    <p className="text-sm text-gray-600">{event.key}</p>
-                    <p className="text-xs text-gray-500 mt-1">
-                      {new Date(event.start_date).toLocaleDateString()} - {new Date(event.end_date).toLocaleDateString()}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {filteredEvents.length === 0 && !loading && (
-              <div className="text-center py-8 text-gray-500">
-                No events found matching your search.
-              </div>
-            )}
-          </div>
-
-          {/* Matches List */}
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-bold text-gray-900">
-                Matches {selectedEvent && `(${matches.length})`}
-              </h2>
-              <div className="flex items-center gap-2">
-                {matches.length > 0 && (
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={async () => {
-                        setSaving(true);
-                        setSaveResult(null);
-                        try {
-                          // attach currently selected event to the matches so they are organized server-side
-                          const withEvent = sortedMatches.map(m => ({ ...m, event_key: selectedEvent || DataService.getSelectedEvent() }));
-                          DataService.saveMatches(withEvent as any[]);
-                          // Attempt to push matches directly and report how many were synced
-                          const synced = await pushMatchesToServer(withEvent as any[]);
-                          // Also run migrateLocalToServer to ensure any pending scouting is pushed
-                          const migrateResult = await migrateLocalToServer();
-                          setSaveResult(`matches synced: ${synced}; ${migrateResult}`);
-                        } catch (e: any) {
-                          setSaveResult(String(e?.message || e));
-                        } finally {
-                          setSaving(false);
-                          setTimeout(() => setSaveResult(null), 5000);
-                        }
-                      }}
-                      className={`flex items-center gap-2 ${saving ? 'bg-green-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'} text-white px-3 py-2 rounded-md transition-colors text-sm`}
-                      disabled={saving}
+              <div className="cc-scroll">
+                {sortedMatches.map((match) => {
+                  const queued = queuedKeys.has(match.key);
+                  return (
+                    <div
+                      key={match.key}
+                      className="cc-trow"
+                      style={{ gridTemplateColumns: MATCH_COLS, height: 50 }}
+                      title={match.key}
                     >
-                      <Download className="w-4 h-4" />
-                      <span>{saving ? 'Saving...' : 'Save Matches'}</span>
-                    </button>
-                    {saveResult && (
-                      <div className="text-sm text-gray-700 ml-2">{saveResult}</div>
-                    )}
-                  </div>
-                )}
-
-                <button
-                  onClick={() => setShowConfirmClear(true)}
-                  className="flex items-center gap-2 bg-yellow-500 hover:bg-yellow-600 text-white px-3 py-2 rounded-md transition-colors text-sm"
-                >
-                  Clear queued matches
-                </button>
+                      <span style={{ fontFamily: 'var(--font-display)', fontSize: 17, letterSpacing: '0.02em' }}>
+                        {readableMatchLabel(match)}
+                      </span>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--red-600)' }}>
+                        {teamList(match.alliances.red.team_keys)}
+                      </span>
+                      <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--blue-600)' }}>
+                        {teamList(match.alliances.blue.team_keys)}
+                      </span>
+                      <span
+                        className={`cc-queue-mark${queued ? ' on' : ''}`}
+                        title={queued ? 'Queued on server' : 'Not queued on server'}
+                      >
+                        {queued ? '✓' : '+'}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {selectedEvent && matches.length > 0 && (
+        <div className="cc-banner ok">
+          Event selected: {selectedEventName} — {matches.length} matches loaded and ready for scouting
+        </div>
+      )}
+
+      {deleteError && (
+        <div className="cc-banner error" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>Failed to delete matches from server: {deleteError}</span>
+          <span style={{ display: 'flex', gap: 8 }}>
+            <button
+              className="cc-btn-danger"
+              disabled={deleteInProgress}
+              onClick={async () => {
+                // retry delete
+                try {
+                  setDeleteInProgress(true);
+                  const allLocal = DataService.getMatches();
+                  const keys = allLocal.map((m: any) => m.key);
+                  if (keys.length > 0) await deleteMatchesFromServer(keys);
+                  // success: clear local
+                  DataService.clearMatches();
+                  setMatches([]);
+                  setSelectedEvent('');
+                  setDeleteError(null);
+                } catch (e: any) {
+                  console.error('Retry delete failed:', e);
+                  setDeleteError(String(e?.message || e));
+                } finally {
+                  setDeleteInProgress(false);
+                }
+              }}
+            >
+              {deleteInProgress ? 'Deleting…' : 'Retry delete'}
+            </button>
+            <button className="cc-btn-outline" onClick={() => setDeleteError(null)}>Dismiss</button>
+          </span>
+        </div>
+      )}
+
+      {showConfirmClear && (
+        <div className="cc-modal-backdrop">
+          <div className="cc-modal">
+            <h3>CLEAR QUEUED MATCHES?</h3>
+            <p>Are you sure you want to clear all queued matches for scouters? This cannot be undone.</p>
+            <div className="cc-modal-actions">
+              <button className="cc-btn-outline" onClick={() => setShowConfirmClear(false)}>No</button>
+              <button
+                className="cc-btn-danger"
+                onClick={async () => {
+                  try {
+                    setDeleteError(null);
+                    const allLocal = DataService.getMatches();
+                    const keys = allLocal.map((m: any) => m.key);
+                    if (keys.length > 0) {
+                      await deleteMatchesFromServer(keys);
+                    }
+                    // clear local matches and selection on success
+                    DataService.clearMatches();
+                    setMatches([]);
+                    setSelectedEvent('');
+                    setShowConfirmClear(false);
+                  } catch (e: any) {
+                    // preserve local matches and surface the error
+                    console.error('Failed to delete matches from server:', e);
+                    setDeleteError(String(e?.message || e));
+                    // keep the modal open so user can retry or cancel
+                    // (do not clear local state)
+                  }
+                }}
+              >
+                Yes, clear
+              </button>
             </div>
-
-            {!selectedEvent ? (
-              <div className="text-center py-12 text-gray-500">
-                <Calendar className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                <p>Select an event to view matches</p>
-              </div>
-            ) : matches.length === 0 ? (
-              <div className="text-center py-12 text-gray-500">
-                <p>
-                  {loading ? 'Loading matches...' : 'Matches for this event are not yet released by The Blue Alliance.'}
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-3 max-h-96 overflow-y-auto">
-                {sortedMatches.map((match) => (
-                  <div key={match.key} className="border border-gray-200 rounded-lg p-4">
-                    <div className="flex justify-between items-start mb-3">
-                      <h3 className="font-semibold text-gray-900">{readableMatchLabel(match)}</h3>
-                      <span className="text-xs text-gray-500">{match.key}</span>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3 text-sm">
-                      <div className="bg-red-50 p-2 rounded">
-                        <h4 className="font-medium text-red-700 mb-1">Red Alliance</h4>
-                        {match.alliances.red.team_keys.map((team, index) => (
-                          <div key={team} className="text-red-600">
-                            {index + 1}. {team.replace('frc', '')}
-                          </div>
-                        ))}
-                      </div>
-
-                      <div className="bg-blue-50 p-2 rounded">
-                        <h4 className="font-medium text-blue-700 mb-1">Blue Alliance</h4>
-                        {match.alliances.blue.team_keys.map((team, index) => (
-                          <div key={team} className="text-blue-600">
-                            {index + 1}. {team.replace('frc', '')}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         </div>
-
-        {selectedEvent && matches.length > 0 && (
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4 mt-6">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-              <p className="text-green-800 font-medium">
-                Event selected: {events.find(e => e.key === selectedEvent)?.name}
-              </p>
-            </div>
-            <p className="text-green-700 text-sm mt-1">
-              {matches.length} matches loaded and ready for scouting
-            </p>
-          </div>
-        )}
-        {deleteError && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mt-6">
-            <div className="flex items-center justify-between">
-              <div className="text-red-800 font-medium">Failed to delete matches from server: {deleteError}</div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={async () => {
-                    // retry delete
-                    try {
-                      setDeleteInProgress(true);
-                      const allLocal = DataService.getMatches();
-                      const keys = allLocal.map((m: any) => m.key);
-                      if (keys.length > 0) await deleteMatchesFromServer(keys);
-                      // success: clear local
-                      DataService.clearMatches();
-                      setMatches([]);
-                      setSelectedEvent('');
-                      setDeleteError(null);
-                    } catch (e: any) {
-                      console.error('Retry delete failed:', e);
-                      setDeleteError(String(e?.message || e));
-                    } finally {
-                      setDeleteInProgress(false);
-                    }
-                  }}
-                  disabled={deleteInProgress}
-                  className="px-3 py-2 rounded-md bg-red-600 text-white hover:bg-red-700 disabled:opacity-60"
-                >
-                  {deleteInProgress ? 'Deleting...' : 'Retry delete'}
-                </button>
-                <button
-                  onClick={() => setDeleteError(null)}
-                  className="px-3 py-2 rounded-md bg-gray-200 hover:bg-gray-300"
-                >
-                  Dismiss
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-        {showConfirmClear && (
-          <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg p-6 w-full max-w-sm">
-              <h3 className="text-lg font-semibold mb-2">Confirm clear queued matches</h3>
-              <p className="text-gray-600 mb-4">Are you sure you want to clear all queued matches for scouters? This cannot be undone.</p>
-              <div className="flex justify-end gap-2">
-                <button
-                  onClick={() => setShowConfirmClear(false)}
-                  className="px-3 py-2 rounded-md bg-gray-200 hover:bg-gray-300"
-                >
-                  No
-                </button>
-                <button
-                  onClick={async () => {
-                    try {
-                      setDeleteError(null);
-                      const allLocal = DataService.getMatches();
-                      const keys = allLocal.map((m: any) => m.key);
-                      if (keys.length > 0) {
-                        await deleteMatchesFromServer(keys);
-                      }
-                      // clear local matches and selection on success
-                      DataService.clearMatches();
-                      setMatches([]);
-                      setSelectedEvent('');
-                      setShowConfirmClear(false);
-                    } catch (e: any) {
-                      // preserve local matches and surface the error
-                      console.error('Failed to delete matches from server:', e);
-                      setDeleteError(String(e?.message || e));
-                      // keep the modal open so user can retry or cancel
-                      // (do not clear local state)
-                    }
-                  }}
-                  className="px-3 py-2 rounded-md bg-red-600 text-white hover:bg-red-700"
-                >
-                  Yes, clear
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
+      )}
+    </section>
   );
 }
 

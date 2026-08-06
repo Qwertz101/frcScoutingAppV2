@@ -7,7 +7,11 @@ import { TeamAnalysis } from './TeamAnalysis';
 import { MatchStrategy } from './MatchStrategy';
 import { RankForecast } from './RankForecast';
 import { Picklist } from '../picklist/Picklist';
+import { StatsImportControl } from './StatsImportControl';
 import '../picklist/picklist.css';
+// Modal/banner classes for the import dialog, which the picklist sheet has no
+// equivalent for.
+import '../../styles/cc.css';
 
 type Tab = 'rank' | 'pick' | 'scout' | 'strat' | 'predict';
 
@@ -99,6 +103,7 @@ export function ScoutShell({ onBack }: ScoutShellProps) {
               onChange={(e) => pick.setOurTeam(Number(e.target.value) || 0)}
             />
           </label>
+          <StatsImportControl onImported={data.reload} rows={data.rows} />
           <button className={`pl-ghost-btn${dark ? ' active' : ''}`} onClick={() => setDark(!dark)}>
             {dark ? 'Light mode' : 'Dark mode'}
           </button>

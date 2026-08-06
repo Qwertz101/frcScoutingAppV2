@@ -1,9 +1,10 @@
 import { Match, User } from '../types';
 import { compareMatches, readableMatchLabel } from '../utils/match';
-import { Clock, Users, CheckCircle } from 'lucide-react';
 import { DataService } from '../services/dataService';
 import { fetchServerScouting, performFullRefresh } from '../services/syncService';
 import { useEffect, useState } from 'react';
+import { ScouterHeader } from './cc/CCChrome';
+import '../styles/cc.css';
 
 interface MatchListProps {
   matches: Match[];
@@ -63,6 +64,23 @@ export function MatchList({ matches, user, onMatchSelect, onBack, onPitScouting 
     return () => { mounted = false; };
   }, []);
 
+  const handleRefresh = async () => {
+    if (isRefreshing) return;
+    setIsRefreshing(true);
+    try {
+      // manual refresh: run the canonical full refresh without reloading the page
+      await performFullRefresh({ reload: false });
+      // ensure we also refresh any cached server scouting rows the component uses
+      const data = await fetchServerScouting();
+      setServerScouting(Array.isArray(data) ? data : []);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn('MatchList: manual refresh failed', e);
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   const localScouting = DataService.getScoutingData() || [];
   // consider a match scouted for this user if either local or server contains a record
   const isScoutedByUser = (m: Match) => {
@@ -77,200 +95,142 @@ export function MatchList({ matches, user, onMatchSelect, onBack, onPitScouting 
   const scouted = sorted.filter(m => isScoutedByUser(m));
   const orderedMatches = [...unscouted, ...scouted];
 
+  const openMatch = (match: Match) => {
+    // attempt to find existing record for this scouter
+    const localScouting = DataService.getScoutingData() || [];
+    const local = localScouting.find((s: any) => s.matchKey === match.key && s.scouter === user.username);
+    if (local) {
+      onMatchSelect(match, local);
+      return;
+    }
+    // check server records fetched earlier
+    const server = serverScouting.find((r: any) => (r.match_key === match.key || r.match_key === match.key) && r.scouter_name === user.username);
+    if (server) {
+      const mapped = {
+        id: server.id,
+        matchKey: server.match_key,
+        teamKey: server.team_key,
+        scouter: server.scouter_name,
+        alliance: server.alliance,
+        position: server.position,
+        auto: {
+          ...(server.payload?.auto || { l1: 0, l2: 0, l3: 0, l4: 0, hasAuto: false }),
+          net: typeof server.payload?.auto?.net === 'number' ? server.payload.auto.net : (server.payload?.auto?.net ? 1 : 0),
+          prosser: typeof server.payload?.auto?.prosser === 'number' ? server.payload.auto.prosser : (server.payload?.auto?.prosser ? 1 : 0),
+        },
+        teleop: {
+          ...(server.payload?.teleop || { l1: 0, l2: 0, l3: 0, l4: 0 }),
+          net: typeof server.payload?.teleop?.net === 'number' ? server.payload.teleop.net : (server.payload?.teleop?.net ? 1 : 0),
+          prosser: typeof server.payload?.teleop?.prosser === 'number' ? server.payload.teleop.prosser : (server.payload?.teleop?.prosser ? 1 : 0),
+        },
+        endgame: server.payload?.endgame || { climb: 'none' },
+        defense: server.payload?.defense || 'none',
+        timestamp: server.timestamp ? Date.parse(server.timestamp) : Date.now(),
+      };
+      onMatchSelect(match, mapped);
+      return;
+    }
+    onMatchSelect(match);
+  };
+
+  const eventKey = DataService.getSelectedEvent();
+  const subtitle = `Rebuilt · ${eventKey ? eventKey.toUpperCase() : 'no event selected'}`;
+  const assignment = `${user.alliance.toUpperCase()} ${user.position}`;
+
   // match labeling handled by shared helper
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4">
-      <div className="max-w-4xl mx-auto">
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <h1 className="text-2xl font-bold text-gray-900 mb-2">Match Schedule</h1>
-          <div className="flex items-center gap-4 text-sm text-gray-600">
-            <span className="flex items-center gap-1">
-              <Users className="w-4 h-4" />
-              {user.username}
-            </span>
-              {onBack && (
-                <div className="ml-auto flex flex-col items-end gap-2">
-                  <button
-                    onClick={() => { if (onPitScouting) onPitScouting(); }}
-                    className="text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-md"
-                  >
-                    Pit Scouting
-                  </button>
-                  <button
-                    onClick={async () => {
-                      if (isRefreshing) return;
-                      setIsRefreshing(true);
-                      try {
-                        // manual refresh: run the canonical full refresh without reloading the page
-                        await performFullRefresh({ reload: false });
-                        // ensure we also refresh any cached server scouting rows the component uses
-                        const data = await fetchServerScouting();
-                        setServerScouting(Array.isArray(data) ? data : []);
-                      } catch (e) {
-                        // eslint-disable-next-line no-console
-                        console.warn('MatchList: manual refresh failed', e);
-                      } finally {
-                        setIsRefreshing(false);
-                      }
-                    }}
-                    disabled={isRefreshing}
-                    aria-busy={isRefreshing}
-                    className="text-sm bg-blue-100 hover:bg-blue-200 px-3 py-1 rounded-md disabled:opacity-60 disabled:cursor-not-allowed flex items-center gap-2"
-                  >
-                    {isRefreshing ? (
-                      <>
-                        <svg className="w-4 h-4 animate-spin text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <circle cx="12" cy="12" r="10" strokeOpacity="0.25"></circle>
-                          <path d="M22 12a10 10 0 0 1-10 10" />
-                        </svg>
-                        <span>Refreshing</span>
-                      </>
-                    ) : (
-                      'Refresh'
-                    )}
-                  </button>
-                  <button
-                    onClick={onBack}
-                    className="text-sm bg-gray-200 hover:bg-gray-300 px-3 py-2 rounded-md"
-                  >
-                    Logout
-                  </button>
-                </div>
-              )}
-            <span className={`px-2 py-1 rounded text-white text-xs font-medium ${
-              user.alliance === 'red' ? 'bg-red-500' : 'bg-blue-500'
-            }`}>
-              {user.alliance.toUpperCase()} {user.position}
-            </span>
-          </div>
-        </div>
+    <div className="cc-root">
+      <ScouterHeader
+        user={user.username}
+        assignment={assignment}
+        alliance={user.alliance === 'blue' ? 'blue' : 'red'}
+        subtitle={subtitle}
+        onRefresh={handleRefresh}
+        onLogout={() => { if (onBack) onBack(); }}
+        action={
+          <button className="cc-header-primary" onClick={() => { if (onPitScouting) onPitScouting(); }}>
+            Pit Scouting
+          </button>
+        }
+      />
 
-        <div className="grid gap-4">
-          {orderedMatches.map((match) => (
+      <section className="cc-page" style={{ padding: '22px 20px 40px', gap: 14 }}>
+        <h1 className="cc-h1 sm">MATCH SCHEDULE</h1>
+
+        {isRefreshing && <div className="cc-banner info">Refreshing…</div>}
+
+        {orderedMatches.map((match) => {
+          const done = isScoutedByUser(match);
+          return (
             <div
               key={match.key}
-              onClick={() => {
-                // attempt to find existing record for this scouter
-                const localScouting = DataService.getScoutingData() || [];
-                const local = localScouting.find((s: any) => s.matchKey === match.key && s.scouter === user.username);
-                if (local) {
-                  onMatchSelect(match, local);
-                  return;
-                }
-                // check server records fetched earlier
-                const server = serverScouting.find((r: any) => (r.match_key === match.key || r.match_key === match.key) && r.scouter_name === user.username);
-                if (server) {
-                  const mapped = {
-                    id: server.id,
-                    matchKey: server.match_key,
-                    teamKey: server.team_key,
-                    scouter: server.scouter_name,
-                    alliance: server.alliance,
-                    position: server.position,
-                    auto: {
-                      ...(server.payload?.auto || { l1: 0, l2: 0, l3: 0, l4: 0, hasAuto: false }),
-                      net: typeof server.payload?.auto?.net === 'number' ? server.payload.auto.net : (server.payload?.auto?.net ? 1 : 0),
-                      prosser: typeof server.payload?.auto?.prosser === 'number' ? server.payload.auto.prosser : (server.payload?.auto?.prosser ? 1 : 0),
-                    },
-                    teleop: {
-                      ...(server.payload?.teleop || { l1: 0, l2: 0, l3: 0, l4: 0 }),
-                      net: typeof server.payload?.teleop?.net === 'number' ? server.payload.teleop.net : (server.payload?.teleop?.net ? 1 : 0),
-                      prosser: typeof server.payload?.teleop?.prosser === 'number' ? server.payload.teleop.prosser : (server.payload?.teleop?.prosser ? 1 : 0),
-                    },
-                    endgame: server.payload?.endgame || { climb: 'none' },
-                    defense: server.payload?.defense || 'none',
-                    timestamp: server.timestamp ? Date.parse(server.timestamp) : Date.now(),
-                  };
-                  onMatchSelect(match, mapped);
-                  return;
-                }
-                onMatchSelect(match);
-              }}
-              className={`bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow cursor-pointer ${isScoutedByUser(match) ? 'opacity-90 border-l-4 border-green-500' : 'border-l-4 border-blue-500'}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => openMatch(match)}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMatch(match); } }}
+              className={`cc-match-card${done ? ' done' : ''}`}
             >
-              <div className="flex justify-between items-start mb-4">
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900 flex items-center">
+              <div className="cc-match-top">
+                <div className="cc-match-id">
+                  <span className="cc-match-name">
                     <span>{readableMatchLabel(match)}</span>
-                    {isScoutedByUser(match) && (
-                      <span title="Scouted" className="ml-3 inline-flex items-center">
-                        <CheckCircle className="w-6 h-6 text-green-500" />
-                      </span>
-                    )}
-                  </h3>
-                  <p className="text-sm text-gray-600 flex items-center gap-1">
-                    <Clock className="w-4 h-4" />
-                    Match {match.match_number}
-                  </p>
+                    {done && <span className="cc-done-tag" title="Scouted">✓ Done</span>}
+                  </span>
+                  <span className="cc-match-sub">◷ Match {match.match_number}</span>
                 </div>
-                <div className="text-right">
-                  <div className={`text-lg font-bold ${user.alliance === 'red' ? 'text-red-600' : 'text-blue-600'}`}>
+                <div className="cc-match-assign">
+                  <span className={`cc-match-team${user.alliance === 'blue' ? ' blue' : ''}`}>
                     Team {getTeamForUser(match)}
-                  </div>
-                  <div className="text-sm text-gray-500">Your assignment</div>
+                  </span>
+                  <span className="cc-match-role">Your assignment</span>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-red-50 p-3 rounded-lg">
-                  <h4 className="text-sm font-medium text-red-700 mb-2">Red Alliance</h4>
-                  <div className="space-y-1">
-                    {match.alliances.red.team_keys.map((teamKey, index) => (
-                      <div
-                        key={teamKey}
-                        className={`text-sm ${
-                          user.alliance === 'red' && user.position === index + 1
-                            ? 'font-bold text-red-800 bg-red-200 px-2 py-1 rounded'
-                            : 'text-red-600'
-                        }`}
-                      >
-                        {index + 1}. {teamKey.replace('frc', '')}
-                      </div>
-                    ))}
-                  </div>
+              <div className="cc-match-grid">
+                <div className="cc-alliance red">
+                  <span className="cc-alliance-title">Red Alliance</span>
+                  {match.alliances.red.team_keys.map((teamKey, index) => (
+                    <span
+                      key={teamKey}
+                      className={`cc-alliance-team${user.alliance === 'red' && user.position === index + 1 ? ' me' : ''}`}
+                    >
+                      {index + 1}. {teamKey.replace('frc', '')}
+                    </span>
+                  ))}
                 </div>
 
-                <div className="bg-blue-50 p-3 rounded-lg">
-                  <h4 className="text-sm font-medium text-blue-700 mb-2">Blue Alliance</h4>
-                  <div className="space-y-1">
-                    {match.alliances.blue.team_keys.map((teamKey, index) => (
-                      <div
-                        key={teamKey}
-                        className={`text-sm ${
-                          user.alliance === 'blue' && user.position === index + 1
-                            ? 'font-bold text-blue-800 bg-blue-200 px-2 py-1 rounded'
-                            : 'text-blue-600'
-                        }`}
-                      >
-                        {index + 1}. {teamKey.replace('frc', '')}
-                      </div>
-                    ))}
-                  </div>
+                <div className="cc-alliance blue">
+                  <span className="cc-alliance-title">Blue Alliance</span>
+                  {match.alliances.blue.team_keys.map((teamKey, index) => (
+                    <span
+                      key={teamKey}
+                      className={`cc-alliance-team${user.alliance === 'blue' && user.position === index + 1 ? ' me' : ''}`}
+                    >
+                      {index + 1}. {teamKey.replace('frc', '')}
+                    </span>
+                  ))}
                 </div>
               </div>
             </div>
-          ))}
-        </div>
+          );
+        })}
 
         {matches.length === 0 && (
-          <div className="text-center py-12">
-            <Clock className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-            <h3 className="text-lg font-medium text-gray-900 mb-2">No matches available</h3>
-            <p className="text-gray-600">Contact your admin to select an event and load matches.</p>
-            {onBack && (
-              <div className="mt-6">
-                <button
-                  onClick={onBack}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-md"
-                >
+          <div className="cc-card">
+            <div className="cc-empty-lg">
+              <span className="cc-empty-mark">◷</span>
+              <h3 className="cc-h1 sm">NO MATCHES AVAILABLE</h3>
+              <p className="cc-lede">Contact your admin to select an event and load matches.</p>
+              {onBack && (
+                <button className="cc-btn-outline" onClick={onBack}>
                   Back to Login
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         )}
-      </div>
+      </section>
     </div>
   );
 }

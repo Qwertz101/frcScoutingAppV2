@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User } from '../types';
-import { Users, Shield } from 'lucide-react';
+import { BoltMark } from './cc/CCChrome';
 import { DataService } from '../services/dataService';
 import supabase from '../services/supabaseClient';
 import { performHardRefresh, performFullRefresh } from '../services/syncService';
@@ -145,90 +145,93 @@ export function LoginPage({ onLogin }: LoginPageProps) {
     });
   };
 
+  const isAdminName = username.toLowerCase() === 'admin6560';
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-900 to-blue-700 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-2xl p-8 w-full max-w-md">
-        <div className="text-center mb-8">
-          <div className="mx-auto w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center mb-4">
-            <Users className="w-8 h-8 text-white" />
+    <div className="cc-root cc-login">
+      <div className="cc-login-inner">
+        <div className="cc-login-brand">
+          <BoltMark />
+          <div className="cc-login-wordmark">
+            <h1>SCOUT 6560</h1>
+            <span>Competition Scouting System</span>
           </div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">FRC Scout</h1>
-          <p className="text-gray-600">Competition Scouting System</p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <div>
-            {showInvalid && (
-              <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
-                <div className="bg-white rounded-lg p-6 w-full max-w-sm">
-                  <h3 className="text-lg font-semibold mb-2">Login error</h3>
-                  <p className="text-gray-600 mb-4">{errorMessage || 'The username you entered is not a registered scouter. Please check with your admin.'}</p>
-                  <div className="flex justify-end">
-                    <button
-                      onClick={() => { setShowInvalid(false); setErrorMessage(''); }}
-                      className="px-3 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700"
-                    >
-                      OK
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-2">
-              Username
-            </label>
+        <form onSubmit={handleSubmit} className="cc-login-card">
+          <label className="cc-field">
+            <span className="cc-login-label">Username</span>
             <input
               type="text"
               id="username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+              className="cc-input"
               disabled={loadingLogin}
               placeholder="Enter your username"
               required
             />
-            {username.toLowerCase() === 'admin6560' && (
-              <div className="mt-3">
-                <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-2">Password</label>
-                <input
-                  type="password"
-                  id="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
-                  disabled={loadingLogin}
-                  placeholder="Admin password"
-                  required
-                />
-              </div>
-            )}
-          </div>
+          </label>
 
-          {/* Admin-specific selectors removed from login form. Admin can log in with username 'admin6560' and manage scouters from the Admin Panel. */}
+          {isAdminName && (
+            <label className="cc-field">
+              <span className="cc-login-label">Password</span>
+              <input
+                type="password"
+                id="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="cc-input"
+                disabled={loadingLogin}
+                placeholder="Admin password"
+                required
+              />
+            </label>
+          )}
 
-          <button
-            type="submit"
-            disabled={loadingLogin}
-            className={`w-full ${loadingLogin ? 'bg-blue-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'} text-white font-semibold py-3 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2`}
-          >
+          <button type="submit" disabled={loadingLogin} className="cc-login-submit">
             {loadingLogin ? (
               <>
-                <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                <span>Logging in...</span>
+                <span className="cc-spinner" />
+                Logging in…
               </>
+            ) : isAdminName ? (
+              'Admin Login'
             ) : (
-              <>
-                {username === 'admin6560' && <Shield className="w-5 h-5" />}
-                {username === 'admin6560' ? 'Admin Login' : 'Start Scouting'}
-              </>
+              'Start Scouting'
             )}
           </button>
-        </form>
-        <div className="mt-4 border-t pt-4">
+
+          <div className="cc-login-rule" />
+
           <ForceRefreshControl />
-        </div>
+        </form>
+
+        <p className="cc-login-foot">FRC Team 6560 · Charging Champions</p>
       </div>
+
+      {showInvalid && (
+        <div className="cc-modal-backdrop">
+          <div className="cc-modal">
+            <h3>LOGIN ERROR</h3>
+            <p>
+              {errorMessage ||
+                'The username you entered is not a registered scouter. Please check with your admin.'}
+            </p>
+            <div className="cc-modal-actions">
+              <button
+                className="cc-btn-primary"
+                onClick={() => {
+                  setShowInvalid(false);
+                  setErrorMessage('');
+                }}
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -242,26 +245,30 @@ function ForceRefreshControl() {
   // local site data and reload so the client boots fresh from server state.
 
   return (
-    <div>
-      <button
-        onClick={() => setShowConfirm(true)}
-        className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-3 rounded-lg transition-colors duration-200"
-      >
-        Force refresh (clear caches)
+    <>
+      <button type="button" onClick={() => setShowConfirm(true)} className="cc-login-secondary">
+        Force refresh · clear caches
       </button>
 
       {showConfirm && (
-        <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-sm">
-            <h3 className="text-lg font-semibold mb-2">Force refresh</h3>
-            <p className="text-gray-600 mb-3">This will unregister service workers and clear cached assets so the app loads the latest code.</p>
-            <p className="text-sm text-gray-600 mb-4">The app will automatically backup and clean local data: valid rows are preserved, malformed entries are removed.</p>
-            {statusMessage && (
-              <div className="mb-3 text-sm text-gray-700">{statusMessage}</div>
-            )}
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setShowConfirm(false)} className="px-3 py-2 rounded bg-gray-200 hover:bg-gray-300">Cancel</button>
+        <div className="cc-modal-backdrop">
+          <div className="cc-modal">
+            <h3>FORCE REFRESH</h3>
+            <p>
+              This will unregister service workers and clear cached assets so the app loads the
+              latest code.
+            </p>
+            <p>
+              The app will automatically backup and clean local data: valid rows are preserved,
+              malformed entries are removed.
+            </p>
+            {statusMessage && <div className="cc-banner info">{statusMessage}</div>}
+            <div className="cc-modal-actions">
+              <button type="button" onClick={() => setShowConfirm(false)} className="cc-btn-outline">
+                Cancel
+              </button>
               <button
+                type="button"
                 onClick={async () => {
                   try {
                     setWorking(true);
@@ -277,14 +284,14 @@ function ForceRefreshControl() {
                   }
                 }}
                 disabled={working}
-                className="px-3 py-2 rounded bg-red-800 text-white hover:bg-red-900"
+                className="cc-btn-danger"
               >
-                {working ? 'Working...' : 'Hard refresh'}
+                {working ? 'Working…' : 'Hard refresh'}
               </button>
             </div>
           </div>
         </div>
       )}
-    </div>
+    </>
   );
 }

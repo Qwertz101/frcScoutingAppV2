@@ -4,7 +4,8 @@ import { migrateLocalToServer } from './syncService';
 import { TeamAggregate, synthesizeAll } from '../utils/synthesizeMatches';
 
 /**
- * Import a team-stats CSV produced by DataAnalysis' "Export CSV" button.
+ * Import a team-stats CSV produced by `statsExport.ts` ("Export stats CSV" in
+ * the Scout workspace header, previously the retired Data Analysis screen).
  *
  * Format note: the exporter writes `Auto Climb (max, %)` and its values as
  * `0, 0.0%` — an unquoted comma *inside* a logical column. So a plain

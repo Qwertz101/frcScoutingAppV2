@@ -1,7 +1,9 @@
-import React, { useMemo, useState, useEffect, useRef } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { DataService } from '../services/dataService';
 import { fetchPitData, listPitImages } from '../services/syncService';
-import { ArrowLeft, Camera } from 'lucide-react';
+import { User } from '../types';
+import { ScouterHeader } from './cc/CCChrome';
+import '../styles/cc.css';
 
 type PitForm = {
   underTrench: boolean;
@@ -21,7 +23,14 @@ const emptyForm: PitForm = {
   autoTypes: { outpost_side: false, center: false, depot_side: false },
 };
 
-export function PitScouting({ onBack }: { onBack: () => void }) {
+interface PitScoutingProps {
+  onBack: () => void;
+  /** Optional: drives the shared scouter header badge. */
+  user?: User;
+  onLogout?: () => void;
+}
+
+export function PitScouting({ onBack, user, onLogout }: PitScoutingProps) {
   const matches = (DataService.getMatches() || []).filter((m: any) => !m.deletedAt);
   const [manualTeams, setManualTeams] = useState(() => DataService.getTeams());
   const [serverPitTeams, setServerPitTeams] = useState<string[]>([]);
@@ -42,6 +51,16 @@ export function PitScouting({ onBack }: { onBack: () => void }) {
 
   const [newTeamNumber, setNewTeamNumber] = useState<string>('');
   const [newTeamName, setNewTeamName] = useState<string>('');
+
+  const loadServerPitTeams = async () => {
+    try {
+      const rows: any[] = await fetchPitData();
+      const keys = (rows || []).map(r => r.team_key).filter(Boolean);
+      setServerPitTeams(keys);
+    } catch (e) {
+      // ignore fetch errors
+    }
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -107,225 +126,344 @@ export function PitScouting({ onBack }: { onBack: () => void }) {
     setSelectedTeam(null);
   };
 
+  const savedPit = DataService.getPitData() || {};
+  const eventKey = DataService.getSelectedEvent();
+  const subtitle = `Pit Scouting · ${eventKey ? eventKey.toUpperCase() : 'no event selected'}`;
+  const assignment = user ? `${user.alliance.toUpperCase()} ${user.position}` : 'PIT';
+  const alliance: 'red' | 'blue' = user?.alliance === 'blue' ? 'blue' : 'red';
+
   return (
-    <div className="min-h-screen bg-gray-50 p-4">
-      <div className="max-w-4xl mx-auto">
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6 flex items-center justify-between">
-          <h1 className="text-2xl font-bold">Pit Scouting</h1>
-          <div className="flex items-center gap-2">
-            <button onClick={onBack} className="px-3 py-2 rounded bg-gray-200 hover:bg-gray-300">Back to Matches</button>
+    <div className="cc-root">
+      <ScouterHeader
+        user={user?.username || 'Scouter'}
+        assignment={assignment}
+        alliance={alliance}
+        subtitle={subtitle}
+        onRefresh={() => { setManualTeams(DataService.getTeams()); loadServerPitTeams(); }}
+        onLogout={() => { if (onLogout) onLogout(); else onBack(); }}
+        action={
+          <button className="cc-header-ghost" onClick={onBack}>
+            Back to Matches
+          </button>
+        }
+      />
+
+      {!selectedTeam ? (
+        <section className="cc-page" style={{ padding: '22px 20px 40px', gap: 16 }}>
+          <h1 className="cc-h1 sm">PIT SCOUTING</h1>
+
+          <div className="cc-pit-bar">
+            <input
+              className="cc-input"
+              value={newTeamNumber}
+              onChange={(e) => setNewTeamNumber(e.target.value)}
+              placeholder="Team number (e.g. 254)"
+            />
+            <input
+              className="cc-input"
+              value={newTeamName}
+              onChange={(e) => setNewTeamName(e.target.value)}
+              placeholder="Nickname (optional)"
+            />
+            <button
+              className="cc-btn-grad"
+              style={{ padding: '11px 20px', fontSize: 12 }}
+              onClick={() => {
+                const raw = newTeamNumber.trim();
+                if (!raw) return;
+                const key = raw.startsWith('frc') ? raw : `frc${raw}`;
+                DataService.addTeam(key, newTeamName.trim() || undefined);
+                // reset inputs and refresh by forcing state change
+                setNewTeamNumber(''); setNewTeamName('');
+                setManualTeams(DataService.getTeams());
+                // select the newly added team immediately for quick scouting
+                setSelectedTeam(key);
+              }}
+            >
+              Add Team
+            </button>
+            {manualTeams.length > 0 && (
+              <div className="cc-pit-note">
+                Manual teams: {manualTeams.map(t => t.teamKey.replace(/^frc/, '')).join(', ')}
+              </div>
+            )}
           </div>
-        </div>
 
-        {!selectedTeam ? (
-          <>
-            <div className="mb-4 p-4 bg-white rounded shadow">
-              <div className="flex gap-2 items-center">
-                <input value={newTeamNumber} onChange={(e) => setNewTeamNumber(e.target.value)} placeholder="Team number (e.g. 254)" className="border rounded p-2" />
-                <input value={newTeamName} onChange={(e) => setNewTeamName(e.target.value)} placeholder="Nickname (optional)" className="border rounded p-2" />
-                <button onClick={() => {
-                  const raw = newTeamNumber.trim();
-                  if (!raw) return;
-                  const key = raw.startsWith('frc') ? raw : `frc${raw}`;
-                  DataService.addTeam(key, newTeamName.trim() || undefined);
-                  // reset inputs and refresh by forcing state change
-                  setNewTeamNumber(''); setNewTeamName('');
-                  setManualTeams(DataService.getTeams());
-                  // select the newly added team immediately for quick scouting
-                  setSelectedTeam(key);
-                }} className="px-3 py-2 rounded bg-blue-600 text-white">Add Team</button>
-              </div>
-              {manualTeams.length > 0 && (
-                <div className="mt-3 text-sm text-gray-600">Manual teams: {manualTeams.map(t => t.teamKey.replace(/^frc/, '')).join(', ')}</div>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {teams.map(t => (
-                <div key={t} className="bg-white p-4 rounded shadow hover:shadow-md text-left flex items-center justify-between">
-                  <button onClick={() => setSelectedTeam(t)} className="text-left w-full">
-                    <div className="text-lg font-semibold">{t.replace(/^frc/, '')}</div>
-                    <div className="text-xs text-gray-500">
-                      {manualTeams.find(mt => mt.teamKey === t)?.name || ''}
-                    </div>
-                  </button>
-                  {manualTeams.find(mt => mt.teamKey === t) && (
-                    <button onClick={() => { DataService.removeTeam(t); setManualTeams(DataService.getTeams()); setSelectedTeam(null); }} title="Remove manual team" className="ml-2 text-red-600">✕</button>
-                  )}
-                </div>
-              ))}
-            </div>
-          </>
-        ) : (
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <button onClick={() => setSelectedTeam(null)} className="p-2 rounded bg-gray-100 hover:bg-gray-200">
-                  <ArrowLeft className="w-4 h-4" />
-                </button>
-                <h2 className="text-xl font-bold">Team {selectedTeam.replace(/^frc/, '')} — Pit Scouting</h2>
-              </div>
-              <div className="flex items-center gap-2">
-                <button onClick={() => { setForm(emptyForm); }} className="px-3 py-2 rounded bg-yellow-100 hover:bg-yellow-200">Reset</button>
-                <button onClick={save} className="px-3 py-2 rounded bg-green-600 text-white hover:bg-green-700">Save</button>
+          {teams.length === 0 ? (
+            <div className="cc-card">
+              <div className="cc-empty-lg">
+                <span className="cc-empty-mark">◈</span>
+                <p className="cc-lede">No teams yet — add one above or load an event's matches.</p>
               </div>
             </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="p-4 border rounded">
-                <label className="block font-medium mb-2">Can the robot go under the trench?</label>
-                <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-2"><input type="radio" name="underTrench" checked={form.underTrench === true} onChange={() => setForm(f => ({ ...f, underTrench: true }))} /> Yes</label>
-                  <label className="flex items-center gap-2"><input type="radio" name="underTrench" checked={form.underTrench === false} onChange={() => setForm(f => ({ ...f, underTrench: false }))} /> No</label>
-                </div>
-              </div>
-
-              <div className="p-4 border rounded">
-                <label className="block font-medium mb-2">What level can the robot climb to?</label>
-                <select value={form.climbLevel} onChange={(e) => setForm(f => ({ ...f, climbLevel: e.target.value as any }))} className="w-full border rounded p-2">
-                  <option value="cannot">Cannot climb</option>
-                  <option value="level1">Level 1</option>
-                  <option value="level2">Level 2</option>
-                  <option value="level3">Level 3</option>
-                </select>
-              </div>
-
-              <div className="p-4 border rounded">
-                <label className="block font-medium mb-2">Positions the robot can climb from (select all that apply)</label>
-                <div className="flex flex-col gap-2">
-                  <label className="flex items-center gap-2"><input type="checkbox" checked={form.climbPositions.side} onChange={(e) => setForm(f => ({ ...f, climbPositions: { ...f.climbPositions, side: e.target.checked } }))} /> Side</label>
-                  <label className="flex items-center gap-2"><input type="checkbox" checked={form.climbPositions.pillar} onChange={(e) => setForm(f => ({ ...f, climbPositions: { ...f.climbPositions, pillar: e.target.checked } }))} /> Pillar</label>
-                  <label className="flex items-center gap-2"><input type="checkbox" checked={form.climbPositions.center} onChange={(e) => setForm(f => ({ ...f, climbPositions: { ...f.climbPositions, center: e.target.checked } }))} /> Center</label>
-                </div>
-              </div>
-
-              <div className="p-4 border rounded">
-                <label className="block font-medium mb-2">Does the robot have an auto?</label>
-                <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-2"><input type="radio" name="hasAuto" checked={form.hasAuto === true} onChange={() => setForm(f => ({ ...f, hasAuto: true }))} /> Yes</label>
-                  <label className="flex items-center gap-2"><input type="radio" name="hasAuto" checked={form.hasAuto === false} onChange={() => setForm(f => ({ ...f, hasAuto: false }))} /> No</label>
-                </div>
-              </div>
-
-              <div className="p-4 border rounded">
-                <label className="block font-medium mb-2">Can the robot climb in auto?</label>
-                <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-2"><input type="radio" name="canClimbInAuto" checked={form.canClimbInAuto === true} onChange={() => setForm(f => ({ ...f, canClimbInAuto: true }))} /> Yes</label>
-                  <label className="flex items-center gap-2"><input type="radio" name="canClimbInAuto" checked={form.canClimbInAuto === false} onChange={() => setForm(f => ({ ...f, canClimbInAuto: false }))} /> No</label>
-                </div>
-              </div>
-
-              <div className="p-4 border rounded md:col-span-2">
-                <label className="block font-medium mb-2">Type of auto (select all that apply)</label>
-                <div className="flex flex-col gap-2">
-                  <label className="flex items-center gap-2"><input type="checkbox" checked={form.autoTypes.outpost_side} onChange={(e) => setForm(f => ({ ...f, autoTypes: { ...f.autoTypes, outpost_side: e.target.checked } }))} /> Outpost side</label>
-                  <label className="flex items-center gap-2"><input type="checkbox" checked={form.autoTypes.center} onChange={(e) => setForm(f => ({ ...f, autoTypes: { ...f.autoTypes, center: e.target.checked } }))} /> Center</label>
-                  <label className="flex items-center gap-2"><input type="checkbox" checked={form.autoTypes.depot_side} onChange={(e) => setForm(f => ({ ...f, autoTypes: { ...f.autoTypes, depot_side: e.target.checked } }))} /> Depot side</label>
-                </div>
-              </div>
-
-              <div className="p-4 border rounded md:col-span-2">
-                <div className="flex items-center justify-between mb-2">
-                  <label className="block font-medium">Robot Photos</label>
-                  <div className="flex items-center gap-2">
-                    <button title="Open camera" onClick={() => setShowCamera(true)} className="p-2 rounded bg-gray-100 hover:bg-gray-200">
-                      <Camera className="w-5 h-5" />
-                    </button>
-                    <button title="Add from device" onClick={() => fileInputRef.current?.click()} className="p-2 rounded bg-gray-100 hover:bg-gray-200">Add</button>
-                    <input ref={fileInputRef} type="file" accept="image/*" capture="environment" multiple className="hidden" onChange={(e) => {
-                      const files = e.target.files; if (!files) return; const out: string[] = [];
-                      Array.from(files).forEach(f => {
-                        const reader = new FileReader();
-                        reader.onload = () => {
-                          if (typeof reader.result === 'string') {
-                            setImages(prev => {
-                              const next = [...prev, reader.result as string];
-                              return next;
-                            });
-                            // persist immediately
-                            try { if (selectedTeam) DataService.savePitImages(selectedTeam, [...DataService.getPitImages(selectedTeam), reader.result as string]); } catch (e) {}
-                          }
-                        };
-                        reader.readAsDataURL(f);
-                      });
-                      // clear input to allow re-selecting same file
-                      e.currentTarget.value = '';
-                    }} />
+          ) : (
+            <div className="cc-team-grid">
+              {teams.map(t => {
+                const manual = manualTeams.find(mt => mt.teamKey === t);
+                const done = !!savedPit[t];
+                return (
+                  <div
+                    key={t}
+                    role="button"
+                    tabIndex={0}
+                    className="cc-team-card"
+                    onClick={() => setSelectedTeam(t)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedTeam(t); } }}
+                  >
+                    <span className="cc-team-id">
+                      <span className="cc-team-num">{t.replace(/^frc/, '')}</span>
+                      {manual?.name && <span className="cc-team-name">{manual.name}</span>}
+                    </span>
+                    <span className="cc-team-meta">
+                      {done && <span className="cc-done-tag">✓ Done</span>}
+                      {manual && (
+                        <button
+                          className="cc-team-del"
+                          title="Remove manual team"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            DataService.removeTeam(t);
+                            setManualTeams(DataService.getTeams());
+                            setSelectedTeam(null);
+                          }}
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </span>
                   </div>
-                </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      ) : (
+        <section className="cc-page" style={{ padding: '22px 20px 40px', gap: 16 }}>
+          <div className="cc-actionbar">
+            <div className="cc-actionbar-left">
+              <button className="cc-btn-icon" onClick={() => setSelectedTeam(null)} title="Back to teams">←</button>
+              <h1 className="cc-actionbar-title">TEAM {selectedTeam.replace(/^frc/, '')} — PIT SCOUTING</h1>
+            </div>
+            <div className="cc-actionbar-actions">
+              <button className="cc-btn-warn" onClick={() => { setForm(emptyForm); }}>Reset</button>
+              <button className="cc-btn-save" onClick={save}>Save</button>
+            </div>
+          </div>
 
-                <div className="flex flex-wrap gap-3">
+          <div className="cc-q-grid">
+            <div className="cc-q-card">
+              <span className="cc-q-title">Can the robot go under the trench?</span>
+              <div className="cc-q-radios">
+                <label className="cc-check">
+                  <input type="radio" name="underTrench" checked={form.underTrench === true} onChange={() => setForm(f => ({ ...f, underTrench: true }))} />
+                  <span>Yes</span>
+                </label>
+                <label className="cc-check">
+                  <input type="radio" name="underTrench" checked={form.underTrench === false} onChange={() => setForm(f => ({ ...f, underTrench: false }))} />
+                  <span>No</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="cc-q-card">
+              <span className="cc-q-title">What level can the robot climb to?</span>
+              <select
+                className="cc-select"
+                value={form.climbLevel}
+                onChange={(e) => setForm(f => ({ ...f, climbLevel: e.target.value as any }))}
+              >
+                <option value="cannot">Cannot climb</option>
+                <option value="level1">Level 1</option>
+                <option value="level2">Level 2</option>
+                <option value="level3">Level 3</option>
+              </select>
+            </div>
+
+            <div className="cc-q-card">
+              <span className="cc-q-title">Positions the robot can climb from (select all that apply)</span>
+              <div className="cc-q-checks">
+                <label className="cc-check">
+                  <input type="checkbox" checked={form.climbPositions.side} onChange={(e) => setForm(f => ({ ...f, climbPositions: { ...f.climbPositions, side: e.target.checked } }))} />
+                  <span>Side</span>
+                </label>
+                <label className="cc-check">
+                  <input type="checkbox" checked={form.climbPositions.pillar} onChange={(e) => setForm(f => ({ ...f, climbPositions: { ...f.climbPositions, pillar: e.target.checked } }))} />
+                  <span>Pillar</span>
+                </label>
+                <label className="cc-check">
+                  <input type="checkbox" checked={form.climbPositions.center} onChange={(e) => setForm(f => ({ ...f, climbPositions: { ...f.climbPositions, center: e.target.checked } }))} />
+                  <span>Center</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="cc-q-card">
+              <span className="cc-q-title">Does the robot have an auto?</span>
+              <div className="cc-q-radios">
+                <label className="cc-check">
+                  <input type="radio" name="hasAuto" checked={form.hasAuto === true} onChange={() => setForm(f => ({ ...f, hasAuto: true }))} />
+                  <span>Yes</span>
+                </label>
+                <label className="cc-check">
+                  <input type="radio" name="hasAuto" checked={form.hasAuto === false} onChange={() => setForm(f => ({ ...f, hasAuto: false }))} />
+                  <span>No</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="cc-q-card">
+              <span className="cc-q-title">Can the robot climb in auto?</span>
+              <div className="cc-q-radios">
+                <label className="cc-check">
+                  <input type="radio" name="canClimbInAuto" checked={form.canClimbInAuto === true} onChange={() => setForm(f => ({ ...f, canClimbInAuto: true }))} />
+                  <span>Yes</span>
+                </label>
+                <label className="cc-check">
+                  <input type="radio" name="canClimbInAuto" checked={form.canClimbInAuto === false} onChange={() => setForm(f => ({ ...f, canClimbInAuto: false }))} />
+                  <span>No</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="cc-q-card">
+              <span className="cc-q-title">Type of auto (select all that apply)</span>
+              <div className="cc-q-checks">
+                <label className="cc-check">
+                  <input type="checkbox" checked={form.autoTypes.outpost_side} onChange={(e) => setForm(f => ({ ...f, autoTypes: { ...f.autoTypes, outpost_side: e.target.checked } }))} />
+                  <span>Outpost side</span>
+                </label>
+                <label className="cc-check">
+                  <input type="checkbox" checked={form.autoTypes.center} onChange={(e) => setForm(f => ({ ...f, autoTypes: { ...f.autoTypes, center: e.target.checked } }))} />
+                  <span>Center</span>
+                </label>
+                <label className="cc-check">
+                  <input type="checkbox" checked={form.autoTypes.depot_side} onChange={(e) => setForm(f => ({ ...f, autoTypes: { ...f.autoTypes, depot_side: e.target.checked } }))} />
+                  <span>Depot side</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="cc-q-card wide split">
+              <span className="cc-q-title">Robot Photos</span>
+              <div className="cc-photo-actions">
+                <button className="cc-btn-icon" title="Open camera" onClick={() => setShowCamera(true)}>◎</button>
+                <button className="cc-btn-outline" title="Add from device" onClick={() => fileInputRef.current?.click()}>Add</button>
+                <input ref={fileInputRef} type="file" accept="image/*" capture="environment" multiple style={{ display: 'none' }} onChange={(e) => {
+                  const files = e.target.files; if (!files) return;
+                  Array.from(files).forEach(f => {
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      if (typeof reader.result === 'string') {
+                        setImages(prev => {
+                          const next = [...prev, reader.result as string];
+                          return next;
+                        });
+                        // persist immediately
+                        try { if (selectedTeam) DataService.savePitImages(selectedTeam, [...DataService.getPitImages(selectedTeam), reader.result as string]); } catch (e) {}
+                      }
+                    };
+                    reader.readAsDataURL(f);
+                  });
+                  // clear input to allow re-selecting same file
+                  e.currentTarget.value = '';
+                }} />
+              </div>
+
+              {images.length > 0 && (
+                <div className="cc-photo-row">
                   {images.map((src, idx) => (
-                    <div key={idx} className="relative w-28 h-20 bg-gray-100 rounded overflow-hidden">
-                      <img src={src} alt={`robot-${idx}`} className="object-cover w-full h-full" />
-                      <button onClick={() => { setImages(prev => { const n = [...prev]; n.splice(idx, 1); if (selectedTeam) DataService.savePitImages(selectedTeam, n); return n; }); }} className="absolute top-1 right-1 bg-red-600 text-white rounded px-1 text-xs">Del</button>
+                    <div key={idx} className="cc-thumb">
+                      <img src={src} alt={`robot-${idx}`} />
+                      <button
+                        className="cc-thumb-del"
+                        onClick={() => { setImages(prev => { const n = [...prev]; n.splice(idx, 1); if (selectedTeam) DataService.savePitImages(selectedTeam, n); return n; }); }}
+                      >
+                        Del
+                      </button>
                     </div>
                   ))}
                 </div>
-              </div>
-
-              <div className="p-4 border rounded md:col-span-2">
-                <label className="block font-medium mb-2">Scouter Notes</label>
-                <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} className="w-full border rounded p-2" placeholder="Anything notable about the robot (drive, quirks, components, etc.)"></textarea>
-              </div>
-
-              {showCamera && (
-                <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4">
-                  <div className="bg-white rounded-lg p-4 max-w-lg w-full">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="font-medium">Camera</div>
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => {
-                          // stop stream
-                          if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
-                          setShowCamera(false);
-                        }} className="px-2 py-1 rounded bg-gray-100">Close</button>
-                      </div>
-                    </div>
-                    <div className="w-full">
-                      <video ref={videoRef} className="w-full h-64 bg-black rounded" autoPlay playsInline />
-                    </div>
-                    <div className="flex items-center gap-2 mt-3">
-                      <button onClick={async () => {
-                        try {
-                          if (!streamRef.current) {
-                            const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
-                            streamRef.current = s;
-                            if (videoRef.current) videoRef.current.srcObject = s;
-                            // wait a short moment for camera to warm
-                            await new Promise(r => setTimeout(r, 200));
-                          }
-                          // capture frame
-                          const v = videoRef.current;
-                          if (!v) return;
-                          const canvas = document.createElement('canvas');
-                          canvas.width = v.videoWidth || 1280;
-                          canvas.height = v.videoHeight || 720;
-                          const ctx = canvas.getContext('2d');
-                          if (!ctx) return;
-                          ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
-                          const data = canvas.toDataURL('image/jpeg', 0.8);
-                          setImages(prev => {
-                            const next = [...prev, data];
-                            try { if (selectedTeam) DataService.savePitImages(selectedTeam, next); } catch (e) {}
-                            return next;
-                          });
-                        } catch (e) {
-                          // ignore
-                        }
-                      }} className="px-3 py-2 rounded bg-blue-600 text-white">Take Photo</button>
-                      <button onClick={() => {
-                        // stop stream but keep modal open
-                        if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
-                      }} className="px-3 py-2 rounded bg-gray-200">Stop Camera</button>
-                    </div>
-                  </div>
-                </div>
               )}
             </div>
+
+            <div className="cc-q-card wide">
+              <span className="cc-q-title">Scouter Notes</span>
+              <textarea
+                className="cc-textarea"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                rows={4}
+                placeholder="Anything notable about the robot (drive, quirks, components, etc.)"
+              />
+            </div>
           </div>
-        )}
-      </div>
+
+          {showCamera && (
+            <div className="cc-modal-backdrop">
+              <div className="cc-modal" style={{ maxWidth: 520 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                  <h3>CAMERA</h3>
+                  <button
+                    className="cc-btn-outline"
+                    onClick={() => {
+                      // stop stream
+                      if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
+                      setShowCamera(false);
+                    }}
+                  >
+                    Close
+                  </button>
+                </div>
+                <video ref={videoRef} className="cc-camera-video" autoPlay playsInline />
+                <div className="cc-modal-actions" style={{ justifyContent: 'flex-start' }}>
+                  <button
+                    className="cc-btn-primary"
+                    onClick={async () => {
+                      try {
+                        if (!streamRef.current) {
+                          const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+                          streamRef.current = s;
+                          if (videoRef.current) videoRef.current.srcObject = s;
+                          // wait a short moment for camera to warm
+                          await new Promise(r => setTimeout(r, 200));
+                        }
+                        // capture frame
+                        const v = videoRef.current;
+                        if (!v) return;
+                        const canvas = document.createElement('canvas');
+                        canvas.width = v.videoWidth || 1280;
+                        canvas.height = v.videoHeight || 720;
+                        const ctx = canvas.getContext('2d');
+                        if (!ctx) return;
+                        ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+                        const data = canvas.toDataURL('image/jpeg', 0.8);
+                        setImages(prev => {
+                          const next = [...prev, data];
+                          try { if (selectedTeam) DataService.savePitImages(selectedTeam, next); } catch (e) {}
+                          return next;
+                        });
+                      } catch (e) {
+                        // ignore
+                      }
+                    }}
+                  >
+                    Take Photo
+                  </button>
+                  <button
+                    className="cc-btn-outline"
+                    onClick={() => {
+                      // stop stream but keep modal open
+                      if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
+                    }}
+                  >
+                    Stop Camera
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
     </div>
   );
 }

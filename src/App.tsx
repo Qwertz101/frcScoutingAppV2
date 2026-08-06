@@ -209,7 +209,7 @@ function App() {
 
   if (currentState === 'pit' && user) {
     return (
-      <PitScouting onBack={() => setCurrentState('matches')} />
+      <PitScouting onBack={() => setCurrentState('matches')} user={user} onLogout={handleLogout} />
     );
   }
 
