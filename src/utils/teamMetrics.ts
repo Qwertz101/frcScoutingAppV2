@@ -1,4 +1,5 @@
-import { ScoutingData } from '../types';
+import { MATCH_LEN, ScoutingData, TimelineScoutingData } from '../types';
+import { BpsReport, actionTotals, matchPointsFromTimeline } from '../services/bps';
 import {
   matchPointsFor,
   autoFuelOf,
@@ -7,6 +8,7 @@ import {
   autoClimbLevel,
   teleopClimbLevel,
   robotDiedIn,
+  SCORING,
 } from './scoring';
 
 /**
@@ -15,7 +17,35 @@ import {
  * Every distribution here (median, IQR band, floor/ceiling, low outliers,
  * dead-robot marks) is computed from actual per-match scouting rows rather
  * than reconstructed from season averages.
+ *
+ * DUAL SOURCE
+ * ===========
+ * There are two independent scouting models in the app and both must keep
+ * working, because the 2026 season was scouted entirely with the first one:
+ *
+ *   legacy — a `ScoutingData` row per scouter per match (fuel counts, climb
+ *            level, defense rating), scored by `utils/scoring.ts`. It has no
+ *            CV stream and never will, so it can never produce a BPS value.
+ *   bps    — a `TimelineScoutingData` action timeline fused with a `CvMatchLog`
+ *            through `services/bps`, which solves a points-per-second rate per
+ *            robot and multiplies it by the seconds that robot was flagged
+ *            scoring.
+ *
+ * The choice is made PER MATCH, not per team: a match uses the BPS path when
+ * this team has a timeline for it *and* the solver actually fused that match
+ * (it appears in `report.windows`, which requires a CV log). Everything else
+ * falls back to legacy. A team may therefore be `'legacy'`, `'bps'` or
+ * `'mixed'` — `TeamMetrics.source` says which, and every screen labels it.
+ *
+ * Crucially, all the distribution statistics below (mean, median, IQR, floor,
+ * ceiling, outliers, consistency, deaths) are computed over the COMBINED
+ * per-match series afterwards, exactly as before. With no timelines and no CV
+ * logs the BPS branch contributes nothing and the output is bit-identical to
+ * the legacy-only implementation.
  */
+
+/** Which model produced a number. */
+export type MetricSource = 'legacy' | 'bps' | 'mixed';
 
 export interface TeamMatchPoint {
   matchKey: string;
@@ -30,6 +60,19 @@ export interface TeamMatchPoint {
   died: boolean;
   /** How many scouters contributed to this match's numbers. */
   scouters: number;
+  /**
+   * Which model produced `points` for this single match.
+   *
+   * On a BPS match `autoFuel`/`teleopFuel` hold auto and teleop POINTS rather
+   * than fuel counts — the solver attributes scoreboard points, and the two
+   * fields are the closest existing home for that split.
+   */
+  source: 'legacy' | 'bps';
+  /** Seconds in each action. BPS matches only; 0 on legacy matches. */
+  shootSeconds: number;
+  passSeconds: number;
+  defSeconds: number;
+  oofSeconds: number;
 }
 
 export interface TeamMetrics {
@@ -79,6 +122,23 @@ export interface TeamMetrics {
   /** Average defense rating on a 0–4 scale (0 = never played defense). */
   defenseAvg: number;
   avgDefenseSeconds: number;
+
+  /* ---- BPS path (all 0 for a legacy-only team) ---- */
+
+  /** Solved points per second, whole match. */
+  bps: number;
+  autoBps: number;
+  teleopBps: number;
+  /** Solver windows this team appeared in. Low counts mean a shaky estimate. */
+  bpsWindows: number;
+  /** Total seconds flagged SHOOTING across this team's timelines. */
+  scoringSeconds: number;
+  passSeconds: number;
+  defSeconds: number;
+  oofSeconds: number;
+  /** Where this team's per-match points came from. */
+  source: MetricSource;
+  hasBps: boolean;
 }
 
 const sum = (arr: number[]) => arr.reduce((s, v) => s + v, 0);
@@ -140,7 +200,79 @@ function collapseMatch(matchKey: string, entries: ScoutingData[]): TeamMatchPoin
     climbLevel: medianClimb,
     died: majority(robotDiedIn),
     scouters: entries.length,
+    source: 'legacy',
+    shootSeconds: 0,
+    passSeconds: 0,
+    defSeconds: 0,
+    oofSeconds: 0,
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * BPS path
+ * ------------------------------------------------------------------ */
+
+/**
+ * Collapse one team's timelines for one match into the same TeamMatchPoint
+ * shape the legacy path produces, so every downstream statistic is unchanged.
+ *
+ * Concept mapping (see the module header for why this is per match):
+ *   points     ← solved rate × seconds flagged shooting, auto and teleop apart
+ *   autoFuel   ← AUTO points   (a points figure, not a fuel count)
+ *   teleopFuel ← TELEOP points (likewise)
+ *   climbLevel ← climb === 'climbed' ? 1 : 0. The timeline records whether the
+ *                robot climbed, never which level, so level 1 is assumed.
+ *   towerPoints← an ESTIMATE from that climb, deliberately NOT added into
+ *                `points`: the CV scoreboard the solver fits already contains
+ *                the climb, so counting it again would double it. The field
+ *                exists so the Traversal RP forecast keeps working.
+ *   died       ← the match contains an `oof` segment
+ *   autoClimbed← always false; the timeline model does not distinguish an auto
+ *                climb from a teleop one. Deliberately unmapped.
+ */
+function collapseBpsMatch(
+  matchKey: string,
+  timelines: TimelineScoutingData[],
+  report: BpsReport,
+  teamKey: string
+): TeamMatchPoint {
+  const { label, number } = matchLabel(matchKey);
+  const rates = report.byTeam[teamKey];
+  const pts = timelines.map((t) => matchPointsFromTimeline(t, rates));
+  const totals = timelines.map(actionTotals);
+
+  const climbed =
+    timelines.filter((t) => t.climb === 'climbed').length / timelines.length >= 0.5;
+  const oof = mean(totals.map((t) => t.oof ?? 0));
+
+  return {
+    matchKey,
+    label,
+    matchNumber: number,
+    points: Math.round(mean(pts.map((p) => p.total))),
+    autoFuel: round2(mean(pts.map((p) => p.auto))),
+    teleopFuel: round2(mean(pts.map((p) => p.teleop))),
+    towerPoints: climbed ? SCORING.tower.teleop.level1 : 0,
+    autoClimbed: false,
+    climbLevel: climbed ? 1 : 0,
+    died: oof > 0,
+    scouters: timelines.length,
+    source: 'bps',
+    shootSeconds: round2(mean(totals.map((t) => t.shoot ?? 0))),
+    passSeconds: round2(mean(totals.map((t) => t.pass ?? 0))),
+    defSeconds: round2(mean(totals.map((t) => t.def ?? 0))),
+    oofSeconds: round2(oof),
+  };
+}
+
+/**
+ * A 0–4 defense rating from time spent on contact defense, so BPS teams land
+ * on the same scale as the legacy `none/bad/ok/great` picker. Half the match
+ * or more on defense reads as a full 4; nothing at all reads as 0.
+ */
+function defenseRatingFromSeconds(secondsPerMatch: number): number {
+  if (secondsPerMatch <= 0) return 0;
+  return round2(Math.min(4, (secondsPerMatch / (MATCH_LEN / 2)) * 4));
 }
 
 function emptyMetrics(teamKey: string, matchesScheduled: number): TeamMetrics {
@@ -176,16 +308,59 @@ function emptyMetrics(teamKey: string, matchesScheduled: number): TeamMetrics {
     deathRate: 0,
     defenseAvg: 0,
     avgDefenseSeconds: 0,
+    bps: 0,
+    autoBps: 0,
+    teleopBps: 0,
+    bpsWindows: 0,
+    scoringSeconds: 0,
+    passSeconds: 0,
+    defSeconds: 0,
+    oofSeconds: 0,
+    source: 'legacy',
+    hasBps: false,
   };
 }
 
-/** Build metrics for a single team from its scouting entries. */
+/** The extra BPS stream for one team, if any. */
+export interface TeamBpsInput {
+  /** This team's action timelines, across every match. */
+  timelines: TimelineScoutingData[];
+  /** The one solved report for the whole event. */
+  report: BpsReport | null;
+}
+
+/**
+ * Build metrics for a single team.
+ *
+ * `bpsInput` is optional. Omitting it — or passing empty timelines / a null
+ * report — makes this function behave exactly as the legacy-only version did.
+ */
 export function buildTeamMetrics(
   teamKey: string,
   entries: ScoutingData[],
-  matchesScheduled = 0
+  matchesScheduled = 0,
+  bpsInput?: TeamBpsInput
 ): TeamMetrics {
-  if (!entries.length) return emptyMetrics(teamKey, matchesScheduled);
+  const report = bpsInput?.report ?? null;
+  const teamTimelines = bpsInput?.timelines ?? [];
+
+  // Only matches the solver actually fused (timeline + CV log) can be scored
+  // by the BPS path; a timeline with no CV log for its match stays legacy.
+  const solvedMatches = report ? new Set(report.windows.map((w) => w.matchKey)) : new Set<string>();
+
+  const bpsByMatch: Record<string, TimelineScoutingData[]> = {};
+  if (report) {
+    teamTimelines.forEach((t) => {
+      if (!solvedMatches.has(t.matchKey)) return;
+      bpsByMatch[t.matchKey] = bpsByMatch[t.matchKey] || [];
+      bpsByMatch[t.matchKey].push(t);
+    });
+  }
+  const bpsMatchKeys = Object.keys(bpsByMatch);
+
+  if (!entries.length && !bpsMatchKeys.length) {
+    return emptyMetrics(teamKey, matchesScheduled);
+  }
 
   const byMatch: Record<string, ScoutingData[]> = {};
   entries.forEach((e) => {
@@ -193,9 +368,13 @@ export function buildTeamMetrics(
     byMatch[e.matchKey].push(e);
   });
 
-  const matches = Object.keys(byMatch)
-    .map((k) => collapseMatch(k, byMatch[k]))
-    .sort((a, b) => a.matchNumber - b.matchNumber);
+  const matches = [
+    // Legacy matches, minus any the BPS path also covers — BPS wins there.
+    ...Object.keys(byMatch)
+      .filter((k) => !bpsByMatch[k])
+      .map((k) => collapseMatch(k, byMatch[k])),
+    ...bpsMatchKeys.map((k) => collapseBpsMatch(k, bpsByMatch[k], report!, teamKey)),
+  ].sort((a, b) => a.matchNumber - b.matchNumber);
 
   const points = matches.map((m) => m.points);
   const avg = mean(points);
@@ -214,6 +393,34 @@ export function buildTeamMetrics(
   const adjMean = mean(keptPoints);
   const adjSd = stdDev(keptPoints, adjMean);
 
+  const bpsMatches = matches.filter((m) => m.source === 'bps');
+  const hasBps = bpsMatches.length > 0;
+  const source: MetricSource = !hasBps
+    ? 'legacy'
+    : bpsMatches.length === matches.length
+    ? 'bps'
+    : 'mixed';
+  // Rates are only surfaced once at least one of this team's matches was
+  // actually fused; a timeline with no CV log leaves the team on legacy.
+  const rates = hasBps ? report?.byTeam[teamKey] : undefined;
+
+  // Action seconds are totals over every timeline we hold for this team,
+  // matching how the solver reports scoringSeconds.
+  const allTotals = teamTimelines.map(actionTotals);
+  const secTotal = (k: string) => round2(sum(allTotals.map((t) => t[k] ?? 0)));
+
+  /**
+   * Defense stays on the legacy definition whenever legacy rows exist, so no
+   * existing team's rating can move. Only a team with none — i.e. scouted
+   * purely on timelines — falls back to the time-derived rating.
+   */
+  const legacyDefenseSeconds = Math.round(
+    mean(entries.map((e) => Number((e.teleop as any)?.defense?.duration || 0)))
+  );
+  const bpsDefenseSeconds = bpsMatches.length
+    ? Math.round(mean(bpsMatches.map((m) => m.defSeconds)))
+    : 0;
+
   return {
     teamKey,
     team: teamKey.replace(/^frc/, ''),
@@ -224,7 +431,8 @@ export function buildTeamMetrics(
     matchesScheduled,
     hasData: true,
     // Reconstructed if every contributing row came from the CSV importer.
-    isSynthetic: entries.length > 0 && entries.every((e) => !!(e as any).synthetic),
+    // A solved BPS match is observed, so it disqualifies the label.
+    isSynthetic: entries.length > 0 && !hasBps && entries.every((e) => !!(e as any).synthetic),
 
     mean: round2(avg),
     adjMean: round2(adjMean),
@@ -248,10 +456,21 @@ export function buildTeamMetrics(
     climbRate: round2((matches.filter((m) => m.climbLevel > 0).length / matches.length) * 100),
     autoClimbRate: round2((matches.filter((m) => m.autoClimbed).length / matches.length) * 100),
     deathRate: round2((matches.filter((m) => m.died).length / matches.length) * 100),
-    defenseAvg: round2(mean(entries.map((e) => defenseScore(e.defense)).filter((v) => v > 0))),
-    avgDefenseSeconds: Math.round(
-      mean(entries.map((e) => Number((e.teleop as any)?.defense?.duration || 0)))
-    ),
+    defenseAvg: entries.length
+      ? round2(mean(entries.map((e) => defenseScore(e.defense)).filter((v) => v > 0)))
+      : defenseRatingFromSeconds(bpsDefenseSeconds),
+    avgDefenseSeconds: entries.length ? legacyDefenseSeconds : bpsDefenseSeconds,
+
+    bps: rates?.bps ?? 0,
+    autoBps: rates?.autoBps ?? 0,
+    teleopBps: rates?.teleopBps ?? 0,
+    bpsWindows: rates?.windows ?? 0,
+    scoringSeconds: secTotal('shoot'),
+    passSeconds: secTotal('pass'),
+    defSeconds: secTotal('def'),
+    oofSeconds: secTotal('oof'),
+    source,
+    hasBps,
   };
 }
 
@@ -262,12 +481,20 @@ export function buildTeamMetrics(
 export function buildAllTeamMetrics(
   rows: ScoutingData[],
   teamKeys: string[],
-  matches: any[] = []
+  matches: any[] = [],
+  timelines: TimelineScoutingData[] = [],
+  report: BpsReport | null = null
 ): TeamMetrics[] {
   const byTeam: Record<string, ScoutingData[]> = {};
   rows.forEach((r) => {
     byTeam[r.teamKey] = byTeam[r.teamKey] || [];
     byTeam[r.teamKey].push(r);
+  });
+
+  const timelinesByTeam: Record<string, TimelineScoutingData[]> = {};
+  timelines.forEach((t) => {
+    timelinesByTeam[t.teamKey] = timelinesByTeam[t.teamKey] || [];
+    timelinesByTeam[t.teamKey].push(t);
   });
 
   /**
@@ -288,7 +515,16 @@ export function buildAllTeamMetrics(
       return keys.includes(teamKey);
     }).length;
 
-  return teamKeys.map((tk) => buildTeamMetrics(tk, byTeam[tk] || [], scheduledFor(tk)));
+  // Teams that only ever appear on a timeline still deserve a row.
+  // With no timelines this is `teamKeys` unchanged, order included.
+  const allKeys = [...new Set([...teamKeys, ...Object.keys(timelinesByTeam)])];
+
+  return allKeys.map((tk) =>
+    buildTeamMetrics(tk, byTeam[tk] || [], scheduledFor(tk), {
+      timelines: timelinesByTeam[tk] || [],
+      report,
+    })
+  );
 }
 
 /** Collect every team appearing in the match schedule. */

@@ -23,3 +23,10 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# Tesseract OCR runtime files copied out of node_modules by
+# `npm run tesseract:sync` (which `build` and `postinstall` run for you).
+# Regenerable, ~12MB, so not tracked. NOTE: eng.traineddata.gz sits in the
+# same folder and IS tracked -- it is not on npm and cannot be regenerated.
+public/tesseract/worker.min.js
+public/tesseract/tesseract-core-*.wasm.js

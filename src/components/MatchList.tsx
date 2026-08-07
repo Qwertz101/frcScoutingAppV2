@@ -3,6 +3,7 @@ import { compareMatches, readableMatchLabel } from '../utils/match';
 import { DataService } from '../services/dataService';
 import { fetchServerScouting, performFullRefresh } from '../services/syncService';
 import { useEffect, useState } from 'react';
+import { getTimelines } from '../services/bpsStore';
 import { ScouterHeader } from './cc/CCChrome';
 import '../styles/cc.css';
 
@@ -82,8 +83,13 @@ export function MatchList({ matches, user, onMatchSelect, onBack, onPitScouting 
   };
 
   const localScouting = DataService.getScoutingData() || [];
+  // Live Match writes timelines through bpsStore, not DataService, so "✓ Done"
+  // has to consult both stores to keep working for records from either era.
+  const timelines = getTimelines();
   // consider a match scouted for this user if either local or server contains a record
   const isScoutedByUser = (m: Match) => {
+    const timelineHit = timelines.some((t) => t.matchKey === m.key && t.scouter === user.username);
+    if (timelineHit) return true;
     const localHit = localScouting.some((s: any) => s.matchKey === m.key && s.scouter === user.username);
     if (localHit) return true;
     // check server records (match_key / scouter_name)
@@ -97,6 +103,11 @@ export function MatchList({ matches, user, onMatchSelect, onBack, onPitScouting 
 
   const openMatch = (match: Match) => {
     // attempt to find existing record for this scouter
+    const timeline = timelines.find((t) => t.matchKey === match.key && t.scouter === user.username);
+    if (timeline) {
+      onMatchSelect(match, timeline);
+      return;
+    }
     const localScouting = DataService.getScoutingData() || [];
     const local = localScouting.find((s: any) => s.matchKey === match.key && s.scouter === user.username);
     if (local) {

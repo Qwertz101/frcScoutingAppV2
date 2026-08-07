@@ -7,6 +7,7 @@ import { SyntheticFootnote } from './FieldRanking';
 import { RP_THRESHOLDS } from '../../utils/scoring';
 import { tagsFor, fmtPts } from '../picklist/insights';
 import { readableMatchLabel } from '../../utils/match';
+import { BpsFootnote, SourceBadge } from './BpsBits';
 
 interface MatchStrategyProps {
   data: ScoutData;
@@ -21,7 +22,7 @@ interface MatchStrategyProps {
  * genuinely comfortable rather than comfortable-on-average.
  */
 export function MatchStrategy({ data, pick, onOpenTeam }: MatchStrategyProps) {
-  const { matches, metricsFor, fieldMedian, hasSynthetic, metrics } = data;
+  const { matches, metricsFor, fieldMedian, hasSynthetic, hasBps, metrics } = data;
   const ourKey = `frc${pick.ourTeam}`;
 
   const ourMatches = useMemo(
@@ -94,6 +95,31 @@ export function MatchStrategy({ data, pick, onOpenTeam }: MatchStrategyProps) {
   const energizedTarget = RP_THRESHOLDS.regional.energized;
   const energizedCleared = ourFuelFloor >= energizedTarget;
 
+  /**
+   * Independent cross-check, NOT a replacement for the P25/P75 framing above.
+   *
+   * A robot's expected contribution under the solver is simply its rate times
+   * the time it typically spends scoring. Summed over an alliance that gives a
+   * second opinion on the same match built from a completely different data
+   * path — if the two disagree badly, one of the two models is wrong and the
+   * strategy call deserves a second look.
+   */
+  const bpsProjection = (teams: TeamMetrics[]) => {
+    const covered = teams.filter((t) => t.hasBps);
+    if (!covered.length) return null;
+    const pts = covered.reduce((s, t) => {
+      const solved = t.matches.filter((m) => m.source === 'bps');
+      const secs = solved.length
+        ? solved.reduce((a, m) => a + m.shootSeconds, 0) / solved.length
+        : 0;
+      return s + t.bps * secs;
+    }, 0);
+    return { pts: Math.round(pts), covered: covered.length, of: teams.length };
+  };
+
+  const usBps = bpsProjection(us);
+  const themBps = bpsProjection(them);
+
   const barMax = Math.max(usFloor, themCeil, 1) * 1.15;
   const w = (v: number) => `${Math.max(4, (v / barMax) * 100).toFixed(1)}%`;
 
@@ -126,6 +152,7 @@ export function MatchStrategy({ data, pick, onOpenTeam }: MatchStrategyProps) {
             <span className="pl-card-hint">
               {fmtPts(atPercentile(t, pctl))} pts at P{pctl * 100}
             </span>
+            <SourceBadge team={t} />
           </div>
           <DistributionBar team={t} scaleMax={scaleMax} height={34} />
           <div className="pl-tags">
@@ -215,6 +242,23 @@ export function MatchStrategy({ data, pick, onOpenTeam }: MatchStrategyProps) {
               : `needs ${Math.ceil(energizedTarget - ourFuelFloor)} more`}{' '}
             (threshold {energizedTarget})
           </div>
+
+          {(usBps || themBps) && (
+            <div className="pl-bps-check">
+              <span className="pl-src-badge bps">BPS</span>
+              <span>cross-check · expected points, not a floor or ceiling:</span>
+              {usBps && (
+                <span title={`${usBps.covered} of ${usBps.of} robots have solved rates`}>
+                  us <strong>{usBps.pts}</strong> ({usBps.covered}/{usBps.of} robots)
+                </span>
+              )}
+              {themBps && (
+                <span title={`${themBps.covered} of ${themBps.of} robots have solved rates`}>
+                  them <strong>{themBps.pts}</strong> ({themBps.covered}/{themBps.of} robots)
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -224,6 +268,7 @@ export function MatchStrategy({ data, pick, onOpenTeam }: MatchStrategyProps) {
       </div>
 
       {hasSynthetic && <SyntheticFootnote />}
+      {hasBps && <BpsFootnote />}
     </div>
   );
 }

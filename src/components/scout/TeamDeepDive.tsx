@@ -6,6 +6,65 @@ import { PicklistState } from './usePicklistState';
 import { DistributionBar } from './DistributionBar';
 import { tagsFor, noteFor, fmtPts } from '../picklist/insights';
 import { RP_THRESHOLDS } from '../../utils/scoring';
+import { BpsBadge, BpsFootnote, SourceBadge } from './BpsBits';
+
+/**
+ * BPS rates and the action-time breakdown for one robot.
+ *
+ * Rendered only when the team actually has solved matches, so a legacy-only
+ * robot's deep dive is byte-for-byte the page it has always been.
+ */
+function BpsPanel({ team }: { team: TeamMetrics }) {
+  const tracked =
+    team.scoringSeconds + team.passSeconds + team.defSeconds + team.oofSeconds;
+  const pct = (v: number) => (tracked > 0 ? (v / tracked) * 100 : 0);
+  const secs = (v: number) => `${Math.round(v)}s`;
+
+  return (
+    <div className="pl-card" style={{ marginBottom: 14 }}>
+      <div className="pl-card-head">
+        <span className="pl-card-label">
+          Solved rate <BpsBadge />
+        </span>
+        <span className="pl-card-hint">
+          {team.bpsWindows} solver window{team.bpsWindows === 1 ? '' : 's'}
+          {team.bpsWindows > 0 && team.bpsWindows < 6 ? ' — few, treat as provisional' : ''}
+        </span>
+      </div>
+
+      <div className="pl-bps-grid">
+        {[
+          ['BPS', team.bps.toFixed(2), 'points per second, whole match'],
+          ['Auto BPS', team.autoBps.toFixed(2), 'first 20 seconds'],
+          ['Teleop BPS', team.teleopBps.toFixed(2), 'remaining 140 seconds'],
+          ['Scoring time', secs(team.scoringSeconds), 'flagged shooting'],
+        ].map(([label, value, sub]) => (
+          <div key={label} className="pl-bps-cell">
+            <span className="pl-stat-label">{label}</span>
+            <span className="pl-bps-num">{value}</span>
+            <span className="pl-card-hint">{sub}</span>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ padding: '0 18px 16px' }}>
+        <span className="pl-stat-label">Where the time went</span>
+        <div className="pl-act-bar" title="Share of tracked time in each action">
+          <span className="shoot" style={{ width: `${pct(team.scoringSeconds)}%` }} />
+          <span className="pass" style={{ width: `${pct(team.passSeconds)}%` }} />
+          <span className="def" style={{ width: `${pct(team.defSeconds)}%` }} />
+          <span className="oof" style={{ width: `${pct(team.oofSeconds)}%` }} />
+        </div>
+        <div className="pl-act-key">
+          <span><i className="shoot" />shooting {secs(team.scoringSeconds)}</span>
+          <span><i className="pass" />passing {secs(team.passSeconds)}</span>
+          <span><i className="def" />defense {secs(team.defSeconds)}</span>
+          <span><i className="oof" />out of order {secs(team.oofSeconds)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 interface TeamDeepDiveProps {
   team: TeamMetrics;
@@ -35,9 +94,25 @@ export function TeamDeepDive({ team, data, pick, onBack, onFocusTeam }: TeamDeep
     return Math.max(50, Math.ceil((top * 1.05) / 10) * 10);
   }, [metrics]);
 
-  /** Tallest per-match total, for scaling the auto/teleop stacked bars. */
+  /**
+   * Tallest per-match total, for scaling the auto/teleop stacked bars.
+   *
+   * The stack height is taken from the segments rather than `points` because on
+   * a BPS match the tower estimate is deliberately not folded into `points`
+   * (the CV scoreboard already contains the climb) — scaling by `points` alone
+   * would let those stacks overflow their track.
+   */
   const barMax = useMemo(
-    () => Math.max(...team.matches.map((m) => m.points), 1),
+    () =>
+      Math.max(
+        // Legacy matches keep their existing scaling exactly.
+        ...team.matches.map((m) =>
+          m.source === 'bps'
+            ? Math.max(m.points, m.autoFuel + m.teleopFuel + m.towerPoints)
+            : m.points
+        ),
+        1
+      ),
     [team.matches]
   );
 
@@ -56,7 +131,9 @@ export function TeamDeepDive({ team, data, pick, onBack, onFocusTeam }: TeamDeep
           <span className="pl-eyebrow">
             Rank {rank || '—'} of {scored.length} · {percentile}th percentile
           </span>
-          <h1 className="pl-h1">{team.team}</h1>
+          <h1 className="pl-h1">
+            {team.team} <SourceBadge team={team} />
+          </h1>
           <div className="pl-tags">
             {tagsFor(team, fieldMedian).map((t) => (
               <span key={t.label} className="pl-tag" style={{ background: t.bg, color: t.fg }}>
@@ -78,8 +155,10 @@ export function TeamDeepDive({ team, data, pick, onBack, onFocusTeam }: TeamDeep
           ['Avg pts', fmtPts(team.adjMean), team.matchesPlayed > 1 ? `±${Math.round(team.adjSd)}` : ''],
           ['Median', fmtPts(team.median), `IQR ${fmtPts(team.q1)}–${fmtPts(team.q3)}`],
           ['Range', `${fmtPts(team.floor)}–${fmtPts(team.ceiling)}`, 'normal range'],
-          ['Auto avg', fmtPts(team.autoAvg), 'fuel'],
-          ['Teleop avg', fmtPts(team.teleopAvg), 'fuel'],
+          // On a BPS or mixed team these averages mix fuel counts with solved
+          // points, so the sub-label has to stop claiming "fuel".
+          ['Auto avg', fmtPts(team.autoAvg), team.hasBps ? 'fuel / BPS pts' : 'fuel'],
+          ['Teleop avg', fmtPts(team.teleopAvg), team.hasBps ? 'fuel / BPS pts' : 'fuel'],
           ['Climb', `${Math.round(team.climbRate)}%`, `tower ${fmtPts(team.towerAvg)} pts`],
         ].map(([label, value, sub]) => (
           <div key={label} className="pl-dd-stat">
@@ -89,6 +168,8 @@ export function TeamDeepDive({ team, data, pick, onBack, onFocusTeam }: TeamDeep
           </div>
         ))}
       </div>
+
+      {team.hasBps && <BpsPanel team={team} />}
 
       <div className="pl-card" style={{ padding: '16px 18px', marginBottom: 14 }}>
         <div className="pl-card-head" style={{ border: 'none', padding: 0, marginBottom: 8 }}>
@@ -110,13 +191,15 @@ export function TeamDeepDive({ team, data, pick, onBack, onFocusTeam }: TeamDeep
           <span className="pl-card-label">Match by match · auto vs teleop</span>
           <span className="pl-card-hint">
             {team.isSynthetic ? 'reconstructed from season averages' : `${team.matchesPlayed} scouted matches`}
+            {team.hasBps &&
+              ` · ${team.matches.filter((m) => m.source === 'bps').length} solved from BPS`}
           </span>
         </div>
 
         {team.matches.length === 0 ? (
           <div className="pl-empty">No matches scouted.</div>
         ) : (
-          <div className={`pl-mbm${team.isSynthetic ? ' synthetic' : ''}`}>
+          <div className={`pl-mbm${team.isSynthetic ? ' synthetic' : ''}`} data-source={team.source}>
             {team.matches.map((m) => {
               const autoH = (m.autoFuel / barMax) * 100;
               const teleH = (m.teleopFuel / barMax) * 100;
@@ -125,7 +208,11 @@ export function TeamDeepDive({ team, data, pick, onBack, onFocusTeam }: TeamDeep
                 <div
                   key={m.matchKey}
                   className="pl-mbm-col"
-                  title={`${m.label}: ${m.points} pts (auto ${m.autoFuel}, teleop ${m.teleopFuel}, tower ${m.towerPoints})${m.died ? ' — died' : ''}`}
+                  title={
+                    m.source === 'bps'
+                      ? `${m.label}: ${m.points} pts from BPS (auto ${m.autoFuel}, teleop ${m.teleopFuel}; climb ${m.towerPoints ? 'yes' : 'no'}, already inside the total)${m.died ? ' — went out of order' : ''}`
+                      : `${m.label}: ${m.points} pts (auto ${m.autoFuel}, teleop ${m.teleopFuel}, tower ${m.towerPoints})${m.died ? ' — died' : ''}`
+                  }
                 >
                   <div className="pl-mbm-stack">
                     <span className="pl-mbm-tower" style={{ height: `${towerH}%` }} />
@@ -165,6 +252,8 @@ export function TeamDeepDive({ team, data, pick, onBack, onFocusTeam }: TeamDeep
       )}
 
       <p className="pl-note">{noteFor(team, fieldMedian)}</p>
+
+      {team.hasBps && <BpsFootnote />}
 
       <div className="pl-card" style={{ marginTop: 14 }}>
         <div className="pl-card-head">

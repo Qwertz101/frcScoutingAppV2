@@ -1,8 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ScoutingData } from '../../types';
+import { CvMatchLog, ScoutingData, TimelineScoutingData } from '../../types';
 import { DataService } from '../../services/dataService';
 import { loadScoutingRows } from '../../services/scoutingRows';
 import { fetchEventRankings } from '../../services/tbaApi';
+import {
+  fetchCvLogs,
+  fetchTimelines,
+  getCvLogs,
+  getTimelines,
+} from '../../services/bpsStore';
+import { BpsReport, runBpsPipeline } from '../../services/bps';
 import {
   buildAllTeamMetrics,
   teamsFromMatches,
@@ -15,10 +22,14 @@ import {
  *
  * Every tab reads from this single result — tabs must not fetch their own data,
  * otherwise switching tabs would re-hit the network and the screens could
- * disagree with each other.
+ * disagree with each other. The BPS solve lives here for the same reason, and
+ * additionally because it is O(teams²): it must run once per data load, not
+ * once per render and certainly not once per tab.
  */
 export function useScoutData() {
   const [rows, setRows] = useState<ScoutingData[]>([]);
+  const [timelines, setTimelines] = useState<TimelineScoutingData[]>([]);
+  const [cvLogs, setCvLogs] = useState<CvMatchLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [dataError, setDataError] = useState<string | null>(null);
   const [rankings, setRankings] = useState<number[]>([]);
@@ -35,8 +46,19 @@ export function useScoutData() {
     setLoading(true);
     (async () => {
       const { rows: loaded, error } = await loadScoutingRows();
+
+      // The BPS streams are best-effort: a server that is down or a schema
+      // that predates these tables must not take the legacy screens with it,
+      // so each falls back to the local copy exactly as scouting rows do.
+      const [tl, cv] = await Promise.all([
+        fetchTimelines().catch(() => getTimelines()),
+        fetchCvLogs().catch(() => getCvLogs()),
+      ]);
+
       if (!mounted) return;
       setRows(loaded);
+      setTimelines(tl);
+      setCvLogs(cv);
       setDataError(error);
       setLoading(false);
     })();
@@ -60,9 +82,24 @@ export function useScoutData() {
     return Array.from(new Set(rows.map((r) => r.teamKey))).sort();
   }, [matches, rows]);
 
+  /**
+   * The single BPS solve for the whole workspace. Null until there is
+   * something to solve, which keeps the legacy-only case entirely off this
+   * code path.
+   */
+  const bpsReport = useMemo<BpsReport | null>(() => {
+    if (!timelines.length || !cvLogs.length) return null;
+    try {
+      return runBpsPipeline(timelines, cvLogs);
+    } catch (e) {
+      console.error('useScoutData: BPS solve failed, falling back to legacy', e);
+      return null;
+    }
+  }, [timelines, cvLogs]);
+
   const metrics = useMemo(
-    () => buildAllTeamMetrics(rows, teamKeys, matches),
-    [rows, teamKeys, matches]
+    () => buildAllTeamMetrics(rows, teamKeys, matches, timelines, bpsReport),
+    [rows, teamKeys, matches, timelines, bpsReport]
   );
 
   const metricsByTeam = useMemo(() => {
@@ -94,10 +131,20 @@ export function useScoutData() {
   /** True when at least one team's numbers came from the stats-CSV importer. */
   const hasSynthetic = useMemo(() => metrics.some((m) => m.isSynthetic), [metrics]);
 
+  /**
+   * True when at least one team on the field has solved BPS numbers. Screens
+   * gate their BPS columns on this so a legacy-only event looks untouched.
+   */
+  const hasBps = useMemo(() => metrics.some((m) => m.hasBps), [metrics]);
+
   const scoutedCount = useMemo(() => metrics.filter((m) => m.hasData).length, [metrics]);
 
   return {
     rows,
+    timelines,
+    cvLogs,
+    bpsReport,
+    hasBps,
     loading,
     dataError,
     matches,

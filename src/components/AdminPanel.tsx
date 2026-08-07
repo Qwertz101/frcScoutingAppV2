@@ -5,6 +5,7 @@ import { performFullRefresh, fetchServerScouters } from '../services/syncService
 import { DataService } from '../services/dataService';
 import { MatchSelection } from './MatchSelection';
 import { ScoutShell } from './scout/ScoutShell';
+import { CvTracker } from './cv/CvTracker';
 import { AdminHeader, AdminTab } from './cc/CCChrome';
 import '../styles/cc.css';
 
@@ -14,10 +15,11 @@ interface AdminPanelProps {
 }
 
 /**
- * `picklist` is not an AdminTab: the Scout workspace takes over the whole
- * viewport with its own header, so it sits outside the admin chrome.
+ * Neither `picklist` nor `cv` is an AdminTab: both take over the whole viewport
+ * with their own header, so they sit outside the admin chrome. The CV tracker
+ * needs the width for its video stage and per-second log.
  */
-type AdminView = AdminTab | 'picklist';
+type AdminView = AdminTab | 'picklist' | 'cv';
 
 export function AdminPanel({ user, onLogout }: AdminPanelProps) {
   const [view, setView] = useState<AdminView>('menu');
@@ -25,6 +27,10 @@ export function AdminPanel({ user, onLogout }: AdminPanelProps) {
 
   if (view === 'picklist') {
     return <ScoutShell onBack={() => setView('menu')} />;
+  }
+
+  if (view === 'cv') {
+    return <CvTracker onBack={() => setView('menu')} />;
   }
 
   const chrome = (body: React.ReactNode) => (
@@ -91,6 +97,13 @@ export function AdminPanel({ user, onLogout }: AdminPanelProps) {
           <span className="cc-tile-sub">
             Field ranking, picklist, analysis, strategy and forecast
           </span>
+        </button>
+
+        <button className="cc-tile cv" onClick={() => setView('cv')}>
+          <span className="cc-tile-mark">◎</span>
+          <span className="cc-tile-fill" />
+          <span className="cc-tile-title">CV TRACKER</span>
+          <span className="cc-tile-sub">Read the scoreboard from match footage</span>
         </button>
       </div>
     </section>

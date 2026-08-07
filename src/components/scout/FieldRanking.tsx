@@ -5,8 +5,9 @@ import { PicklistState } from './usePicklistState';
 import { DistributionBar } from './DistributionBar';
 import { RP_THRESHOLDS } from '../../utils/scoring';
 import { tagsFor, fmtPts } from '../picklist/insights';
+import { BpsFootnote, SourceBadge } from './BpsBits';
 
-type SortKey = 'adj' | 'cons' | 'auto' | 'ceil';
+type SortKey = 'adj' | 'cons' | 'auto' | 'ceil' | 'bps';
 
 interface FieldRankingProps {
   data: ScoutData;
@@ -39,7 +40,7 @@ function ReliabilityStrip({ team }: { team: TeamMetrics }) {
 
 export function FieldRanking({ data, pick, onOpenTeam }: FieldRankingProps) {
   const [sortBy, setSortBy] = useState<SortKey>('adj');
-  const { metrics, fieldMedian, hasSynthetic } = data;
+  const { metrics, fieldMedian, hasSynthetic, hasBps } = data;
 
   const sorted = useMemo(() => {
     const copy = metrics.filter((m) => m.hasData || m.matchesScheduled > 0);
@@ -48,6 +49,7 @@ export function FieldRanking({ data, pick, onOpenTeam }: FieldRankingProps) {
       cons: (t) => t.consistency,
       auto: (t) => t.autoAvg,
       ceil: (t) => t.ceiling,
+      bps: (t) => t.bps,
     };
     return copy.sort((a, b) => key[sortBy](b) - key[sortBy](a));
   }, [metrics, sortBy]);
@@ -84,6 +86,8 @@ export function FieldRanking({ data, pick, onOpenTeam }: FieldRankingProps) {
           {sortBtn('cons', 'Consistency')}
           {sortBtn('auto', 'Auto')}
           {sortBtn('ceil', 'Ceiling')}
+          {/* Only offered once something on the field has a solved rate. */}
+          {hasBps && sortBtn('bps', 'BPS')}
         </div>
       </div>
 
@@ -104,7 +108,7 @@ export function FieldRanking({ data, pick, onOpenTeam }: FieldRankingProps) {
             available width but not the header's, and every column drifts out
             of alignment by the scrollbar's width.
           */}
-          <div className="pl-rank-head">
+          <div className={`pl-rank-head${hasBps ? ' with-bps' : ''}`}>
             <span>Rank</span>
             <span>Team</span>
             {/* Padding matches .pl-dist's own horizontal margins so both the
@@ -117,6 +121,7 @@ export function FieldRanking({ data, pick, onOpenTeam }: FieldRankingProps) {
             </span>
             <span style={{ textAlign: 'center' }}>Flags</span>
             <span style={{ textAlign: 'right', paddingRight: 8 }}>Avg pts</span>
+            {hasBps && <span style={{ textAlign: 'right', paddingRight: 8 }}>BPS</span>}
             <span style={{ textAlign: 'center' }}>Reliability</span>
             <span style={{ paddingLeft: 12 }}>Role</span>
             <span style={{ textAlign: 'right' }}>Actions</span>
@@ -137,7 +142,9 @@ export function FieldRanking({ data, pick, onOpenTeam }: FieldRankingProps) {
             return (
               <div
                 key={t.teamKey}
-                className={`pl-rank-row${isUs ? ' us' : ''}${isDnp ? ' dnp' : ''}`}
+                className={`pl-rank-row${isUs ? ' us' : ''}${isDnp ? ' dnp' : ''}${
+                  hasBps ? ' with-bps' : ''
+                }`}
               >
                 <span className="pl-rank-num">{i + 1}</span>
 
@@ -147,7 +154,8 @@ export function FieldRanking({ data, pick, onOpenTeam }: FieldRankingProps) {
                   </button>
                   <span className="pl-rank-sub">
                     {t.hasData ? `${t.matchesPlayed} scouted` : 'unscouted'}
-                    {t.isSynthetic ? ' · reconstructed' : ''}
+                    {t.isSynthetic ? ' · reconstructed' : ''}{' '}
+                    <SourceBadge team={t} />
                   </span>
                 </div>
 
@@ -177,6 +185,30 @@ export function FieldRanking({ data, pick, onOpenTeam }: FieldRankingProps) {
                     auto {fmtPts(t.autoAvg)} · climb {Math.round(t.climbRate)}%
                   </span>
                 </div>
+
+                {hasBps && (
+                  <div className={`pl-rank-bps${t.hasBps ? '' : ' none'}`}>
+                    {t.hasBps ? (
+                      <>
+                        <span className="pl-rank-bps-num" title="Solved points per second">
+                          {t.bps.toFixed(2)}
+                        </span>
+                        <span className="pl-rank-bps-sub">
+                          auto {t.autoBps.toFixed(2)} · tele {t.teleopBps.toFixed(2)}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        {/* Legacy-only robot: say so plainly rather than
+                            leaving a dash where a number ought to be. */}
+                        <span className="pl-rank-bps-num" title="No CV-fused matches — legacy scouting only">
+                          legacy
+                        </span>
+                        <span className="pl-rank-bps-sub">no BPS data</span>
+                      </>
+                    )}
+                  </div>
+                )}
 
                 <div className="pl-rank-rel">
                   <ReliabilityStrip team={t} />
@@ -224,6 +256,7 @@ export function FieldRanking({ data, pick, onOpenTeam }: FieldRankingProps) {
       </div>
 
       {hasSynthetic && <SyntheticFootnote />}
+      {hasBps && <BpsFootnote />}
     </div>
   );
 }

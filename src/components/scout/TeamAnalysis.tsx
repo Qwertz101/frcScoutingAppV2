@@ -4,6 +4,7 @@ import { ScoutData } from './useScoutData';
 import { PicklistState } from './usePicklistState';
 import { DistributionBar, DistributionAxis } from './DistributionBar';
 import { SyntheticFootnote } from './FieldRanking';
+import { BpsFootnote, SolverDiagnostics, SourceBadge } from './BpsBits';
 import { colorFor, fmtPts } from '../picklist/insights';
 import { TeamDeepDive } from './TeamDeepDive';
 
@@ -15,7 +16,7 @@ interface TeamAnalysisProps {
 }
 
 export function TeamAnalysis({ data, pick, focusTeam, onFocusTeam }: TeamAnalysisProps) {
-  const { metrics, metricsFor, fieldMedian, hasSynthetic } = data;
+  const { metrics, metricsFor, fieldMedian, hasSynthetic, hasBps, bpsReport } = data;
 
   const scored = useMemo(() => metrics.filter((m) => m.hasData), [metrics]);
 
@@ -102,6 +103,7 @@ export function TeamAnalysis({ data, pick, focusTeam, onFocusTeam }: TeamAnalysi
               <button className="pl-cmp-team" onClick={() => onFocusTeam(c.teamNumber)}>
                 {c.team}
               </button>
+              <SourceBadge team={c} />
               {pick.compare.includes(c.teamNumber) && (
                 <button
                   className="pl-link-btn"
@@ -121,6 +123,12 @@ export function TeamAnalysis({ data, pick, focusTeam, onFocusTeam }: TeamAnalysi
                 <span>{c.matchesPlayed} scouted</span>
                 {c.deaths.length > 0 && <span className="pl-warn">{c.deaths.length} dead</span>}
                 {c.isSynthetic && <span className="pl-warn">reconstructed</span>}
+                {c.hasBps && (
+                  <span title="Solved points per second — auto / teleop">
+                    <strong>{c.bps.toFixed(2)}</strong> BPS ({c.autoBps.toFixed(2)}/
+                    {c.teleopBps.toFixed(2)})
+                  </span>
+                )}
               </div>
             </div>
           </div>
@@ -163,7 +171,12 @@ export function TeamAnalysis({ data, pick, focusTeam, onFocusTeam }: TeamAnalysi
         </div>
       </div>
 
+      {/* Solver health lives here rather than on its own tab: this is the
+          screen where a scout goes to decide whether to believe a number. */}
+      {bpsReport && <SolverDiagnostics report={bpsReport} />}
+
       {hasSynthetic && <SyntheticFootnote />}
+      {hasBps && <BpsFootnote />}
     </div>
   );
 }

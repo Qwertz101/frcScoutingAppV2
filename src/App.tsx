@@ -4,7 +4,7 @@ import { DataService } from './services/dataService';
 import { performFullRefresh } from './services/syncService';
 import { LoginPage } from './components/LoginPage';
 import { MatchList } from './components/MatchList';
-import { ScoutingForm } from './components/ScoutingForm';
+import { LiveMatch } from './components/LiveMatch';
 import { AdminPanel } from './components/AdminPanel';
 import { PitScouting } from './components/PitScouting';
 
@@ -171,7 +171,7 @@ function App() {
 
   if (currentState === 'scouting' && selectedMatch && user) {
     return (
-      <ScoutingForm
+      <LiveMatch
         match={selectedMatch}
         user={user}
         onBack={handleBackToMatches}

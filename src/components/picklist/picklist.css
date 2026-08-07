@@ -1771,3 +1771,219 @@
     display: none;
   }
 }
+
+/* ================================================================== *
+ * BPS (points-per-second) model
+ *
+ * The workspace reads two scouting models at once — see the header of
+ * utils/teamMetrics.ts. Everything here is additive and gated behind a
+ * `.with-bps` modifier or a `hasBps` render check, so an event scouted only
+ * with the legacy form renders exactly the same DOM it always did.
+ * ================================================================== */
+
+/* ---------- provenance badges ---------- */
+
+.pl-src-badge {
+  display: inline-block;
+  vertical-align: middle;
+  border-radius: var(--radius-pill);
+  padding: 1px 6px;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.pl-src-badge.bps {
+  background: color-mix(in srgb, var(--cyan-500) 16%, transparent);
+  color: var(--cyan-500);
+  border: 1px solid color-mix(in srgb, var(--cyan-500) 45%, transparent);
+}
+
+.pl-src-badge.mixed {
+  background: color-mix(in srgb, var(--teal-500) 16%, transparent);
+  color: var(--teal-500);
+  border: 1px solid color-mix(in srgb, var(--teal-500) 45%, transparent);
+}
+
+/* Matches the .pl-synth-note precedent so both provenance notes read alike. */
+.pl-bps-note {
+  margin-top: 14px;
+  max-width: 900px;
+  border-left: 3px solid var(--cyan-500);
+  padding-left: 10px;
+}
+
+/* ---------- field ranking: optional BPS column ---------- */
+
+.pl-rank-bps {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  padding-right: 8px;
+  min-width: 0;
+}
+
+.pl-rank-bps-num {
+  font-family: var(--font-display);
+  font-size: 17px;
+  line-height: 1;
+  color: var(--cyan-500);
+}
+
+.pl-rank-bps-sub {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* No BPS for this robot: stay quiet rather than shouting an empty cell. */
+.pl-rank-bps.none .pl-rank-bps-num {
+  font-size: 13px;
+  color: var(--text-faint);
+}
+
+/* Nine tracks: the BPS column sits immediately after Avg pts. */
+.pl-rank-head.with-bps,
+.pl-rank-row.with-bps {
+  grid-template-columns: 44px 92px minmax(120px, 1fr) 88px 124px 104px 96px 124px 84px;
+}
+
+/* ---------- team analysis / deep dive: BPS panels ---------- */
+
+.pl-bps-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 14px;
+  padding: 14px 18px 18px;
+}
+
+.pl-bps-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.pl-bps-num {
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1;
+  color: var(--cyan-500);
+}
+
+/* Action-time strip: shoot / pass / defense / oof as one 100% bar. */
+.pl-act-bar {
+  display: flex;
+  height: 14px;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  background: var(--border);
+  margin: 2px 0 6px;
+}
+
+.pl-act-bar > span { display: block; height: 100%; }
+.pl-act-bar .shoot { background: var(--cyan-500); }
+.pl-act-bar .pass { background: var(--teal-500); }
+.pl-act-bar .def { background: var(--blue-600); }
+.pl-act-bar .oof { background: #000; }
+
+.pl-act-key {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.pl-act-key i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: -1px;
+}
+
+.pl-act-key i.shoot { background: var(--cyan-500); }
+.pl-act-key i.pass { background: var(--teal-500); }
+.pl-act-key i.def { background: var(--blue-600); }
+.pl-act-key i.oof { background: #000; }
+
+/* ---------- solver diagnostics ---------- */
+
+.pl-diag { margin-top: 14px; }
+
+.pl-diag-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 14px;
+  padding: 14px 18px;
+}
+
+.pl-diag-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.pl-diag-num {
+  font-family: var(--font-display);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.pl-diag-cell.warn .pl-diag-num { color: #000; }
+
+.pl-diag-warn {
+  margin: 0 18px 14px;
+  border-left: 3px solid #000;
+  padding-left: 10px;
+  color: var(--text);
+}
+
+/* ---------- match strategy: BPS cross-check ---------- */
+
+.pl-bps-check {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1.5px dashed color-mix(in srgb, var(--cyan-500) 55%, transparent);
+  border-radius: var(--radius-md, 8px);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.pl-bps-check strong {
+  font-family: var(--font-display);
+  font-size: 16px;
+  color: var(--cyan-500);
+}
+
+/* ---------- responsive: keep the legacy breakpoints intact ---------- */
+
+@media (max-width: 1400px) {
+  /* Role drops out here as it always has; with BPS present it is the EIGHTH
+     header cell, not the seventh, so the base rule has to be re-pointed. */
+  .pl-rank-head.with-bps,
+  .pl-rank-row.with-bps {
+    grid-template-columns: 38px 78px minmax(84px, 1fr) 74px 116px 96px 96px 88px;
+  }
+  .pl-rank-head.with-bps span:nth-child(7) { display: block; }
+  .pl-rank-head.with-bps span:nth-child(8) { display: none; }
+}
+
+@media (max-width: 860px) {
+  /* Stacked-card rows: Actions is the ninth child once BPS is in the DOM. */
+  .pl-rank-row.with-bps > :nth-child(9) { grid-area: actions; }
+  .pl-rank-bps { display: none; }
+}

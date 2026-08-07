@@ -3,6 +3,7 @@ import { TeamMetrics } from '../../utils/teamMetrics';
 import { ScoutData } from './useScoutData';
 import { PicklistState } from './usePicklistState';
 import { SyntheticFootnote } from './FieldRanking';
+import { BpsFootnote, SourceBadge } from './BpsBits';
 import { RP_THRESHOLDS, RP_AWARD } from '../../utils/scoring';
 
 interface RankForecastProps {
@@ -26,12 +27,29 @@ interface Projection {
 }
 
 /**
+ * A robot's expected match points.
+ *
+ * Where the solver has a rate for this robot we prefer it: rate × the time the
+ * robot typically spends scoring is a direct estimate of its contribution,
+ * built from the scoreboard itself rather than from a scout's fuel tally.
+ * Everything else — and every legacy team, which is the whole current season —
+ * keeps the existing adjusted mean.
+ */
+function expectedPoints(t: TeamMetrics): number {
+  if (!t.hasBps) return t.adjMean || 0;
+  const solved = t.matches.filter((m) => m.source === 'bps');
+  if (!solved.length) return t.adjMean || 0;
+  const secs = solved.reduce((s, m) => s + m.shootSeconds, 0) / solved.length;
+  return t.bps * secs || t.adjMean || 0;
+}
+
+/**
  * Scale a robot's fuel and tower contributions to match the case being modelled,
  * so a "floor" scenario is internally consistent rather than mixing a bad points
  * total with average fuel.
  */
 function projectTeam(t: TeamMetrics, when: CaseKey): Projection {
-  const base = t.adjMean || 0;
+  const base = expectedPoints(t);
   const points =
     when === 'pessimistic' ? t.floor : when === 'optimistic' ? t.ceiling : base;
   const scale = base > 0 ? points / base : 1;
@@ -49,7 +67,7 @@ const sumProj = (ps: Projection[]): Projection =>
   );
 
 export function RankForecast({ data, pick, onOpenTeam }: RankForecastProps) {
-  const { matches, metricsFor, hasSynthetic } = data;
+  const { matches, metricsFor, hasSynthetic, hasBps } = data;
   const [activeCase, setActiveCase] = useState<CaseKey>('expected');
 
   const thresholds = RP_THRESHOLDS.regional;
@@ -203,9 +221,17 @@ export function RankForecast({ data, pick, onOpenTeam }: RankForecastProps) {
                 className={`pl-forecast-row${isUs ? ' us' : ''}${captain ? ' captain' : ''}`}
               >
                 <span className="pl-rank-num" style={{ fontSize: 17 }}>{r.rank}</span>
-                <button className="pl-cmp-team" onClick={() => onOpenTeam(r.team)}>
-                  {r.team}
-                </button>
+                {/* Button and badge share one grid cell so the six-column
+                    template (and its mobile overrides) stay as they are. */}
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+                  <button className="pl-cmp-team" onClick={() => onOpenTeam(r.team)}>
+                    {r.team}
+                  </button>
+                  {(() => {
+                    const t = metricsFor(r.team);
+                    return t ? <SourceBadge team={t} /> : null;
+                  })()}
+                </span>
                 <span style={{ textAlign: 'right', fontWeight: 700 }}>{r.rs}</span>
                 <span style={{ textAlign: 'right' }}>{r.rp}</span>
                 <span style={{ textAlign: 'right' }}>{r.matches}</span>
@@ -225,9 +251,19 @@ export function RankForecast({ data, pick, onOpenTeam }: RankForecastProps) {
         matches mix good and bad performances, so true standings will sit between these cases. Ties
         are resolved by ranking score alone here; the official tiebreakers (average match points,
         then auto fuel, then tower points) are not modelled.
+        {hasBps && (
+          <>
+            {' '}
+            Robots carrying a <span className="pl-src-badge bps">BPS</span> or{' '}
+            <span className="pl-src-badge mixed">MIXED</span> badge have their expected points taken
+            from the solver (rate × typical scoring time) instead of their scouted average; the
+            floor and ceiling cases still come from the observed match spread.
+          </>
+        )}
       </p>
 
       {hasSynthetic && <SyntheticFootnote />}
+      {hasBps && <BpsFootnote />}
     </div>
   );
 }

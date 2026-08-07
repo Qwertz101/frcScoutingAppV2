@@ -5,18 +5,22 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm run tesseract:sync && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-  "test:merge": "node scripts/run_merge_tests.mjs",
+    "test:merge": "node scripts/run_merge_tests.mjs",
+    "tesseract:sync": "node scripts/copy-tesseract.mjs",
     "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist"
+    "deploy": "gh-pages -d dist",
+    "postinstall": "npm run tesseract:sync"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
     "lucide-react": "^0.344.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "tesseract.js": "^7.0.0",
+    "tesseract.js-core": "^7.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.9.1",

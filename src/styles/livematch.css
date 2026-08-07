@@ -1,0 +1,462 @@
+/*
+ * Live Match action tracking — Stream 1 of the time-windowed BPS methodology.
+ *
+ * Scoped under `.cc-root` so it inherits the Charging Champions tokens from
+ * cc.css (which this file never edits). Everything here is prefixed `lm-`.
+ *
+ * The screen is used one-handed on a phone at a competition, so every hit
+ * target is fluid (`clamp`) rather than breakpoint-switched, and the whole
+ * tracker suppresses selection/double-tap-zoom.
+ */
+
+.cc-root .lm-page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: 20px 16px 40px;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* ---------- header extras ---------- */
+
+.cc-root .lm-match-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--red-600);
+  color: #fff;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+.cc-root .lm-match-pill.blue {
+  background: var(--blue-600);
+}
+
+/* ---------- 01 pre-match / 03 climb / 04 confidence ---------- */
+
+.cc-root .lm-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 18px;
+  padding: clamp(24px, 10vw, 64px) 4px;
+}
+
+.cc-root .lm-title {
+  font-family: var(--font-display);
+  font-size: clamp(28px, 8vw, 44px);
+  line-height: 1;
+  margin: 0;
+}
+
+.cc-root .lm-lede {
+  margin: 0;
+  max-width: 460px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  text-wrap: pretty;
+}
+
+.cc-root .lm-start {
+  background: linear-gradient(100deg, #00baff, #1179ee);
+  color: #fff;
+  border: none;
+  border-radius: 16px;
+  font-family: var(--font-display);
+  font-size: clamp(22px, 6vw, 28px);
+  letter-spacing: 0.04em;
+  padding: 24px clamp(32px, 12vw, 68px);
+  width: min(100%, 420px);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.cc-root .lm-choice {
+  border: none;
+  border-radius: 14px;
+  padding: 20px;
+  font-family: var(--font-display);
+  font-size: 22px;
+  letter-spacing: 0.03em;
+  width: min(100%, 420px);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+/* ---------- 02 live tracker panel ---------- */
+
+.cc-root .lm-panel {
+  background: #0a0a0a;
+  border-radius: 16px;
+  padding: clamp(14px, 4vw, 22px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+.cc-root .lm-panel-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cc-root .lm-phase,
+.cc-root .lm-segment {
+  font-size: 9.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+
+.cc-root .lm-phase {
+  color: var(--teal-500);
+}
+
+.cc-root .lm-segment {
+  color: #6a6a6a;
+}
+
+/* countdown — three digit cells with an absolutely placed colon */
+
+.cc-root .lm-clock {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  justify-items: center;
+  align-items: center;
+  width: min(100%, 320px);
+  margin: 0 auto;
+}
+
+.cc-root .lm-digit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: clamp(54px, 17vw, 74px);
+  height: clamp(80px, 25vw, 108px);
+  border-radius: 10px;
+  border: 2px solid #39494c;
+  background: #111;
+  font-family: var(--font-display);
+  font-size: clamp(34px, 12vw, 56px);
+  color: #5e8f96;
+  transition: color 0.35s, border-color 0.35s;
+}
+
+.cc-root .lm-colon {
+  position: absolute;
+  left: 33.33%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.cc-root .lm-colon i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #5e8f96;
+  transition: background 0.35s;
+}
+
+/* circuit traces — the signature visual between clock and buttons */
+
+.cc-root .lm-circuit {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.cc-root .lm-trace {
+  height: 1px;
+  background: #2f2f2f;
+}
+
+.cc-root .lm-wires,
+.cc-root .lm-pins {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  justify-items: center;
+}
+
+.cc-root .lm-wire {
+  width: 2px;
+  height: 14px;
+  background: #2f2f2f;
+  transition: background 0.35s, width 0.35s;
+}
+
+.cc-root .lm-wire.on {
+  width: 3px;
+}
+
+.cc-root .lm-pin {
+  width: clamp(18px, 6vw, 30px);
+  height: 8px;
+  border-radius: 0 0 4px 4px;
+  background: #2f2f2f;
+  transition: background 0.35s;
+}
+
+/* hold-to-track buttons */
+
+.cc-root .lm-actions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.cc-root .lm-action-slot {
+  padding: 0 4px;
+  min-width: 0;
+}
+
+.cc-root .lm-action {
+  width: 100%;
+  border: none;
+  border-radius: 14px;
+  padding: clamp(18px, 6vw, 30px) 4px;
+  font-family: var(--font-display);
+  font-size: clamp(9px, 2.7vw, 24px);
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+  min-height: clamp(88px, 26vw, 116px);
+  background: #fff;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: manipulation;
+  transition: background 0.12s, color 0.12s, box-shadow 0.12s, transform 0.12s;
+}
+
+.cc-root .lm-panel-bottom {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cc-root .lm-state-label {
+  font-size: 9.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: #6a6a6a;
+}
+
+.cc-root .lm-state-value {
+  font-family: var(--font-display);
+  font-size: 16px;
+}
+
+/* ---------- timeline + event log cards ---------- */
+
+.cc-root .lm-card {
+  background: var(--card-bg);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.cc-root .lm-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.cc-root .lm-card-count {
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  text-transform: none;
+}
+
+.cc-root .lm-bar {
+  display: flex;
+  height: 24px;
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--border-soft);
+}
+
+.cc-root .lm-bar-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.cc-root .lm-log {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.cc-root .lm-log-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: #f7fbfc;
+}
+
+.cc-root .lm-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.cc-root .lm-log-name {
+  font-size: 12.5px;
+  font-weight: 800;
+}
+
+.cc-root .lm-log-range {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.cc-root .lm-log-dur {
+  margin-left: auto;
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--blue-600);
+}
+
+.cc-root .lm-empty {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* ---------- 05 summary ---------- */
+
+.cc-root .lm-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cc-root .lm-badge {
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.cc-root .lm-summary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.cc-root .lm-export {
+  background: linear-gradient(100deg, #00baff, #1179ee);
+  color: #fff;
+  border: none;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+
+.cc-root .lm-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.cc-root .lm-tile {
+  background: var(--card-bg);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm);
+  border-left: 4px solid var(--border);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cc-root .lm-tile-label {
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.cc-root .lm-tile-value {
+  font-family: var(--font-display);
+  font-size: 28px;
+  line-height: 1.05;
+}
+
+.cc-root .lm-tile-sub {
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+
+.cc-root .lm-table {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.cc-root .lm-trow {
+  display: grid;
+  grid-template-columns: 34px 1fr 66px 62px 62px;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  min-width: 320px;
+}
+
+.cc-root .lm-trow.head {
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  background: #fff;
+}
+
+.cc-root .lm-trow.odd {
+  background: #f7fbfc;
+}
