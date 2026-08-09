@@ -3,15 +3,55 @@ import { AUTO_LEN, CvMatchLog, CvScoreSample, MATCH_LEN } from '../../types';
 import { DataService } from '../../services/dataService';
 import { getCvLog, getCvLogs, saveCvLog } from '../../services/bpsStore';
 import {
-  CropLayout,
-  DEFAULT_LAYOUT,
-  DEFAULT_QUAD,
+  DEFAULT_BLUE_QUAD,
+  DEFAULT_RED_QUAD,
   GrayPlane,
   Quad,
+  detectScoreRegions,
 } from '../../services/cv/imagePipeline';
 import { OcrHandle, ScoreGate, getOcr, readFrame } from '../../services/cv/scoreboardOcr';
 
 export type SourceKind = 'none' | 'file' | 'url' | 'screen';
+
+/**
+ * Quad positions survive a reload.
+ *
+ * A broadcast's overlay geometry is fixed for a whole event, so making the
+ * operator re-drag two boxes before every match is pure friction — and a hurried
+ * re-drag is exactly how a region ends up a few pixels off, which is the
+ * difference between reading every frame and reading none.
+ */
+const QUAD_STORE_KEY = 'cv.scoreQuads.v1';
+
+function isQuad(q: unknown): q is Quad {
+  return (
+    Array.isArray(q) &&
+    q.length === 4 &&
+    q.every(
+      (p) =>
+        p &&
+        typeof (p as Quad[0]).x === 'number' &&
+        typeof (p as Quad[0]).y === 'number' &&
+        Number.isFinite((p as Quad[0]).x) &&
+        Number.isFinite((p as Quad[0]).y)
+    )
+  );
+}
+
+function loadQuads(): { blue: Quad; red: Quad } {
+  try {
+    const raw = localStorage.getItem(QUAD_STORE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (isQuad(parsed?.blue) && isQuad(parsed?.red)) {
+        return { blue: parsed.blue, red: parsed.red };
+      }
+    }
+  } catch {
+    /* corrupt or unavailable storage just falls back to the defaults */
+  }
+  return { blue: DEFAULT_BLUE_QUAD, red: DEFAULT_RED_QUAD };
+}
 
 export interface TrackerMatch {
   key: string;
@@ -42,8 +82,9 @@ export function useCvTracker() {
   const [urlInput, setUrlInput] = useState('');
   const [speed, setSpeed] = useState(3);
 
-  const [quad, setQuad] = useState<Quad>(DEFAULT_QUAD);
-  const [layout, setLayout] = useState<CropLayout>(DEFAULT_LAYOUT);
+  const stored = useRef(loadQuads());
+  const [blueQuad, setBlueQuad] = useState<Quad>(stored.current.blue);
+  const [redQuad, setRedQuad] = useState<Quad>(stored.current.red);
 
   const [running, setRunning] = useState(false);
   const [samples, setSamples] = useState<CvScoreSample[]>([]);
@@ -51,6 +92,8 @@ export function useCvTracker() {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string>('');
   const [rejections, setRejections] = useState(0);
+  /** Frames where the overlay was not on screen at all — replays, crowd shots. */
+  const [skipped, setSkipped] = useState(0);
   const [previews, setPreviews] = useState<{ blue: GrayPlane | null; red: GrayPlane | null }>({
     blue: null,
     red: null,
@@ -65,14 +108,22 @@ export function useCvTracker() {
   const lastSec = useRef(-1);
   const startOffset = useRef(0);
   const wallStart = useRef(0);
-  const quadRef = useRef(quad);
-  const layoutRef = useRef(layout);
+  const blueQuadRef = useRef(blueQuad);
+  const redQuadRef = useRef(redQuad);
   const runningRef = useRef(false);
   const objectUrl = useRef<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  quadRef.current = quad;
-  layoutRef.current = layout;
+  blueQuadRef.current = blueQuad;
+  redQuadRef.current = redQuad;
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(QUAD_STORE_KEY, JSON.stringify({ blue: blueQuad, red: redQuad }));
+    } catch {
+      /* private mode / quota — the quads just will not persist */
+    }
+  }, [blueQuad, redQuad]);
 
   /* ---------------- match schedule ---------------- */
 
@@ -135,6 +186,7 @@ export function useCvTracker() {
     setSamples(existing?.samples ?? []);
     setDirty(false);
     setRejections(0);
+    setSkipped(0);
     const last = existing?.samples?.[existing.samples.length - 1];
     blueGate.current = new ScoreGate(last?.blue ?? 0);
     redGate.current = new ScoreGate(last?.red ?? 0);
@@ -261,8 +313,8 @@ export function useCvTracker() {
         v,
         w,
         h,
-        quadRef.current,
-        layoutRef.current,
+        blueQuadRef.current,
+        redQuadRef.current,
         blueGate.current,
         redGate.current
       );
@@ -279,6 +331,14 @@ export function useCvTracker() {
       throw e;
     }
     if (!result) return;
+
+    // The overlay is not on screen — a replay, a crowd cut, a pit interview.
+    // Nothing was attempted, so this is not a rejection and it is not a sample:
+    // logging a held score here would invent a flat second the match never had.
+    if (!result.overlayPresent) {
+      setSkipped((n) => n + 1);
+      return;
+    }
 
     setPreviews({ blue: result.bluePlane, red: result.redPlane });
     setRejections(blueGate.current.rejections + redGate.current.rejections);
@@ -365,6 +425,7 @@ export function useCvTracker() {
     setRunning(false);
     setSamples([]);
     setRejections(0);
+    setSkipped(0);
     setPreviews({ blue: null, red: null });
     blueGate.current = new ScoreGate(0);
     redGate.current = new ScoreGate(0);
@@ -372,7 +433,53 @@ export function useCvTracker() {
     setDirty(false);
   };
 
-  const resetQuad = () => setQuad(DEFAULT_QUAD);
+  const resetQuad = () => {
+    setBlueQuad(DEFAULT_BLUE_QUAD);
+    setRedQuad(DEFAULT_RED_QUAD);
+  };
+
+  /**
+   * Snap both regions onto the score plates using the current frame's colour.
+   *
+   * Placement precision matters more than it looks — a region a few pixels wide
+   * of the plate drops the read rate off a cliff — so this exists to get the
+   * operator to "almost right" instantly, after which the handles are for
+   * nudging rather than for finding the scoreboard from scratch.
+   */
+  const autoDetect = () => {
+    const v = videoRef.current;
+    if (!v || !v.videoWidth || !v.videoHeight) {
+      setError('Load footage and let a frame with the scoreboard on screen show first.');
+      return;
+    }
+    const c = document.createElement('canvas');
+    c.width = v.videoWidth;
+    c.height = v.videoHeight;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return;
+    ctx.drawImage(v, 0, 0, c.width, c.height);
+
+    let frame: ImageData;
+    try {
+      frame = ctx.getImageData(0, 0, c.width, c.height);
+    } catch {
+      setError(
+        'This video is cross-origin, so the browser will not let the page read its pixels. Upload the file directly, or use Share Screen.'
+      );
+      return;
+    }
+
+    const found = detectScoreRegions(frame);
+    if (!found) {
+      setError(
+        'Could not find the two score plates in this frame. Pause on a frame with the scoreboard fully visible and try again, or drag the regions by hand.'
+      );
+      return;
+    }
+    setError(null);
+    setBlueQuad(found.blue);
+    setRedQuad(found.red);
+  };
 
   /* ---------------- persistence ---------------- */
 
@@ -462,10 +569,10 @@ export function useCvTracker() {
     setUrlInput,
     speed,
     setSpeed,
-    quad,
-    setQuad,
-    layout,
-    setLayout,
+    blueQuad,
+    setBlueQuad,
+    redQuad,
+    setRedQuad,
     running,
     samples,
     dirty,
@@ -473,6 +580,7 @@ export function useCvTracker() {
     setError,
     status,
     rejections,
+    skipped,
     previews,
     blue: latest?.blue ?? 0,
     red: latest?.red ?? 0,
@@ -484,6 +592,7 @@ export function useCvTracker() {
     stop,
     reset,
     resetQuad,
+    autoDetect,
     persist,
     buildLog,
     correct,

@@ -61,6 +61,21 @@ function BpsPanel({ team }: { team: TeamMetrics }) {
           <span><i className="def" />defense {secs(team.defSeconds)}</span>
           <span><i className="oof" />out of order {secs(team.oofSeconds)}</span>
         </div>
+
+        {team.passSeconds > 0 && (
+          <div className="pl-pass-est">
+            <div>
+              <span className="pl-stat-label">Fuel passed per match</span>
+              <span className="pl-pass-num">~{team.passedFuelPerMatch.toFixed(0)}</span>
+            </div>
+            <p className="pl-card-hint">
+              Estimated, not measured. Passing scores nothing, so the solver cannot see it
+              directly — this assumes the robot moves fuel just as fast feeding an ally as
+              shooting, and applies its {team.teleopBps.toFixed(2)}/s teleop rate to{' '}
+              {secs(team.passSeconds)} of passing.
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1987,3 +1987,33 @@
   .pl-rank-row.with-bps > :nth-child(9) { grid-area: actions; }
   .pl-rank-bps { display: none; }
 }
+
+/* Estimated fuel passed — visually separated from solved numbers because it
+   is an inference from an assumption, not something the solver measured. */
+.pl-pass-est {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--card-alt);
+}
+
+.pl-pass-est > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pl-pass-num {
+  font-family: var(--font-display);
+  font-size: 22px;
+  line-height: 1;
+  color: var(--blue-600);
+}
+
+.pl-pass-est .pl-card-hint {
+  margin: 6px 0 0;
+  display: block;
+  line-height: 1.45;
+}

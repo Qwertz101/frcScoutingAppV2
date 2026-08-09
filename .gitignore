@@ -30,3 +30,7 @@ dist-ssr
 # same folder and IS tracked -- it is not on npm and cannot be regenerated.
 public/tesseract/worker.min.js
 public/tesseract/tesseract-core-*.wasm.js
+
+# Scratch harnesses for diagnosing the CV tracker against real match footage.
+# Holds large video files; never commit.
+public/_probe/

@@ -225,17 +225,38 @@ export function shiftSamples(
   return samples.map((s) => ({ ...s, sec: s.sec + deltaSeconds }));
 }
 
-/** Seconds each team spent flagged as actively scoring. */
-export function scoringSecondsByTeam(
-  timelines: TimelineScoutingData[]
+/** Seconds each team spent in one action, summed across their timelines. */
+export function secondsByTeam(
+  timelines: TimelineScoutingData[],
+  action: ActionSegment['action']
 ): Map<string, number> {
   const out = new Map<string, number>();
   for (const t of timelines) {
     let acc = out.get(t.teamKey) ?? 0;
     for (const s of t.segments) {
-      if (isScoring(s)) acc += Math.max(0, s.end - s.start);
+      if (s.action === action) acc += Math.max(0, s.end - s.start);
     }
     out.set(t.teamKey, acc);
   }
   return out;
+}
+
+/** Seconds each team spent flagged as actively scoring. */
+export function scoringSecondsByTeam(
+  timelines: TimelineScoutingData[]
+): Map<string, number> {
+  return secondsByTeam(timelines, 'shoot');
+}
+
+/** Matches each team has a timeline for — the denominator for per-match rates. */
+export function matchCountByTeam(
+  timelines: TimelineScoutingData[]
+): Map<string, number> {
+  const seen = new Map<string, Set<string>>();
+  for (const t of timelines) {
+    const set = seen.get(t.teamKey) ?? new Set<string>();
+    set.add(t.matchKey);
+    seen.set(t.teamKey, set);
+  }
+  return new Map([...seen].map(([k, v]) => [k, v.size]));
 }

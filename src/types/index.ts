@@ -175,6 +175,26 @@ export interface BpsResult {
   windows: number;
   /** Seconds this team was flagged as actively scoring. */
   scoringSeconds: number;
+
+  /* --- Passing, inferred rather than observed --------------------------
+   * Passing scores nothing, so the solver can never see it directly: a
+   * passing robot contributes no points for the regression to attribute.
+   *
+   * The estimate assumes a robot moves fuel at the same rate whether it is
+   * shooting or feeding an ally, so its solved scoring rate doubles as a
+   * handling rate. Fuel is worth 1 point in 2026 REBUILT (SCORING.fuel),
+   * so points-per-second and fuel-per-second are the same number and
+   * `bps × passSeconds` reads directly as fuel.
+   *
+   * This is an inference from an assumption, not a measurement. Any screen
+   * showing it must label it as an estimate.
+   * ------------------------------------------------------------------ */
+  /** Seconds this team was flagged passing to an ally. */
+  passSeconds: number;
+  /** Estimated fuel passed across all scouted matches. */
+  passedFuel: number;
+  /** Estimated fuel passed per match — the headline number. */
+  passedFuelPerMatch: number;
 }
 
 export interface Scouter {

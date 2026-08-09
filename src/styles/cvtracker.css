@@ -373,12 +373,44 @@
   pointer-events: none;
 }
 
+/*
+ * Two regions are drawn, one per alliance, so they are colour-coded to the
+ * alliance they read. The fill stays very light: these boxes sit directly on top
+ * of the numerals the operator is lining them up with, and a heavier tint makes
+ * it impossible to tell whether the digits are actually inside the box.
+ */
 .cv-quad {
-  fill: rgba(0, 186, 255, 0.1);
+  fill: rgba(0, 186, 255, 0.08);
   stroke: #00baff;
   stroke-width: 2;
   stroke-dasharray: 5 3;
   vector-effect: non-scaling-stroke;
+}
+
+.cv-quad.red {
+  fill: rgba(194, 50, 59, 0.1);
+  stroke: #ff5964;
+}
+
+.cv-quad-tag {
+  position: absolute;
+  transform: translateY(-100%);
+  margin-top: -3px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #00baff;
+  color: #04222c;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.cv-quad-tag.red {
+  background: #ff5964;
+  color: #2c0407;
 }
 
 .cv-handle {
@@ -394,23 +426,20 @@
   touch-action: none;
 }
 
+.cv-handle.red {
+  background: #ff5964;
+}
+
 .cv-handle:active {
   cursor: grabbing;
 }
 
-.cv-region-tag {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  background: rgba(0, 0, 0, 0.62);
-  color: #fff;
-  border-radius: 6px;
-  padding: 4px 8px;
-  font-size: 9.5px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
+/*
+ * The old single "Scoreboard Region" caption is gone: it was anchored in the top
+ * strip of the frame, which is exactly where the score plates are, so it covered
+ * the very boxes it was labelling. The two quads now carry their own Blue/Red
+ * tags instead.
+ */
 
 .cv-controls {
   display: flex;

@@ -2,9 +2,9 @@
  * The image half of the CV Scoreboard Tracker.
  *
  * Everything here is plain canvas / typed-array maths — no image library. The
- * chain is: video frame -> perspective-rectify the operator's 4-point quad ->
- * split into a blue crop and a red crop -> grayscale, contrast-stretch, upscale
- * and binarize each crop -> hand the result to tesseract.
+ * chain is: video frame -> perspective-rectify *each* of the two operator quads
+ * (one per alliance score plate) -> grayscale, contrast-stretch, upscale and
+ * binarize each crop -> hand the result to tesseract.
  *
  * Tesseract is dramatically more accurate on large, high-contrast, binarized
  * digits than on a raw 40px-tall broadcast overlay, so the preprocessing is not
@@ -20,16 +20,48 @@ export interface QuadPoint {
 /** Clockwise from top-left: TL, TR, BR, BL. */
 export type Quad = [QuadPoint, QuadPoint, QuadPoint, QuadPoint];
 
-export const DEFAULT_QUAD: Quad = [
-  { x: 0.28, y: 0.06 },
-  { x: 0.72, y: 0.06 },
-  { x: 0.72, y: 0.2 },
-  { x: 0.28, y: 0.2 },
-];
+/** Axis-aligned quad helper, TL/TR/BR/BL, in 0..1 frame fractions. */
+export function rectQuad(x0: number, y0: number, x1: number, y1: number): Quad {
+  return [
+    { x: x0, y: y0 },
+    { x: x1, y: y0 },
+    { x: x1, y: y1 },
+    { x: x0, y: y1 },
+  ];
+}
 
-/** Rectified scoreboard size. Wide and short — it is a score strip. */
-export const RECT_W = 640;
-export const RECT_H = 160;
+/**
+ * Default score-plate regions.
+ *
+ * There are two of them, and that is the whole point. An FRC broadcast bar reads
+ *
+ *   [rank] │ NEWTON  413 │ 0:52 │ 254  ARCHIMEDES │ … │ [rank]
+ *
+ * so the two scores are *not* adjacent halves of one box — they are separated by
+ * the match timer and flanked by alliance names, with a sub-row of team numbers
+ * beneath. A single quad over the whole bar, split 50/50, puts alliance-name
+ * letters and clock digits into both crops; segmentation then finds letter
+ * components, the digit-count cross-check disagrees with the recogniser, and the
+ * pipeline abstains on every frame. Measured on a real 640×360 broadcast that
+ * model read 0 of 12 samples; tight per-score quads read them.
+ *
+ * These numbers are the score plates measured off that broadcast (an FRC
+ * Championship feed). They are a starting point — the operator drags them, and
+ * "Auto-detect regions" finds them from the frame's colour.
+ */
+export const DEFAULT_BLUE_QUAD: Quad = rectQuad(0.405, 0.057, 0.461, 0.121);
+export const DEFAULT_RED_QUAD: Quad = rectQuad(0.529, 0.057, 0.59, 0.121);
+
+/**
+ * Rectified size of ONE score plate.
+ *
+ * Roughly the aspect of a 3-digit plate (37×23 px on the reference broadcast),
+ * blown up ~7×. Aspect matters: the old 640×160 strip stretched a 37px-wide box
+ * horizontally by 17× and vertically by only 7×, which made each numeral wider
+ * than it was tall and pushed it against `digitComponents`' anti-slab filter.
+ */
+export const SCORE_RECT_W = 256;
+export const SCORE_RECT_H = 160;
 
 /** How much the crop is blown up before binarizing, to smooth the glyph edges. */
 export const UPSCALE = 2;
@@ -151,8 +183,8 @@ function sampleLuma(data: Uint8ClampedArray, w: number, h: number, x: number, y:
 export function rectifyToGray(
   frame: ImageData,
   quadFrac: Quad,
-  w = RECT_W,
-  h = RECT_H
+  w = SCORE_RECT_W,
+  h = SCORE_RECT_H
 ): Uint8ClampedArray | null {
   const src = quadFrac.map((p) => ({
     x: p.x * frame.width,
@@ -651,39 +683,214 @@ export function grayToImageData(plane: GrayPlane): ImageData {
 }
 
 /* ------------------------------------------------------------------ *
- * Crop geometry
+ * Plate colour — overlay presence and region auto-detection
  * ------------------------------------------------------------------ */
 
-export interface CropLayout {
-  /** Fraction of the rectified width where the blue/red halves meet. */
-  split: number;
-  /** True when red is drawn on the left of the scoreboard. */
-  swapped: boolean;
-}
-
-export const DEFAULT_LAYOUT: CropLayout = { split: 0.5, swapped: false };
+export type PlateSide = 'blue' | 'red';
 
 /**
- * Split the rectified strip into the two score crops.
+ * Coarse colour class of one pixel.
  *
- * The inset either side of the split is what keeps the centre furniture — the
- * divider and, far more dangerously, the match clock — out of both crops. It is
- * deliberately generous: a 3% inset let a digit of the "1:23" clock leak into
- * the red crop, and since the clock is present in every frame the leak was
- * perfectly consistent, so a red score of 39 read as 139 for an entire match
- * with nothing downstream able to tell it was wrong. The scores themselves sit
- * well out toward the ends of the strip, so there is nothing to lose here.
+ * The FRC overlay's alliance plates are strongly saturated and, crucially, far
+ * more saturated than anything the camera sees behind them — carpet, bumpers and
+ * arena lighting are all comparatively washed out at broadcast bitrates. So a
+ * hue test plus a saturation floor separates "plate" from "everything else"
+ * without needing to know anything about the venue.
  */
-const SPLIT_INSET = 0.09;
-export function splitCrops(
-  rect: GrayPlane,
-  layout: CropLayout
-): { blue: GrayPlane; red: GrayPlane } {
-  const mid = Math.round(rect.width * Math.min(Math.max(layout.split, 0.15), 0.85));
-  const inset = Math.round(rect.width * SPLIT_INSET);
+function classifyPixel(r: number, g: number, b: number): 0 | 1 | 2 {
+  const mx = Math.max(r, g, b);
+  if (mx < 60) return 0;
+  const sat = (mx - Math.min(r, g, b)) / mx;
+  if (sat < 0.35) return 0;
+  if (b === mx && b - r > 45 && b - g > 25) return 1; // blue plate
+  if (r === mx && r - b > 55 && r - g > 55) return 2; // red plate
+  return 0;
+}
 
-  const left = cropGray(rect, 0, 0, Math.max(1, mid - inset), rect.height);
-  const right = cropGray(rect, mid + inset, 0, Math.max(1, rect.width - mid - inset), rect.height);
+/**
+ * Fraction of the quad's bounding box that is the expected plate colour.
+ *
+ * Used for two things: deciding whether the overlay is on screen at all, and
+ * sanity-checking an auto-detected region.
+ */
+export function plateCoverage(frame: ImageData, quad: Quad, side: PlateSide): number {
+  const want = side === 'blue' ? 1 : 2;
+  const xs = quad.map((p) => p.x * frame.width);
+  const ys = quad.map((p) => p.y * frame.height);
+  const x0 = Math.max(0, Math.floor(Math.min(...xs)));
+  const x1 = Math.min(frame.width - 1, Math.ceil(Math.max(...xs)));
+  const y0 = Math.max(0, Math.floor(Math.min(...ys)));
+  const y1 = Math.min(frame.height - 1, Math.ceil(Math.max(...ys)));
+  if (x1 <= x0 || y1 <= y0) return 0;
 
-  return layout.swapped ? { blue: right, red: left } : { blue: left, red: right };
+  let hit = 0;
+  let total = 0;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = (y * frame.width + x) * 4;
+      if (classifyPixel(frame.data[i], frame.data[i + 1], frame.data[i + 2]) === want) hit++;
+      total++;
+    }
+  }
+  return total ? hit / total : 0;
+}
+
+/**
+ * Minimum plate coverage for the overlay to count as "on screen".
+ *
+ * A score plate is mostly plate colour — white numerals cover maybe a third of
+ * it — so a correctly-placed quad sits comfortably above 0.4 in practice. A
+ * replay, a crowd shot or a pit camera lands near zero. The threshold is set low
+ * enough that a slightly mis-dragged quad still counts as present (better to
+ * attempt the read and let the digit-count guard abstain) but high enough that
+ * an absent overlay is never mistaken for a hard OCR failure.
+ */
+export const OVERLAY_MIN_COVERAGE = 0.18;
+
+export function isOverlayPresent(frame: ImageData, blueQuad: Quad, redQuad: Quad): boolean {
+  return (
+    plateCoverage(frame, blueQuad, 'blue') >= OVERLAY_MIN_COVERAGE &&
+    plateCoverage(frame, redQuad, 'red') >= OVERLAY_MIN_COVERAGE
+  );
+}
+
+export interface DetectedRegions {
+  blue: Quad;
+  red: Quad;
+}
+
+/** Contiguous runs of `arr` at or above `thr`, at least `minLen` long. */
+function runsAbove(arr: Int32Array, thr: number, minLen: number): [number, number][] {
+  const out: [number, number][] = [];
+  let start = -1;
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i] >= thr) {
+      if (start < 0) start = i;
+    } else if (start >= 0) {
+      if (i - start >= minLen) out.push([start, i - 1]);
+      start = -1;
+    }
+  }
+  if (start >= 0 && arr.length - start >= minLen) out.push([start, arr.length - 1]);
+  return out;
+}
+
+function longestRun(runs: [number, number][]): [number, number] | null {
+  let best: [number, number] | null = null;
+  for (const r of runs) if (!best || r[1] - r[0] > best[1] - best[0]) best = r;
+  return best;
+}
+
+/**
+ * Find the two score plates in a frame, with no operator input.
+ *
+ * The geometry that makes this tractable is that the bar is *symmetric about the
+ * match timer*: a blue mass, a non-alliance-coloured timer plate, then a red
+ * mass. So rather than trying to tell a score plate from an alliance-name plate
+ * by colour — they are the same colour — we find the gap between the two masses
+ * and use it as the ruler. The timer plate and the two score plates are all
+ * about one 3-digit box wide, so the score box is the gap's width taken inward
+ * from each mass's facing edge.
+ *
+ * Returns null when the frame does not look like a scoreboard at all, which the
+ * caller reports rather than silently leaving the quads where they were.
+ */
+export function detectScoreRegions(frame: ImageData): DetectedRegions | null {
+  const W = frame.width;
+  const H = frame.height;
+  // The bar always lives in the top strip; searching the whole frame just invites
+  // bumpers and alliance-coloured field lighting into the answer.
+  const yMax = Math.max(8, Math.round(H * 0.25));
+
+  const cls = new Uint8Array(W * yMax);
+  const rowB = new Int32Array(yMax);
+  const rowR = new Int32Array(yMax);
+  for (let y = 0; y < yMax; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = (y * W + x) * 4;
+      const c = classifyPixel(frame.data[i], frame.data[i + 1], frame.data[i + 2]);
+      cls[y * W + x] = c;
+      if (c === 1) rowB[y]++;
+      else if (c === 2) rowR[y]++;
+    }
+  }
+
+  // The bar is the only band with a lot of BOTH colours on the same rows.
+  // Requiring both is what rejects stage lighting and a purple-lit crowd, which
+  // on the reference broadcast produced a full-width blue-only band at y=0..3.
+  const both = new Int32Array(yMax);
+  for (let y = 0; y < yMax; y++) both[y] = Math.min(rowB[y], rowR[y]);
+  const band = longestRun(runsAbove(both, W * 0.08, 4));
+  if (!band) return null;
+  const [by0, by1] = band;
+  const bandH = by1 - by0 + 1;
+
+  const colB = new Int32Array(W);
+  const colR = new Int32Array(W);
+  for (let y = by0; y <= by1; y++) {
+    for (let x = 0; x < W; x++) {
+      const c = cls[y * W + x];
+      if (c === 1) colB[x]++;
+      else if (c === 2) colR[x]++;
+    }
+  }
+
+  // The alliance-name-plus-score block is the widest run of each colour; the
+  // small rank plates out at the ends of the bar are much narrower.
+  const blueRun = longestRun(runsAbove(colB, bandH * 0.25, 8));
+  const redRun = longestRun(runsAbove(colR, bandH * 0.25, 8));
+  if (!blueRun || !redRun) return null;
+
+  // Blue left of red, or mirrored — either way the facing edges bracket the timer.
+  const blueFirst = blueRun[1] < redRun[0];
+  const gapStart = blueFirst ? blueRun[1] : redRun[1];
+  const gapEnd = blueFirst ? redRun[0] : blueRun[0];
+  const gap = gapEnd - gapStart;
+  // A plausible timer plate is a few percent of the frame. Wider means the two
+  // runs are unrelated blobs, not the two halves of one scoreboard.
+  if (gap < W * 0.015 || gap > W * 0.14) return null;
+
+  const boxW = gap * 0.95;
+  const blueX = blueFirst
+    ? ([blueRun[1] - boxW, blueRun[1]] as const)
+    : ([blueRun[0], blueRun[0] + boxW] as const);
+  const redX = blueFirst
+    ? ([redRun[0], redRun[0] + boxW] as const)
+    : ([redRun[1] - boxW, redRun[1]] as const);
+
+  // Vertical extent: the score plate is solid colour on the main row and gives
+  // way to the darker team-number sub-row beneath, so walk down the score box's
+  // own columns until the colour stops.
+  const plateRows = (xa: number, xb: number, want: number): [number, number] => {
+    const x0 = Math.max(0, Math.round(xa));
+    const x1 = Math.min(W - 1, Math.round(xb));
+    const span = Math.max(1, x1 - x0 + 1);
+    const rows = new Int32Array(bandH);
+    for (let y = by0; y <= by1; y++) {
+      let n = 0;
+      for (let x = x0; x <= x1; x++) if (cls[y * W + x] === want) n++;
+      rows[y - by0] = n;
+    }
+    const run = longestRun(runsAbove(rows, span * 0.4, 3));
+    return run ? [by0 + run[0], by0 + run[1]] : [by0, by1];
+  };
+
+  const [byTop, byBot] = plateRows(blueX[0], blueX[1], 1);
+  const [ryTop, ryBot] = plateRows(redX[0], redX[1], 2);
+
+  // Inset to drop the plate's own border, which otherwise segments as a
+  // full-height bar and is read as a leading `1`.
+  const inset = (a: number, b: number, f: number) => {
+    const d = (b - a) * f;
+    return [a + d, b - d] as const;
+  };
+  const [bx0, bx1] = inset(blueX[0], blueX[1], 0.04);
+  const [rx0, rx1] = inset(redX[0], redX[1], 0.04);
+  const [byA, byB] = inset(byTop, byBot + 1, 0.06);
+  const [ryA, ryB] = inset(ryTop, ryBot + 1, 0.06);
+
+  return {
+    blue: rectQuad(bx0 / W, byA / H, bx1 / W, byB / H),
+    red: rectQuad(rx0 / W, ryA / H, rx1 / W, ryB / H),
+  };
 }

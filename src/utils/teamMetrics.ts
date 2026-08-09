@@ -136,6 +136,16 @@ export interface TeamMetrics {
   passSeconds: number;
   defSeconds: number;
   oofSeconds: number;
+  /**
+   * Estimated fuel passed to allies per match.
+   *
+   * Inferred, not measured: passing puts nothing on the scoreboard, so the
+   * solver cannot see it. Assumes a robot moves fuel at the same rate whether
+   * shooting or feeding, and fuel is 1 point in 2026, so its solved teleop
+   * rate doubles as a fuel-per-second handling rate. Label it as an estimate
+   * wherever it is shown.
+   */
+  passedFuelPerMatch: number;
   /** Where this team's per-match points came from. */
   source: MetricSource;
   hasBps: boolean;
@@ -316,6 +326,7 @@ function emptyMetrics(teamKey: string, matchesScheduled: number): TeamMetrics {
     passSeconds: 0,
     defSeconds: 0,
     oofSeconds: 0,
+    passedFuelPerMatch: 0,
     source: 'legacy',
     hasBps: false,
   };
@@ -469,6 +480,8 @@ export function buildTeamMetrics(
     passSeconds: secTotal('pass'),
     defSeconds: secTotal('def'),
     oofSeconds: secTotal('oof'),
+    // Per-match, straight off the solver so the two agree exactly.
+    passedFuelPerMatch: rates?.passedFuelPerMatch ?? 0,
     source,
     hasBps,
   };

@@ -6,7 +6,13 @@ import {
   MATCH_LEN,
   TimelineScoutingData,
 } from '../../types';
-import { buildWindows, scoringSecondsByTeam, shiftSamples } from './windows';
+import {
+  buildWindows,
+  matchCountByTeam,
+  scoringSecondsByTeam,
+  secondsByTeam,
+  shiftSamples,
+} from './windows';
 import { SolveOptions, solveBps, toRateMap } from './solver';
 
 export { buildWindows, buildAllianceWindows } from './windows';
@@ -144,16 +150,31 @@ export function runBpsPipeline(
   }
 
   const seconds = scoringSecondsByTeam(timelines);
+  const passSecs = secondsByTeam(timelines, 'pass');
+  const matchCounts = matchCountByTeam(timelines);
   const teams = [...new Set([...Object.keys(finalRates), ...seconds.keys()])].sort();
 
-  const results: BpsResult[] = teams.map((teamKey) => ({
-    teamKey,
-    bps: round3(finalRates[teamKey] ?? 0),
-    autoBps: round3(autoRates[teamKey] ?? finalRates[teamKey] ?? 0),
-    teleopBps: round3(teleopRates[teamKey] ?? finalRates[teamKey] ?? 0),
-    windows: windowCounts[teamKey] ?? 0,
-    scoringSeconds: round3(seconds.get(teamKey) ?? 0),
-  }));
+  const results: BpsResult[] = teams.map((teamKey) => {
+    const bps = round3(finalRates[teamKey] ?? 0);
+    const passSeconds = round3(passSecs.get(teamKey) ?? 0);
+    // Teleop rate, not overall: passing happens in teleop, and the auto rate
+    // is solved from only 20s a match so it is far noisier.
+    const handlingRate = teleopRates[teamKey] ?? finalRates[teamKey] ?? 0;
+    const passedFuel = passSeconds * handlingRate;
+    const matches = matchCounts.get(teamKey) ?? 0;
+
+    return {
+      teamKey,
+      bps,
+      autoBps: round3(autoRates[teamKey] ?? finalRates[teamKey] ?? 0),
+      teleopBps: round3(handlingRate),
+      windows: windowCounts[teamKey] ?? 0,
+      scoringSeconds: round3(seconds.get(teamKey) ?? 0),
+      passSeconds,
+      passedFuel: round3(passedFuel),
+      passedFuelPerMatch: matches ? round3(passedFuel / matches) : 0,
+    };
+  });
 
   const byTeam: Record<string, BpsResult> = {};
   for (const r of results) byTeam[r.teamKey] = r;
@@ -343,6 +364,9 @@ function emptyReport(
   dropped: number
 ): BpsReport {
   const seconds = scoringSecondsByTeam(timelines);
+  const passSecs = secondsByTeam(timelines, 'pass');
+  // With no solved rate there is no handling rate either, so passed fuel stays
+  // 0 rather than being guessed from seconds alone.
   const results: BpsResult[] = [...seconds.keys()].sort().map((teamKey) => ({
     teamKey,
     bps: 0,
@@ -350,6 +374,9 @@ function emptyReport(
     teleopBps: 0,
     windows: 0,
     scoringSeconds: round3(seconds.get(teamKey) ?? 0),
+    passSeconds: round3(passSecs.get(teamKey) ?? 0),
+    passedFuel: 0,
+    passedFuelPerMatch: 0,
   }));
   const byTeam: Record<string, BpsResult> = {};
   for (const r of results) byTeam[r.teamKey] = r;

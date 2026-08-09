@@ -41,16 +41,25 @@ function CropPreview({ plane, label }: { plane: GrayPlane | null; label: string 
 interface QuadEditorProps {
   quad: Quad;
   onChange: (q: Quad) => void;
+  /** Which alliance this region belongs to — drives the stroke colour. */
+  tone: 'blue' | 'red';
+  label: string;
 }
 
 /**
- * The four draggable corners.
+ * The four draggable corners of one score region.
+ *
+ * Two of these are rendered, one per alliance, because the two scores are not
+ * adjacent halves of one box on a real broadcast — the match timer sits between
+ * them. They are colour-coded rather than numbered so an operator can tell at a
+ * glance that the blue box is on the blue plate and has not been dragged onto
+ * the alliance name or the clock.
  *
  * Pointer events rather than mouse events, and capture on the handle, so a drag
  * keeps tracking when the finger or cursor leaves the box — which it will, since
  * the corners live on the edges.
  */
-function QuadHandles({ quad, onChange }: QuadEditorProps) {
+function QuadHandles({ quad, onChange, tone, label }: QuadEditorProps) {
   const drag = useRef<number | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
 
@@ -81,13 +90,26 @@ function QuadHandles({ quad, onChange }: QuadEditorProps) {
         preserveAspectRatio="none"
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
       >
-        <polygon className="cv-quad" points={quad.map((p) => `${p.x * 100},${p.y * 100}`).join(' ')} />
+        <polygon
+          className={`cv-quad ${tone}`}
+          points={quad.map((p) => `${p.x * 100},${p.y * 100}`).join(' ')}
+        />
       </svg>
+
+      <span
+        className={`cv-quad-tag ${tone}`}
+        style={{
+          left: `${Math.min(...quad.map((p) => p.x)) * 100}%`,
+          top: `${Math.min(...quad.map((p) => p.y)) * 100}%`,
+        }}
+      >
+        {label}
+      </span>
 
       {quad.map((p, i) => (
         <div
           key={i}
-          className="cv-handle"
+          className={`cv-handle ${tone}`}
           style={{ left: `${p.x * 100}%`, top: `${p.y * 100}%` }}
           onPointerDown={(e) => {
             drag.current = i;
@@ -267,7 +289,7 @@ export function CvTracker({ onBack }: CvTrackerProps) {
           <div className="cv-col">
             <div className="cv-card">
               <div className="cv-card-head">
-                <span className="cv-card-title">Scoreboard Region — 4-Point Quad</span>
+                <span className="cv-card-title">Score Regions — One Quad Per Alliance</span>
                 <span className="cv-card-note">{t.sourceLabel}</span>
               </div>
 
@@ -280,8 +302,8 @@ export function CvTracker({ onBack }: CvTrackerProps) {
                     Upload a file, paste a direct video URL, or share your screen.
                   </div>
                 )}
-                <QuadHandles quad={t.quad} onChange={t.setQuad} />
-                <span className="cv-region-tag">Scoreboard Region</span>
+                <QuadHandles quad={t.blueQuad} onChange={t.setBlueQuad} tone="blue" label="Blue" />
+                <QuadHandles quad={t.redQuad} onChange={t.setRedQuad} tone="red" label="Red" />
               </div>
 
               <div className="cv-controls">
@@ -293,6 +315,9 @@ export function CvTracker({ onBack }: CvTrackerProps) {
                 </button>
                 <button className="cv-btn-outline" onClick={t.reset}>
                   Reset
+                </button>
+                <button className="cv-btn-outline" onClick={t.autoDetect}>
+                  Auto-detect Regions
                 </button>
                 <button className="cv-btn-outline" onClick={t.resetQuad}>
                   Reset Quad
@@ -312,37 +337,18 @@ export function CvTracker({ onBack }: CvTrackerProps) {
               </div>
 
               <div className="cv-tune">
-                <label>
-                  Split
-                  <input
-                    type="range"
-                    min={20}
-                    max={80}
-                    value={Math.round(t.layout.split * 100)}
-                    onChange={(e) =>
-                      t.setLayout({ ...t.layout, split: Number(e.target.value) / 100 })
-                    }
-                  />
-                  {Math.round(t.layout.split * 100)}%
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={t.layout.swapped}
-                    onChange={(e) => t.setLayout({ ...t.layout, swapped: e.target.checked })}
-                  />
-                  Red on the left
-                </label>
-                <span>
-                  {t.status}
-                  {t.rejections > 0 && ` · ${t.rejections} reads rejected`}
-                </span>
+                <span>{t.status}</span>
+                {t.rejections > 0 && <span>{t.rejections} reads rejected</span>}
+                {/* Kept separate from rejections on purpose: a replay or crowd cut
+                    means the pipeline was never asked to read anything, so
+                    counting it as a failure would make a healthy run look broken. */}
+                {t.skipped > 0 && <span>{t.skipped} frames with no scoreboard</span>}
                 <span>{t.dirty ? 'unsaved' : t.samples.length ? 'saved' : ''}</span>
               </div>
 
               <div className="cv-previews">
-                <CropPreview plane={t.previews.blue} label="Blue crop as OCR sees it" />
-                <CropPreview plane={t.previews.red} label="Red crop as OCR sees it" />
+                <CropPreview plane={t.previews.blue} label="Blue score as OCR sees it" />
+                <CropPreview plane={t.previews.red} label="Red score as OCR sees it" />
               </div>
             </div>
 
@@ -466,8 +472,8 @@ export function CvTracker({ onBack }: CvTrackerProps) {
 
                 {!t.samples.length && (
                   <div className="cv-empty">
-                    Nothing logged yet. Load footage, drag the quad over the scoreboard, then press
-                    Start.
+                    Nothing logged yet. Load footage, press Auto-detect Regions (or drag the blue and
+                    red boxes onto the two score numbers), then press Start.
                   </div>
                 )}
               </div>

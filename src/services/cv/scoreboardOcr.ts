@@ -17,17 +17,16 @@
 
 import type { Worker as TesseractWorker } from 'tesseract.js';
 import {
-  CropLayout,
   GrayPlane,
   PREP_VARIANTS,
   PreparedCrop,
   Quad,
-  RECT_H,
-  RECT_W,
+  SCORE_RECT_H,
+  SCORE_RECT_W,
   grayToImageData,
+  isOverlayPresent,
   preprocessCrop,
   rectifyToGray,
-  splitCrops,
 } from './imagePipeline';
 
 /**
@@ -132,12 +131,44 @@ export async function recognizePlane(
 
   const { data } = await worker.recognize(canvas);
   const text = (data.text || '').replace(/\D/g, '');
-  if (!text || text.length !== digitCount) {
+  const confidence = data.confidence ?? 0;
+  if (!text) return { value: null, confidence: 0, text };
+
+  // The check is deliberately asymmetric, because the two directions mean
+  // opposite things.
+  //
+  //   text SHORTER than the blob count  — tesseract dropped a digit. This is
+  //     the failure the guard exists for: `161` read as `16` is plausible and
+  //     silently wrong. Always abstain.
+  //
+  //   text LONGER than the blob count   — two numerals touched after
+  //     binarizing and merged into one blob, so the *component count* is what
+  //     is wrong. Measured on real broadcast footage: `641` binarizes to 2
+  //     blobs while tesseract reads all three characters correctly, and the
+  //     old symmetric check rejected that correct read on every frame for the
+  //     last 9 seconds of the match. Reading more glyphs than blobs is
+  //     evidence of correct separation, not of invention.
+  //
+  // The over-count branch still has to earn it: a high confidence bar, and at
+  // most two merges, so a hallucinated run of digits is not waved through.
+  // Whatever slips past still faces ScoreGate's monotonic and max-jump rules.
+  const merged = text.length - digitCount;
+  const acceptable =
+    merged === 0 || (merged > 0 && merged <= 2 && confidence >= MERGED_GLYPH_MIN_CONFIDENCE);
+  if (!acceptable) {
     return { value: null, confidence: 0, text };
   }
+
   const value = Number(text);
-  return { value: Number.isFinite(value) ? value : null, confidence: data.confidence ?? 0, text };
+  return { value: Number.isFinite(value) ? value : null, confidence, text };
 }
+
+/**
+ * Confidence required to trust a read whose glyphs merged into fewer blobs
+ * than characters. Higher than MIN_CONFIDENCE because this path is accepting a
+ * read the component count disagrees with.
+ */
+export const MERGED_GLYPH_MIN_CONFIDENCE = 80;
 
 export interface CropRead {
   read: RawRead;
@@ -313,19 +344,28 @@ export interface FrameReadResult {
   /** Segmented crops, for the operator's "what OCR sees" preview. */
   bluePlane: GrayPlane | null;
   redPlane: GrayPlane | null;
+  /**
+   * False when the score plates are not on screen — a replay, a crowd shot, a
+   * pit interview. Distinct from an OCR failure: nothing was attempted, so the
+   * caller should drop the sample entirely rather than log a held value or
+   * count a rejection.
+   */
+  overlayPresent: boolean;
 }
 
 /**
- * Rectify a frame, read both halves, and gate the results against the running
- * scores. `source` is any drawable — a `<video>`, or a canvas in tests.
+ * Rectify a frame, read both score plates, and gate the results against the
+ * running scores. `source` is any drawable — a `<video>`, or a canvas in tests.
+ *
+ * Two independent quads, not one quad split in two. See `DEFAULT_BLUE_QUAD`.
  */
 export async function readFrame(
   worker: TesseractWorker,
   source: CanvasImageSource,
   sourceW: number,
   sourceH: number,
-  quad: Quad,
-  layout: CropLayout,
+  blueQuad: Quad,
+  redQuad: Quad,
   blueTracker: ScoreGate,
   redTracker: ScoreGate
 ): Promise<FrameReadResult | null> {
@@ -340,11 +380,27 @@ export async function readFrame(
   // the "use upload or screen share" message rather than faking data.
   const frame = fctx.getImageData(0, 0, sourceW, sourceH);
 
-  const gray = rectifyToGray(frame, quad, RECT_W, RECT_H);
-  if (!gray) return null;
-  const rect: GrayPlane = { data: gray, width: RECT_W, height: RECT_H };
+  // Cheap colour test first: if the overlay is not on screen there is nothing to
+  // read, and running tesseract on a crowd shot only manufactures rejections.
+  if (!isOverlayPresent(frame, blueQuad, redQuad)) {
+    return {
+      blue: blueTracker.value,
+      red: redTracker.value,
+      blueAccepted: false,
+      redAccepted: false,
+      blueRaw: { value: null, confidence: 0, text: '' },
+      redRaw: { value: null, confidence: 0, text: '' },
+      bluePlane: null,
+      redPlane: null,
+      overlayPresent: false,
+    };
+  }
 
-  const { blue, red } = splitCrops(rect, layout);
+  const blueGray = rectifyToGray(frame, blueQuad, SCORE_RECT_W, SCORE_RECT_H);
+  const redGray = rectifyToGray(frame, redQuad, SCORE_RECT_W, SCORE_RECT_H);
+  if (!blueGray || !redGray) return null;
+  const blue: GrayPlane = { data: blueGray, width: SCORE_RECT_W, height: SCORE_RECT_H };
+  const red: GrayPlane = { data: redGray, width: SCORE_RECT_W, height: SCORE_RECT_H };
 
   const blueCrop = await recognizeCrop(worker, blue);
   const redCrop = await recognizeCrop(worker, red);
@@ -363,5 +419,6 @@ export async function readFrame(
     redRaw,
     bluePlane: blueCrop.preview,
     redPlane: redCrop.preview,
+    overlayPresent: true,
   };
 }
