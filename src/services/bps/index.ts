@@ -64,7 +64,20 @@ export interface BpsReport {
 }
 
 const DEFAULTS = {
-  maxTimeShift: 3,
+  /**
+   * Widest per-match time correction considered, in seconds.
+   *
+   * The spec suggests ±3s, sized for livestream lag. That was the right bound
+   * when both streams were machine-timed, but the human stream is not: a scout
+   * starts their clock by hand at the buzzer, and being several seconds late
+   * on a noisy field is ordinary. Once the CV stream derives its timestamps
+   * from the scoreboard clock it is the accurate side of the pair, so what
+   * this pass now mostly absorbs is scout reaction time — which needs more
+   * room than lag did.
+   *
+   * The search still prefers zero on ties, so a well-timed match is left alone.
+   */
+  maxTimeShift: 8,
   timeShiftStep: 0.5,
   priorStrength: 0.35,
 };
