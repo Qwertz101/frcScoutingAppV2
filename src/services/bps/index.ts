@@ -119,8 +119,24 @@ export function runBpsPipeline(
   // ---- Pass 2: time-sync auto-tuning ----------------------------------
   // Run before prior shrinkage so the shrinkage pass sees correctly aligned
   // windows; a mis-timed match would otherwise poison the priors it shrinks to.
+  //
+  // Gated on having at least two solved matches. The pass searches for a
+  // per-match shift that best fits `priors` — but with only one match solved,
+  // those priors ARE that match's own baseline fit, so the search is scoring
+  // each shift against itself. Verified this is a real failure mode, not a
+  // theoretical one: on a single real match with three scouted robots, a
+  // shift that cut aggregate weighted residual ~19% took one robot's rate
+  // from a clean, well-evidenced 1.09 to a hard 0 — not because its evidence
+  // vanished (13 solo-scored windows summing to 32 points barely moved), but
+  // because three independent scouts each pressed Start with their own
+  // reaction-time lag, and one shared match-wide shift can only fit the
+  // dominant scorer's timing at the others' expense. A second match with
+  // frc3255 in it gives the shrinkage pass an external prior to check the
+  // shift against instead of just this match's own fit; short of that, not
+  // shifting at all is the safer default.
+  const solvedMatchCount = new Set(windows.map((w) => w.matchKey)).size;
   const timeShifts: Record<string, number> = {};
-  if (passes.timeSync) {
+  if (passes.timeSync && solvedMatchCount >= 2) {
     const tuned = tuneTimeShifts(timelines, activeLogs, priors, opts);
     Object.assign(timeShifts, tuned.shifts);
     if (tuned.changed) {

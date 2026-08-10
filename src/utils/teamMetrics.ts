@@ -530,7 +530,17 @@ export function buildAllTeamMetrics(
 
   // Teams that only ever appear on a timeline still deserve a row.
   // With no timelines this is `teamKeys` unchanged, order included.
-  const allKeys = [...new Set([...teamKeys, ...Object.keys(timelinesByTeam)])];
+  //
+  // A team_key can come out empty when a scout is assigned to a match whose
+  // schedule is missing that alliance slot (LiveMatch guards against this
+  // going forward, but stray rows saved before that guard existed can still
+  // be sitting on the server). Filtering here — the single place every
+  // roster gets assembled — means a row like that can never again render as
+  // a numberless "team #0" no matter which path produced it.
+  const isRealTeamKey = (tk: string) => /^frc\d+$/.test(tk);
+  const allKeys = [...new Set([...teamKeys, ...Object.keys(timelinesByTeam)])].filter(
+    isRealTeamKey
+  );
 
   return allKeys.map((tk) =>
     buildTeamMetrics(tk, byTeam[tk] || [], scheduledFor(tk), {

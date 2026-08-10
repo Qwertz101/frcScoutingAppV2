@@ -311,6 +311,30 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
 
   /* ---------------- 01 pre-match ---------------- */
   if (phase === 'pre') {
+    // A match with an incomplete schedule (an alliance short a team_key) has
+    // no robot to assign this scout to. Recording anyway would save a
+    // timeline under an empty team key that can never be attributed to
+    // anyone and shows up as a numberless "team" in every downstream screen
+    // — better to stop here than let a scout spend three minutes on data
+    // nothing can use.
+    if (!teamKey) {
+      return (
+        <div className="cc-root">
+          {header}
+          <section className="lm-page">
+            <div className="lm-center">
+              <h1 className="lm-title">TEAM ASSIGNMENT MISSING</h1>
+              <p className="lm-lede">
+                {matchLabel} doesn&apos;t have a {user.alliance} alliance team in position{' '}
+                {user.position} on the loaded schedule, so there is no robot to assign you to. This
+                usually means the match schedule for this event is incomplete. Ask your admin to
+                re-check &amp; re-save the schedule under Match Selection.
+              </p>
+            </div>
+          </section>
+        </div>
+      );
+    }
     return (
       <div className="cc-root">
         {header}

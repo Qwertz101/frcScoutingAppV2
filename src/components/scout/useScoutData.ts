@@ -56,9 +56,20 @@ export function useScoutData() {
       ]);
 
       if (!mounted) return;
+      // The server holds timelines/CV logs for every event any device has
+      // ever scouted — same shape as the `matches` table, and the same fix
+      // applies: scope to the selected event here, at the one place both
+      // streams enter the workspace. Unscoped, another event's leftover data
+      // (a stray test run, last month's regional) silently blends into this
+      // event's solve — every team's rate shifts, and the solver's "how many
+      // matches have I actually got" bookkeeping undercounts the pollution
+      // as real evidence.
+      const selectedEvent = DataService.getSelectedEvent();
+      const inSelectedEvent = (matchKey: string) =>
+        !selectedEvent || DataService.matchBelongsToEvent({ key: matchKey }, selectedEvent);
       setRows(loaded);
-      setTimelines(tl);
-      setCvLogs(cv);
+      setTimelines(tl.filter((t) => inSelectedEvent(t.matchKey)));
+      setCvLogs(cv.filter((c) => inSelectedEvent(c.matchKey)));
       setDataError(error);
       setLoading(false);
     })();
