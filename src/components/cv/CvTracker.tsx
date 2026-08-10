@@ -41,8 +41,8 @@ function CropPreview({ plane, label }: { plane: GrayPlane | null; label: string 
 interface QuadEditorProps {
   quad: Quad;
   onChange: (q: Quad) => void;
-  /** Which alliance this region belongs to — drives the stroke colour. */
-  tone: 'blue' | 'red';
+  /** Which region this is — drives the stroke colour. */
+  tone: 'blue' | 'red' | 'timer';
   label: string;
 }
 
@@ -249,16 +249,10 @@ export function CvTracker({ onBack }: CvTrackerProps) {
             <button className="cv-btn-outline" onClick={t.shareScreen}>
               Share Screen
             </button>
-            <select
-              className="cv-select"
-              value={t.speed}
-              onChange={(e) => t.setSpeed(Number(e.target.value))}
-              disabled={t.sourceKind === 'screen'}
-            >
-              <option value={1}>1.0×</option>
-              <option value={3}>3.0×</option>
-              <option value={5}>5.0×</option>
-            </select>
+            {/* No playback-speed control any more: recorded footage is seeked
+                to each target second rather than played at it, so it is read as
+                fast as OCR allows and a slow pass costs wall time instead of
+                bending the timeline. */}
             <label className="cv-btn-outline cv-file-btn">
               Import JSON
               <input
@@ -304,6 +298,10 @@ export function CvTracker({ onBack }: CvTrackerProps) {
                 )}
                 <QuadHandles quad={t.blueQuad} onChange={t.setBlueQuad} tone="blue" label="Blue" />
                 <QuadHandles quad={t.redQuad} onChange={t.setRedQuad} tone="red" label="Red" />
+                {/* The clock plate is a first-class region: it is what stamps
+                    every sample with a real match time, so a mis-dragged box
+                    here costs the whole log its alignment. */}
+                <QuadHandles quad={t.timerQuad} onChange={t.setTimerQuad} tone="timer" label="Timer" />
               </div>
 
               <div className="cv-controls">
@@ -323,7 +321,8 @@ export function CvTracker({ onBack }: CvTrackerProps) {
                   Reset Quad
                 </button>
                 <div className="cv-controls-spacer" />
-                <span className="cv-clock">{t.clock}</span>
+                {/* The plate as read, next to the match time derived from it. */}
+                <span className="cv-clock">{t.timerText || t.clock}</span>
                 <button
                   className="cv-btn-grad"
                   disabled={!t.samples.length}
@@ -336,8 +335,25 @@ export function CvTracker({ onBack }: CvTrackerProps) {
                 </button>
               </div>
 
+              {/* Wrongly-timed data is worse than no data, so the fallback is
+                  never silent: if the clock could not be read, the log's
+                  alignment is only as good as the operator's Start press. */}
+              {t.timerFallback && (
+                <div className="cv-notice warn">
+                  The match timer could not be read, so times are being counted from when you
+                  pressed Start rather than taken from the scoreboard. Drag the <strong>Timer</strong>{' '}
+                  box onto the clock and re-record, or expect this log to be offset.
+                </div>
+              )}
+
               <div className="cv-tune">
                 <span>{t.status}</span>
+                {t.clockStarted && !t.timerFallback && (
+                  <span>
+                    clock locked · {t.phase} · {t.timerReads.ok}/{t.timerReads.tried} clock ticks
+                    accepted
+                  </span>
+                )}
                 {t.rejections > 0 && <span>{t.rejections} reads rejected</span>}
                 {/* Kept separate from rejections on purpose: a replay or crowd cut
                     means the pipeline was never asked to read anything, so
@@ -349,6 +365,7 @@ export function CvTracker({ onBack }: CvTrackerProps) {
               <div className="cv-previews">
                 <CropPreview plane={t.previews.blue} label="Blue score as OCR sees it" />
                 <CropPreview plane={t.previews.red} label="Red score as OCR sees it" />
+                <CropPreview plane={t.previews.timer} label="Match timer as OCR sees it" />
               </div>
             </div>
 

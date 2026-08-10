@@ -392,6 +392,16 @@
   stroke: #ff5964;
 }
 
+/*
+ * The clock plate. Amber rather than a third alliance-ish colour: it is not an
+ * alliance, and it is the box that decides *when* every sample happened, so it
+ * should read as its own kind of thing at a glance.
+ */
+.cv-quad.timer {
+  fill: rgba(255, 193, 7, 0.1);
+  stroke: #ffc107;
+}
+
 .cv-quad-tag {
   position: absolute;
   transform: translateY(-100%);
@@ -413,6 +423,11 @@
   color: #2c0407;
 }
 
+.cv-quad-tag.timer {
+  background: #ffc107;
+  color: #2c2404;
+}
+
 .cv-handle {
   position: absolute;
   width: 16px;
@@ -428,6 +443,10 @@
 
 .cv-handle.red {
   background: #ff5964;
+}
+
+.cv-handle.timer {
+  background: #ffc107;
 }
 
 .cv-handle:active {

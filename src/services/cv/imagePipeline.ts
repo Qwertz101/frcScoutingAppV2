@@ -53,6 +53,22 @@ export const DEFAULT_BLUE_QUAD: Quad = rectQuad(0.405, 0.057, 0.461, 0.121);
 export const DEFAULT_RED_QUAD: Quad = rectQuad(0.529, 0.057, 0.59, 0.121);
 
 /**
+ * The match timer plate, which sits *between* the two score plates.
+ *
+ * Reading it is what lets a sample's timestamp come from the same pixels as its
+ * score, so OCR latency can no longer stretch the timeline. The plate is the
+ * inverse of the score plates — black `M:SS` on white — which
+ * `normalizePolarity` already handles without a hint, because it decides
+ * polarity from the grayscale median and the plate is the majority of the crop.
+ *
+ * Measured off the same 640x360 reference broadcast as the score quads: the
+ * white plate occupies x 300..339, y 20..44 px. The `2 / 6  :08` sub-row below
+ * it is deliberately excluded — it is a second line of text and would give the
+ * segmenter far more than three blobs, which `segmentDigits` refuses outright.
+ */
+export const DEFAULT_TIMER_QUAD: Quad = rectQuad(301 / 640, 21 / 360, 338 / 640, 43 / 360);
+
+/**
  * Rectified size of ONE score plate.
  *
  * Roughly the aspect of a 3-digit plate (37×23 px on the reference broadcast),
@@ -757,6 +773,13 @@ export function isOverlayPresent(frame: ImageData, blueQuad: Quad, redQuad: Quad
 export interface DetectedRegions {
   blue: Quad;
   red: Quad;
+  /**
+   * The match timer plate. Auto-detect already *measures* the gap between the
+   * two alliance masses — that gap is the ruler it sizes the score boxes with —
+   * so the timer's location is a by-product of work already done, not a second
+   * search.
+   */
+  timer: Quad;
 }
 
 /** Contiguous runs of `arr` at or above `thr`, at least `minLen` long. */
@@ -889,8 +912,16 @@ export function detectScoreRegions(frame: ImageData): DetectedRegions | null {
   const [byA, byB] = inset(byTop, byBot + 1, 0.06);
   const [ryA, ryB] = inset(ryTop, ryBot + 1, 0.06);
 
+  // The timer plate fills the gap. Its vertical extent is the alliance plates'
+  // main row — the sub-row underneath (`2 / 6  :08` on the reference feed) is a
+  // second line of text and must stay out of the crop — so the blue plate's own
+  // rows are reused rather than re-measured off a white plate whose colour the
+  // classifier deliberately ignores.
+  const [tx0, tx1] = inset(gapStart, gapEnd, 0.07);
+
   return {
     blue: rectQuad(bx0 / W, byA / H, bx1 / W, byB / H),
     red: rectQuad(rx0 / W, ryA / H, rx1 / W, ryB / H),
+    timer: rectQuad(tx0 / W, byA / H, tx1 / W, byB / H),
   };
 }

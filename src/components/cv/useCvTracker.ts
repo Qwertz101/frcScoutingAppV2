@@ -5,11 +5,13 @@ import { getCvLog, getCvLogs, saveCvLog } from '../../services/bpsStore';
 import {
   DEFAULT_BLUE_QUAD,
   DEFAULT_RED_QUAD,
+  DEFAULT_TIMER_QUAD,
   GrayPlane,
   Quad,
   detectScoreRegions,
 } from '../../services/cv/imagePipeline';
 import { OcrHandle, ScoreGate, getOcr, readFrame } from '../../services/cv/scoreboardOcr';
+import { MatchClock, MatchPhase } from '../../services/cv/matchClock';
 
 export type SourceKind = 'none' | 'file' | 'url' | 'screen';
 
@@ -21,7 +23,29 @@ export type SourceKind = 'none' | 'file' | 'url' | 'screen';
  * re-drag is exactly how a region ends up a few pixels off, which is the
  * difference between reading every frame and reading none.
  */
-const QUAD_STORE_KEY = 'cv.scoreQuads.v1';
+const QUAD_STORE_KEY = 'cv.scoreQuads.v2';
+
+/**
+ * How many consecutive seconds the scoreboard has to sit still after the buzzer
+ * before recording stops.
+ *
+ * 0:00 is not the end of scoring. Climbs and the last cycle's points settle for
+ * several seconds after the horn, and the old tracker's counter ran out before
+ * they landed — on the reference broadcast it stopped with blue on 581 against
+ * a true 641, and red on 375 against 420. Those 60 and 45 points were the
+ * endgame, and they are exactly what this window recovers.
+ */
+const SETTLE_SECONDS = 6;
+
+/**
+ * Consecutive readable frames with an unreadable clock before the tracker gives
+ * up on the timer and falls back to the old counter.
+ *
+ * Deliberately generous: the clock plate can be briefly obscured by a lower
+ * third or a graphic wipe, and dropping to a mode that produces wrongly-timed
+ * data over a couple of bad frames would be much worse than waiting.
+ */
+const TIMER_GIVE_UP_AFTER = 25;
 
 function isQuad(q: unknown): q is Quad {
   return (
@@ -38,19 +62,25 @@ function isQuad(q: unknown): q is Quad {
   );
 }
 
-function loadQuads(): { blue: Quad; red: Quad } {
+function loadQuads(): { blue: Quad; red: Quad; timer: Quad } {
   try {
     const raw = localStorage.getItem(QUAD_STORE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (isQuad(parsed?.blue) && isQuad(parsed?.red)) {
-        return { blue: parsed.blue, red: parsed.red };
+        return {
+          blue: parsed.blue,
+          red: parsed.red,
+          // A v1 payload has no timer box; the default is a better starting
+          // point than refusing the whole stored pair.
+          timer: isQuad(parsed?.timer) ? parsed.timer : DEFAULT_TIMER_QUAD,
+        };
       }
     }
   } catch {
     /* corrupt or unavailable storage just falls back to the defaults */
   }
-  return { blue: DEFAULT_BLUE_QUAD, red: DEFAULT_RED_QUAD };
+  return { blue: DEFAULT_BLUE_QUAD, red: DEFAULT_RED_QUAD, timer: DEFAULT_TIMER_QUAD };
 }
 
 export interface TrackerMatch {
@@ -85,6 +115,7 @@ export function useCvTracker() {
   const stored = useRef(loadQuads());
   const [blueQuad, setBlueQuad] = useState<Quad>(stored.current.blue);
   const [redQuad, setRedQuad] = useState<Quad>(stored.current.red);
+  const [timerQuad, setTimerQuad] = useState<Quad>(stored.current.timer);
 
   const [running, setRunning] = useState(false);
   const [samples, setSamples] = useState<CvScoreSample[]>([]);
@@ -94,36 +125,60 @@ export function useCvTracker() {
   const [rejections, setRejections] = useState(0);
   /** Frames where the overlay was not on screen at all — replays, crowd shots. */
   const [skipped, setSkipped] = useState(0);
-  const [previews, setPreviews] = useState<{ blue: GrayPlane | null; red: GrayPlane | null }>({
-    blue: null,
-    red: null,
-  });
+  const [previews, setPreviews] = useState<{
+    blue: GrayPlane | null;
+    red: GrayPlane | null;
+    timer: GrayPlane | null;
+  }>({ blue: null, red: null, timer: null });
+
+  /** What the clock plate currently says, and whether it is driving the log. */
+  const [timerText, setTimerText] = useState('');
+  const [clockStarted, setClockStarted] = useState(false);
+  const [phase, setPhase] = useState<MatchPhase>('auto');
+  /**
+   * True when the timer could not be read and the tracker reverted to counting
+   * seconds off the video. Surfaced loudly: the resulting log is only as
+   * well-aligned as the operator's Start press, which is precisely the thing
+   * this whole path exists to stop depending on.
+   */
+  const [timerFallback, setTimerFallback] = useState(false);
+  const [timerReads, setTimerReads] = useState({ ok: 0, tried: 0 });
 
   // Refs for everything the sampling loop reads, so the loop never restarts (and
   // never drops a second) just because a piece of UI state changed.
   const ocrRef = useRef<OcrHandle | null>(null);
   const blueGate = useRef(new ScoreGate(0));
   const redGate = useRef(new ScoreGate(0));
-  const busy = useRef(false);
   const lastSec = useRef(-1);
   const startOffset = useRef(0);
   const wallStart = useRef(0);
   const blueQuadRef = useRef(blueQuad);
   const redQuadRef = useRef(redQuad);
+  const timerQuadRef = useRef(timerQuad);
   const runningRef = useRef(false);
+  const clockRef = useRef(new MatchClock());
+  /** Consecutive readable frames whose clock plate came back empty. */
+  const timerMisses = useRef(0);
+  const fallbackRef = useRef(false);
+  /** Post-buzzer settle detector: last seen scores and how long they held. */
+  const settle = useRef({ blue: -1, red: -1, held: 0 });
   const objectUrl = useRef<string | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
   blueQuadRef.current = blueQuad;
   redQuadRef.current = redQuad;
+  timerQuadRef.current = timerQuad;
 
   useEffect(() => {
     try {
-      localStorage.setItem(QUAD_STORE_KEY, JSON.stringify({ blue: blueQuad, red: redQuad }));
+      localStorage.setItem(
+        QUAD_STORE_KEY,
+        JSON.stringify({ blue: blueQuad, red: redQuad, timer: timerQuad })
+      );
     } catch {
       /* private mode / quota — the quads just will not persist */
     }
-  }, [blueQuad, redQuad]);
+  }, [blueQuad, redQuad, timerQuad]);
 
   /* ---------------- match schedule ---------------- */
 
@@ -191,6 +246,16 @@ export function useCvTracker() {
     blueGate.current = new ScoreGate(last?.blue ?? 0);
     redGate.current = new ScoreGate(last?.red ?? 0);
     lastSec.current = last ? last.sec : -1;
+    // The clock is re-derived from the footage, not resumed from the log: match
+    // elapsed now comes from the scoreboard, so there is no counter to restore.
+    clockRef.current = new MatchClock();
+    timerMisses.current = 0;
+    fallbackRef.current = false;
+    settle.current = { blue: -1, red: -1, held: 0 };
+    setTimerFallback(false);
+    setClockStarted(false);
+    setTimerText('');
+    setTimerReads({ ok: 0, tried: 0 });
   }, [activeMatch]);
 
   /* ---------------- source selection ---------------- */
@@ -285,26 +350,20 @@ export function useCvTracker() {
 
   /* ---------------- the sampling loop ---------------- */
 
-  const matchSecond = useCallback((): number => {
-    if (sourceKind === 'screen') {
-      return Math.floor((performance.now() - wallStart.current) / 1000);
-    }
-    const v = videoRef.current;
-    if (!v) return -1;
-    return Math.floor(v.currentTime - startOffset.current);
-  }, [sourceKind]);
-
-  const sampleOnce = useCallback(async (sec: number) => {
+  /**
+   * Read one frame and, if it belongs to the match, log it.
+   *
+   * `at` is the *video* time of the frame — used only as a ruler for the clock,
+   * never as the sample's timestamp. Returns true when recording is finished.
+   */
+  const sampleOnce = useCallback(async (at: number): Promise<boolean> => {
     const worker = ocrRef.current?.worker;
     const v = videoRef.current;
-    if (!worker || !v) return;
+    if (!worker || !v) return false;
 
     const w = v.videoWidth;
     const h = v.videoHeight;
-    if (!w || !h) return;
-
-    const prevBlue = blueGate.current.value;
-    const prevRed = redGate.current.value;
+    if (!w || !h) return false;
 
     let result;
     try {
@@ -315,77 +374,181 @@ export function useCvTracker() {
         h,
         blueQuadRef.current,
         redQuadRef.current,
+        // Once we have given up on the clock there is no point paying for it.
+        fallbackRef.current ? null : timerQuadRef.current,
         blueGate.current,
         redGate.current
       );
     } catch (e: any) {
       // getImageData throws SecurityError on a tainted (cross-origin) canvas.
       if (e?.name === 'SecurityError') {
-        runningRef.current = false;
-        setRunning(false);
         setError(
           'This video is cross-origin, so the browser will not let the page read its pixels. Upload the file directly, or use Share Screen.'
         );
-        return;
+        return true;
       }
       throw e;
     }
-    if (!result) return;
+    if (!result) return false;
 
     // The overlay is not on screen — a replay, a crowd cut, a pit interview.
     // Nothing was attempted, so this is not a rejection and it is not a sample:
     // logging a held score here would invent a flat second the match never had.
     if (!result.overlayPresent) {
       setSkipped((n) => n + 1);
-      return;
+      return false;
     }
 
-    setPreviews({ blue: result.bluePlane, red: result.redPlane });
+    setPreviews({ blue: result.bluePlane, red: result.redPlane, timer: result.timer.preview });
     setRejections(blueGate.current.rejections + redGate.current.rejections);
 
-    setSamples((prev) => {
-      if (prev.some((s) => s.sec === sec)) return prev;
-      const next: CvScoreSample = {
-        sec,
-        phase: sec < AUTO_LEN ? 'auto' : 'teleop',
-        blue: result.blue,
-        red: result.red,
-        db: Math.max(0, result.blue - prevBlue),
-        dr: Math.max(0, result.red - prevRed),
-      };
-      return [...prev, next].sort((a, b) => a.sec - b.sec);
-    });
-    setDirty(true);
-  }, []);
+    /* ---- when is this frame? ---- */
+    let sec: number;
+    let samplePhase: MatchPhase;
+    let finished = false;
 
-  useEffect(() => {
-    if (!running) return;
-    let raf = 0;
+    if (!fallbackRef.current) {
+      const clock = clockRef.current;
+      if (result.timer.remaining === null) timerMisses.current++;
+      else timerMisses.current = 0;
 
-    const tick = () => {
-      raf = requestAnimationFrame(tick);
-      if (!runningRef.current || busy.current) return;
+      clock.feed(result.timer.remaining, at);
+      const state = clock.state;
+      setTimerReads({ ok: clock.accepted, tried: clock.offered });
+      setTimerText(
+        result.timer.remaining === null
+          ? '--:--'
+          : `${Math.floor(result.timer.remaining / 60)}:${String(result.timer.remaining % 60).padStart(2, '0')}`
+      );
 
-      const sec = matchSecond();
-      if (sec < 0 || sec <= lastSec.current) return;
-      if (sec >= MATCH_LEN) {
-        runningRef.current = false;
-        setRunning(false);
-        return;
+      if (!state.started) {
+        // Pre-match, the intro banner, a frozen graphic. Nothing here belongs in
+        // the log, and there is no operator Start press to get wrong.
+        if (timerMisses.current >= TIMER_GIVE_UP_AFTER) {
+          fallbackRef.current = true;
+          setTimerFallback(true);
+          // The counter has to start somewhere; the operator's Start press is
+          // all we have left, which is exactly why this is flagged in the UI.
+          startOffset.current = at;
+        }
+        return false;
       }
 
-      lastSec.current = sec;
-      busy.current = true;
-      sampleOnce(sec)
-        .catch((e) => setError(String(e?.message || e)))
-        .finally(() => {
-          busy.current = false;
-        });
-    };
+      setClockStarted(true);
+      setPhase(state.phase);
+      samplePhase = state.phase;
+      // Extrapolated from the last *accepted* clock reading, so a frame whose
+      // plate was obscured still gets a defensible timestamp.
+      sec = Math.round(clock.elapsedAt(at));
 
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [running, matchSecond, sampleOnce]);
+      /* ---- 0:00 is not the end of scoring ---- */
+      if (state.ended) {
+        if (result.blue === settle.current.blue && result.red === settle.current.red) {
+          settle.current.held++;
+        } else {
+          settle.current = { blue: result.blue, red: result.red, held: 0 };
+        }
+        // Trailing points are attributed to the final match second rather than
+        // to invented times past the end, so downstream windows still close at
+        // MATCH_LEN.
+        sec = MATCH_LEN;
+        finished = settle.current.held >= SETTLE_SECONDS;
+      }
+    } else {
+      sec = Math.floor(at - startOffset.current);
+      if (sec < 0) return false;
+      samplePhase = sec < AUTO_LEN ? 'auto' : 'teleop';
+      if (sec > MATCH_LEN) return true;
+      finished = sec >= MATCH_LEN;
+    }
+
+    lastSec.current = Math.max(lastSec.current, sec);
+
+    /* ---- log it ---- */
+    // Upsert, then rebuild every delta from the score series. Sampling by video
+    // second against a clock read from the frame means two samples can land in
+    // the same match second (and, after the buzzer, many do); the later read is
+    // the better one, and recomputing deltas wholesale is the only way to keep
+    // them consistent with the scores they are supposed to describe.
+    setSamples((prev) => {
+      const next = prev.filter((s) => s.sec !== sec);
+      next.push({ sec, phase: samplePhase, blue: result.blue, red: result.red, db: 0, dr: 0 });
+      next.sort((a, b) => a.sec - b.sec);
+      let pb = 0;
+      let pr = 0;
+      return next.map((s) => {
+        const row = { ...s, db: Math.max(0, s.blue - pb), dr: Math.max(0, s.red - pr) };
+        pb = s.blue;
+        pr = s.red;
+        return row;
+      });
+    });
+    setDirty(true);
+    return finished;
+  }, []);
+
+  /** Resolve when the element has actually landed on `t`. */
+  const seekTo = (v: HTMLVideoElement, t: number) =>
+    new Promise<void>((resolve) => {
+      const on = () => {
+        v.removeEventListener('seeked', on);
+        resolve();
+      };
+      v.addEventListener('seeked', on);
+      v.currentTime = t;
+    });
+
+  const sourceKindRef = useRef(sourceKind);
+  sourceKindRef.current = sourceKind;
+  const nextAt = useRef(0);
+
+  /**
+   * Drive sampling off the video's own clock, one second at a time.
+   *
+   * Recorded footage is *seeked* to each target rather than played at it. A
+   * playback-and-poll loop silently stretches or shreds the timeline the moment
+   * a pass runs long — at 3x it would ask for one sample per three match
+   * seconds — whereas an explicit seek makes a slow pass cost wall time and
+   * nothing else. Every second of the video gets looked at exactly once.
+   *
+   * Screen capture is the exception: a live MediaStream has no seekable
+   * timeline, so it is paced by wall clock, which there is also the correct
+   * clock because the stream really is realtime.
+   */
+  const pump = useCallback(async () => {
+    const v = videoRef.current;
+    if (!v) return;
+
+    while (runningRef.current) {
+      let at: number;
+
+      if (sourceKindRef.current === 'screen') {
+        const now = (performance.now() - wallStart.current) / 1000;
+        const wait = Math.max(0, (Math.ceil(now) - now) * 1000);
+        if (wait > 1) await new Promise((r) => setTimeout(r, wait));
+        at = (performance.now() - wallStart.current) / 1000;
+      } else {
+        if (Number.isFinite(v.duration) && nextAt.current > v.duration) break;
+        await seekTo(v, nextAt.current);
+        at = v.currentTime;
+        nextAt.current += 1;
+      }
+
+      if (!runningRef.current) break;
+      let done = false;
+      try {
+        done = await sampleOnce(at);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        break;
+      }
+      if (done) break;
+    }
+
+    runningRef.current = false;
+    setRunning(false);
+    videoRef.current?.pause();
+  }, [sampleOnce]);
 
   const start = () => {
     if (!ocrRef.current) {
@@ -399,18 +562,17 @@ export function useCvTracker() {
     setError(null);
 
     const v = videoRef.current;
-    // Resume where the log left off rather than restarting the match.
-    const resumeAt = lastSec.current + 1;
     if (sourceKind === 'screen') {
-      wallStart.current = performance.now() - resumeAt * 1000;
+      wallStart.current = performance.now();
     } else if (v) {
-      startOffset.current = v.currentTime - resumeAt;
-      v.playbackRate = speed;
-      void v.play().catch(() => {});
+      // Sampling seeks; a playing element would only fight it.
+      v.pause();
+      nextAt.current = v.currentTime;
     }
 
     runningRef.current = true;
     setRunning(true);
+    void pump();
   };
 
   const stop = () => {
@@ -426,16 +588,27 @@ export function useCvTracker() {
     setSamples([]);
     setRejections(0);
     setSkipped(0);
-    setPreviews({ blue: null, red: null });
+    setPreviews({ blue: null, red: null, timer: null });
     blueGate.current = new ScoreGate(0);
     redGate.current = new ScoreGate(0);
     lastSec.current = -1;
+    clockRef.current = new MatchClock();
+    timerMisses.current = 0;
+    fallbackRef.current = false;
+    settle.current = { blue: -1, red: -1, held: 0 };
+    nextAt.current = 0;
+    setTimerFallback(false);
+    setClockStarted(false);
+    setTimerText('');
+    setTimerReads({ ok: 0, tried: 0 });
+    setPhase('auto');
     setDirty(false);
   };
 
   const resetQuad = () => {
     setBlueQuad(DEFAULT_BLUE_QUAD);
     setRedQuad(DEFAULT_RED_QUAD);
+    setTimerQuad(DEFAULT_TIMER_QUAD);
   };
 
   /**
@@ -479,6 +652,7 @@ export function useCvTracker() {
     setError(null);
     setBlueQuad(found.blue);
     setRedQuad(found.red);
+    setTimerQuad(found.timer);
   };
 
   /* ---------------- persistence ---------------- */
@@ -573,6 +747,13 @@ export function useCvTracker() {
     setBlueQuad,
     redQuad,
     setRedQuad,
+    timerQuad,
+    setTimerQuad,
+    timerText,
+    timerFallback,
+    timerReads,
+    clockStarted,
+    phase,
     running,
     samples,
     dirty,

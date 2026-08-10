@@ -28,6 +28,7 @@ import {
   preprocessCrop,
   rectifyToGray,
 } from './imagePipeline';
+import { parseTimerText } from './matchClock';
 
 /**
  * Where the self-hosted assets live. `BASE_URL` matters: this app deploys under
@@ -106,6 +107,23 @@ export interface RawRead {
   confidence: number;
   text: string;
 }
+
+/**
+ * Cost of one `worker.recognize`, measured on the reference broadcast: **~1030
+ * ms**, and flat.
+ *
+ * Worth writing down because it is counter-intuitive and it was nearly
+ * optimised on a false premise. Handing tesseract.js a Blob instead of a
+ * `<canvas>` *looks* like a 43x win (1041 ms against 24 ms) — but only when the
+ * same image is recognized repeatedly, which is a cache hit, not a speedup. On
+ * four genuinely distinct crops the three input forms are indistinguishable:
+ * canvas 1036 ms, blob 1033 ms, OffscreenCanvas 1034 ms. The second is spent
+ * inside the LSTM, and no amount of plumbing changes that.
+ *
+ * The only lever that actually moves per-frame cost is therefore *how many*
+ * recognize calls a frame needs — which is what the timer's fast path below is
+ * about.
+ */
 
 /**
  * Recognize one prepared strip.
@@ -217,6 +235,88 @@ export async function recognizeCrop(worker: TesseractWorker, crop: GrayPlane): P
   // Nothing reached two votes: the variants disagreed, so we do not guess.
   return { read: { value: null, confidence: 0, text: '' }, preview };
 }
+
+export interface TimerRead {
+  /** Seconds left on the plate, or null if it could not be read. */
+  remaining: number | null;
+  /** The winning digit string, kept for diagnostics. */
+  text: string;
+  confidence: number;
+  preview: GrayPlane | null;
+}
+
+/**
+ * Read the match timer plate.
+ *
+ * Same three-variant vote as a score plate, with one deliberate difference: the
+ * ballot is the digit *string*, not its numeric value. `0:20` segments to the
+ * digits `020`, and `Number('020')` is 20 — indistinguishable from a two-digit
+ * read, which throws away exactly the positional information that tells minutes
+ * from seconds. Voting on the string keeps the leading zero, and
+ * `parseTimerText` then splits `M`/`SS` by position.
+ *
+ * No polarity hint is needed. The plate is black-on-white where the scores are
+ * white-on-colour, but `normalizePolarity` decides from the grayscale median
+ * and the plate is the majority of the crop, so it correctly leaves this one
+ * alone — verified on the reference broadcast, where all three variants read
+ * `1:51` at 77/95/96 confidence with three components found (the colon's two
+ * dots fall below the digit-height floor and are discarded for free).
+ *
+ * The fast path is a throughput decision, not a shortcut. `recognize` costs
+ * about a second regardless of what it is handed, so the only way to keep a
+ * third region from making every frame 50% dearer is to stop reading after one
+ * variant when that variant is unambiguous — and the timer usually is, because
+ * `M:SS` is a fixed three-digit layout on a flat white plate. The bar is set
+ * well above the score plates' and still requires the component count to agree
+ * that there are exactly three glyphs. Anything less clear falls through to the
+ * same two-of-three vote the scores use.
+ */
+export async function recognizeTimer(worker: TesseractWorker, crop: GrayPlane): Promise<TimerRead> {
+  const votes = new Map<string, { count: number; conf: number }>();
+  let preview: GrayPlane | null = null;
+
+  for (let i = 0; i < PREP_VARIANTS.length; i++) {
+    const prepped = preprocessCrop(crop, PREP_VARIANTS[i]);
+    if (i === 0) preview = prepped?.plane ?? null;
+    if (!prepped) continue;
+
+    const read = await recognizePlane(worker, prepped);
+    if (read.value === null || !read.text) continue;
+
+    const remaining = parseTimerText(read.text);
+    // Nothing is gained by voting on a value the clock would refuse anyway.
+    if (remaining === null) continue;
+
+    if (
+      prepped.digitCount === TIMER_DIGITS &&
+      read.text.length === TIMER_DIGITS &&
+      read.confidence >= TIMER_FAST_PATH_CONFIDENCE
+    ) {
+      return { remaining, text: read.text, confidence: read.confidence, preview };
+    }
+
+    const slot = votes.get(read.text) ?? { count: 0, conf: 0 };
+    slot.count++;
+    slot.conf = Math.max(slot.conf, read.confidence);
+    votes.set(read.text, slot);
+
+    if (slot.count >= 2 && slot.conf >= MIN_CONFIDENCE) {
+      return { remaining, text: read.text, confidence: slot.conf, preview };
+    }
+  }
+
+  return { remaining: null, text: '', confidence: 0, preview };
+}
+
+/** `M:SS` — the colon is not a glyph as far as segmentation is concerned. */
+const TIMER_DIGITS = 3;
+/**
+ * Confidence needed to trust a single-variant timer read. Far above
+ * `MIN_CONFIDENCE`, because this read is not being corroborated by a second
+ * variant — only by the component count, and by `MatchClock`'s sequence guard
+ * downstream, which will not let an out-of-sequence value move the clock.
+ */
+const TIMER_FAST_PATH_CONFIDENCE = 88;
 
 /* ------------------------------------------------------------------ *
  * Plausibility gate
@@ -345,6 +445,12 @@ export interface FrameReadResult {
   bluePlane: GrayPlane | null;
   redPlane: GrayPlane | null;
   /**
+   * The match clock read out of the *same frame* as the scores. This is what
+   * makes the sample's timestamp immune to processing latency: it is not when
+   * the read finished, it is what the pixels said.
+   */
+  timer: TimerRead;
+  /**
    * False when the score plates are not on screen — a replay, a crowd shot, a
    * pit interview. Distinct from an OCR failure: nothing was attempted, so the
    * caller should drop the sample entirely rather than log a held value or
@@ -366,9 +472,11 @@ export async function readFrame(
   sourceH: number,
   blueQuad: Quad,
   redQuad: Quad,
+  timerQuad: Quad | null,
   blueTracker: ScoreGate,
   redTracker: ScoreGate
 ): Promise<FrameReadResult | null> {
+  const noTimer: TimerRead = { remaining: null, text: '', confidence: 0, preview: null };
   const frameCanvas = document.createElement('canvas');
   frameCanvas.width = sourceW;
   frameCanvas.height = sourceH;
@@ -392,6 +500,7 @@ export async function readFrame(
       redRaw: { value: null, confidence: 0, text: '' },
       bluePlane: null,
       redPlane: null,
+      timer: noTimer,
       overlayPresent: false,
     };
   }
@@ -401,6 +510,21 @@ export async function readFrame(
   if (!blueGray || !redGray) return null;
   const blue: GrayPlane = { data: blueGray, width: SCORE_RECT_W, height: SCORE_RECT_H };
   const red: GrayPlane = { data: redGray, width: SCORE_RECT_W, height: SCORE_RECT_H };
+
+  // Read the clock from this same frame, before anything is gated. Its cost is
+  // one more voted crop; its value is that the sample's timestamp and its score
+  // are now the same observation.
+  let timer = noTimer;
+  if (timerQuad) {
+    const timerGray = rectifyToGray(frame, timerQuad, SCORE_RECT_W, SCORE_RECT_H);
+    if (timerGray) {
+      timer = await recognizeTimer(worker, {
+        data: timerGray,
+        width: SCORE_RECT_W,
+        height: SCORE_RECT_H,
+      });
+    }
+  }
 
   const blueCrop = await recognizeCrop(worker, blue);
   const redCrop = await recognizeCrop(worker, red);
@@ -419,6 +543,7 @@ export async function readFrame(
     redRaw,
     bluePlane: blueCrop.preview,
     redPlane: redCrop.preview,
+    timer,
     overlayPresent: true,
   };
 }
