@@ -97,16 +97,42 @@ export class DataService {
   }
 
   /**
+   * The event a match's own `key` says it belongs to, per the FRC/TBA
+   * convention: `{eventKey}_{compLevel}{matchNumber}`, e.g.
+   * `2026caven_qm1`, `2026caven_sf1m1`, `2026caven_f1m1`.
+   *
+   * This is the ONLY event_key any push to the server should ever use. A
+   * match object's own `event_key` field, or "whichever event is currently
+   * selected," are both just state that can go stale — a failed TBA fetch,
+   * a leftover local cache from a previous event, a background sync racing
+   * a UI action. The key itself cannot go stale: it was correct the moment
+   * the match was created and never changes. Deriving from it, rather than
+   * trusting a separately-stored field, is what makes it structurally
+   * impossible to relabel one event's schedule as another's on push — see
+   * the corruption this fixed: 87 of Ventura's matches spent time on the
+   * server tagged event_key='2026cagle' (Glendale) because a push trusted a
+   * stale `event_key`/selected-event value instead of the key itself.
+   */
+  static deriveEventKeyFromMatchKey(key: unknown): string | null {
+    if (typeof key !== 'string') return null;
+    const idx = key.indexOf('_');
+    return idx > 0 ? key.slice(0, idx) : null;
+  }
+
+  /**
    * True if a match belongs to the given event.
    *
-   * Prefers the explicit `event_key` column, but falls back to the FRC/TBA
-   * match-key convention (`{eventKey}_qm1`, `{eventKey}_qf1m1`, ...) because
-   * matches synced before `event_key` existed on the server may not have it.
+   * Prefers the FRC/TBA match-key convention (`{eventKey}_qm1`, ...) over
+   * the stored `event_key` field, for the same reason `deriveEventKeyFromMatchKey`
+   * does: the field can go stale, the key cannot. Falls back to `event_key`
+   * only when the key doesn't parse (unexpected shape).
    */
   static matchBelongsToEvent(match: any, eventKey: string): boolean {
     if (!match || !eventKey) return false;
-    if (match.event_key) return match.event_key === eventKey;
-    return typeof match.key === 'string' && match.key.startsWith(`${eventKey}_`);
+    const derived = this.deriveEventKeyFromMatchKey(match.key);
+    if (derived) return derived === eventKey;
+    // Key didn't parse (unexpected shape) — fall back to the stored field.
+    return !!match.event_key && match.event_key === eventKey;
   }
 
   /**

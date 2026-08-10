@@ -470,7 +470,8 @@ async function _migrateLocalToServerBody() {
                 // Without this, a match upserted here lands on the server with
                 // a null event_key and drops out of every event-filtered query
                 // from then on — including other devices syncing this event.
-                event_key: l.event_key || eventKey || null,
+                // Derived from l.key first — see DataService.deriveEventKeyFromMatchKey.
+                event_key: DataService.deriveEventKeyFromMatchKey(l.key) || l.event_key || eventKey || null,
                 match_number: l.match_number,
                 comp_level: l.comp_level,
                 alliances: l.alliances,
@@ -481,7 +482,8 @@ async function _migrateLocalToServerBody() {
               // local wins -> upsert local
               toUpsert.push({
                 key: l.key,
-                event_key: l.event_key || eventKey || null,
+                // Derived from l.key first — see DataService.deriveEventKeyFromMatchKey.
+                event_key: DataService.deriveEventKeyFromMatchKey(l.key) || l.event_key || eventKey || null,
                 match_number: l.match_number,
                 comp_level: l.comp_level,
                 alliances: l.alliances,
@@ -495,7 +497,8 @@ async function _migrateLocalToServerBody() {
           } else if (l && !s) {
             toUpsert.push({
               key: l.key,
-              event_key: l.event_key || eventKey || null,
+              // Derived from l.key first — see DataService.deriveEventKeyFromMatchKey.
+              event_key: DataService.deriveEventKeyFromMatchKey(l.key) || l.event_key || eventKey || null,
               match_number: l.match_number,
               comp_level: l.comp_level,
               alliances: l.alliances,
@@ -1483,8 +1486,15 @@ export async function pushMatchesToServer(matches: any[]) {
 
   try {
     const prepared = matches.map((m: any) => ({
-      // include event_key so matches are organized under events in the DB
-      event_key: m.event_key || (DataService && DataService.getSelectedEvent && DataService.getSelectedEvent()) || null,
+      // Derive from the match's own key, not from m.event_key or "whichever
+      // event is selected right now" — both are state that can go stale and
+      // silently relabel a whole event's schedule as another's on push. See
+      // DataService.deriveEventKeyFromMatchKey.
+      event_key:
+        DataService.deriveEventKeyFromMatchKey(m.key) ||
+        m.event_key ||
+        (DataService && DataService.getSelectedEvent && DataService.getSelectedEvent()) ||
+        null,
       key: m.key,
       match_number: m.match_number,
       comp_level: m.comp_level,
