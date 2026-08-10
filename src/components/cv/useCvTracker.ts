@@ -579,7 +579,8 @@ export function useCvTracker() {
     runningRef.current = false;
     setRunning(false);
     videoRef.current?.pause();
-    if (samples.length) persist();
+    // Saving is a deliberate action now (the Save button), not implicit in
+    // stopping — the operator reviews/corrects the log first, then commits it.
   };
 
   const reset = () => {

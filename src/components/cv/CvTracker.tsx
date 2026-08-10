@@ -184,7 +184,9 @@ export function CvTracker({ onBack }: CvTrackerProps) {
   const activeLabel = t.matches.find((m) => m.key === t.activeMatch)?.label ?? '—';
   const done = t.uploaded.size;
   const total = t.matches.length;
-  const rows = [...t.samples].reverse().slice(0, 60);
+  // Newest-first, full match — the container scrolls (see .cv-log in
+  // cvtracker.css), so nothing needs to be clipped to stay usable.
+  const rows = [...t.samples].reverse();
 
   const onImport = async (file: File) => {
     try {
@@ -227,13 +229,13 @@ export function CvTracker({ onBack }: CvTrackerProps) {
             <span className="cv-source-label">Footage Source</span>
             <input
               className="cv-input"
-              placeholder="Paste YouTube / Twitch / recorded match URL"
+              placeholder="Paste YouTube / Twitch / recorded match URL, then press Enter"
               value={t.urlInput}
               onChange={(e) => t.setUrlInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') t.loadUrl();
+              }}
             />
-            <button className="cv-btn-grad" onClick={t.loadUrl}>
-              Load Video
-            </button>
             <label className="cv-btn-outline cv-file-btn">
               Upload File
               <input
@@ -323,6 +325,11 @@ export function CvTracker({ onBack }: CvTrackerProps) {
                 <div className="cv-controls-spacer" />
                 {/* The plate as read, next to the match time derived from it. */}
                 <span className="cv-clock">{t.timerText || t.clock}</span>
+                {/* Saving is deliberate: nothing writes to the server until this
+                    is clicked, so the operator can review/correct the log first. */}
+                <button className="cv-btn-outline" disabled={!t.samples.length} onClick={t.persist}>
+                  Save
+                </button>
                 <button
                   className="cv-btn-grad"
                   disabled={!t.samples.length}
