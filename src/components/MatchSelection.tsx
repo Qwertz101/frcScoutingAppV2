@@ -25,6 +25,7 @@ export function MatchSelection({ onBack }: MatchSelectionProps) {
   const [runtimeKey, setRuntimeKey] = useState<string>('');
   const [serverMatches, setServerMatches] = useState<any[]>([]);
   const [serverLoading, setServerLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     // Do not auto-load events on mount. User must click 'Check available events' to fetch from TBA.
@@ -76,6 +77,13 @@ export function MatchSelection({ onBack }: MatchSelectionProps) {
 
   const loadMatches = async (eventKey: string) => {
     setLoading(true);
+    setLoadError(null);
+    // Clear immediately, before the fetch resolves: the table must never show
+    // a stale event's matches under a different event's name/selection while
+    // a fetch is in flight or has failed. A silent failure here is exactly
+    // what let a "Save matches" click relabel one event's whole schedule as
+    // another's — see the comment on the Save button below.
+    setMatches([]);
     try {
       // Try to fetch real matches from TBA; fall back to any locally stored matches or an empty list
       const fetched = await fetchEventMatches(eventKey);
@@ -90,8 +98,15 @@ export function MatchSelection({ onBack }: MatchSelectionProps) {
         setMatches([]);
         DataService.setSelectedEvent(eventKey);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error loading matches:', error);
+      // Surface this — a silently-swallowed fetch failure previously left the
+      // PREVIOUS event's matches on screen while `selectedEvent` had already
+      // moved to the new one, so clicking Save relabeled them.
+      setLoadError(
+        `Failed to load matches for ${eventKey} from The Blue Alliance: ${error?.message || error}. ` +
+          `Not saving anything — try again before using Save matches.`
+      );
     } finally {
       setLoading(false);
     }
@@ -267,8 +282,32 @@ export function MatchSelection({ onBack }: MatchSelectionProps) {
                     setSaving(true);
                     setSaveResult(null);
                     try {
+                      const targetEvent = selectedEvent || DataService.getSelectedEvent();
+                      if (!targetEvent) {
+                        setSaveResult('No event selected — nothing to save.');
+                        return;
+                      }
+                      // Guard against relabeling: every match's own key is
+                      // prefixed with its true event ("{eventKey}_qm1", ...),
+                      // by FRC/TBA convention. If the on-screen table somehow
+                      // holds a different event's matches (e.g. a fetch
+                      // failure left the previous event's matches visible
+                      // while the selection had already moved on), pushing
+                      // them here would silently relabel that event's whole
+                      // schedule as this one's on the server. Refuse instead.
+                      const mismatched = sortedMatches.filter(
+                        (m: any) => typeof m.key === 'string' && !m.key.startsWith(`${targetEvent}_`)
+                      );
+                      if (mismatched.length > 0) {
+                        setSaveResult(
+                          `Refused to save: ${mismatched.length} of ${sortedMatches.length} matches on screen ` +
+                            `don't belong to ${targetEvent} (e.g. "${mismatched[0].key}"). This usually means the ` +
+                            `last load from The Blue Alliance failed silently. Reload the event and try again.`
+                        );
+                        return;
+                      }
                       // attach currently selected event to the matches so they are organized server-side
-                      const withEvent = sortedMatches.map(m => ({ ...m, event_key: selectedEvent || DataService.getSelectedEvent() }));
+                      const withEvent = sortedMatches.map(m => ({ ...m, event_key: targetEvent }));
                       DataService.saveMatches(withEvent as any[]);
                       // Attempt to push matches directly and report how many were synced
                       const synced = await pushMatchesToServer(withEvent as any[]);
@@ -292,6 +331,7 @@ export function MatchSelection({ onBack }: MatchSelectionProps) {
             </div>
           </div>
 
+          {loadError && <div className="cc-banner error" style={{ margin: '12px 20px 0' }}>{loadError}</div>}
           {saveResult && <div className="cc-banner info" style={{ margin: '12px 20px 0' }}>{saveResult}</div>}
 
           {!selectedEvent ? (
