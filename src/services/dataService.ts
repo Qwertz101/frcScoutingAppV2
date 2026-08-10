@@ -96,13 +96,44 @@ export class DataService {
     localStorage.setItem(STORAGE_KEYS.MATCHES, JSON.stringify(stamped));
   }
 
-  static getMatches(): any[] {
+  /**
+   * True if a match belongs to the given event.
+   *
+   * Prefers the explicit `event_key` column, but falls back to the FRC/TBA
+   * match-key convention (`{eventKey}_qm1`, `{eventKey}_qf1m1`, ...) because
+   * matches synced before `event_key` existed on the server may not have it.
+   */
+  static matchBelongsToEvent(match: any, eventKey: string): boolean {
+    if (!match || !eventKey) return false;
+    if (match.event_key) return match.event_key === eventKey;
+    return typeof match.key === 'string' && match.key.startsWith(`${eventKey}_`);
+  }
+
+  /**
+   * Matches for the currently selected event.
+   *
+   * The server's `matches` table holds every event any device has ever
+   * synced — one team's Supabase project sees every regional they've
+   * scouted, in one table. Filtering here, at the single place almost every
+   * screen reads matches through, is what keeps Field Ranking, Match List,
+   * Pit Scouting, etc. from mixing this week's teams with last month's.
+   *
+   * Pass `{ allEvents: true }` for the few places that genuinely want the
+   * whole local cache (e.g. an admin tool auditing all synced events).
+   */
+  static getMatches(opts?: { allEvents?: boolean }): any[] {
+    let all: any[];
     try {
       const data = localStorage.getItem(STORAGE_KEYS.MATCHES);
-      return data ? JSON.parse(data) : [];
+      all = data ? JSON.parse(data) : [];
     } catch {
       return [];
     }
+    if (opts?.allEvents) return all;
+
+    const eventKey = this.getSelectedEvent();
+    if (!eventKey) return all;
+    return all.filter((m: any) => this.matchBelongsToEvent(m, eventKey));
   }
 
   // Manual team helpers (for when TBA match list isn't available)

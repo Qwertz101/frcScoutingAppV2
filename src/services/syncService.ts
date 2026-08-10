@@ -411,11 +411,33 @@ async function _migrateLocalToServerBody() {
 
   // 3) pull matches
   try {
-    const { data: matches, error: mErr } = await client.from('matches').select('*');
+    // Scope the pull to the currently selected event: the server's `matches`
+    // table accumulates every event any device has ever synced, and pulling
+    // it unfiltered is what used to make a freshly-loaded event's Scout
+    // Workspace show teams from whatever event was scouted last. Matches for
+    // OTHER events already in local storage are preserved untouched below
+    // (via `localOther`) rather than dropped.
+    const eventKey = DataService.getSelectedEvent();
+    const matchesQuery = eventKey
+      ? client.from('matches').select('*').eq('event_key', eventKey)
+      : client.from('matches').select('*');
+    const { data: matches, error: mErr } = await matchesQuery;
     if (!mErr && matches) {
+      const localAll = DataService.getMatches({ allEvents: true });
+      const localOther = eventKey
+        ? localAll.filter((m: any) => !DataService.matchBelongsToEvent(m, eventKey))
+        : [];
+      // Every DataService.saveMatches(...) below (including the catch) must
+      // include localOther so this pass never erases other events' already-
+      // synced matches. Declared here, above the try, so the catch can use it.
+      const saveMerged = (currentEventRows: any[]) =>
+        DataService.saveMatches([...localOther, ...currentEventRows] as any);
+
       // Merge matches by key using last-write-wins on updated_at / updatedAt
       try {
-        const local = DataService.getMatches();
+        const local = eventKey
+          ? localAll.filter((m: any) => DataService.matchBelongsToEvent(m, eventKey))
+          : localAll;
         const localMap: Record<string, any> = {};
         local.forEach((m: any) => { if (m && m.key) localMap[m.key] = m; });
 
@@ -445,6 +467,10 @@ async function _migrateLocalToServerBody() {
               // Local deletion is newer -> push delete to server and keep local row
               toUpsert.push({
                 key: l.key,
+                // Without this, a match upserted here lands on the server with
+                // a null event_key and drops out of every event-filtered query
+                // from then on — including other devices syncing this event.
+                event_key: l.event_key || eventKey || null,
                 match_number: l.match_number,
                 comp_level: l.comp_level,
                 alliances: l.alliances,
@@ -455,6 +481,7 @@ async function _migrateLocalToServerBody() {
               // local wins -> upsert local
               toUpsert.push({
                 key: l.key,
+                event_key: l.event_key || eventKey || null,
                 match_number: l.match_number,
                 comp_level: l.comp_level,
                 alliances: l.alliances,
@@ -468,6 +495,7 @@ async function _migrateLocalToServerBody() {
           } else if (l && !s) {
             toUpsert.push({
               key: l.key,
+              event_key: l.event_key || eventKey || null,
               match_number: l.match_number,
               comp_level: l.comp_level,
               alliances: l.alliances,
@@ -484,29 +512,32 @@ async function _migrateLocalToServerBody() {
             const { error: upErr } = await client.from('matches').upsert(toUpsert, { onConflict: 'key' });
             if (upErr) console.error('SyncService: error upserting matches', upErr);
             else {
-              const { data: refreshed, error: refErr } = await client.from('matches').select('*');
+              const refreshQuery = eventKey
+                ? client.from('matches').select('*').eq('event_key', eventKey)
+                : client.from('matches').select('*');
+              const { data: refreshed, error: refErr } = await refreshQuery;
               if (!refErr && refreshed) {
                 const mapped = refreshed.map((m: any) => ({ ...m, updatedAt: m.updated_at ? Date.parse(m.updated_at) : Date.now(), deletedAt: m.deleted_at ? Date.parse(m.deleted_at) : null }));
-                DataService.saveMatches(mapped as any);
+                saveMerged(mapped as any);
                 matchesUpserted = mapped.length;
               } else if (refErr) {
                 console.error('SyncService: failed to refresh matches after upsert', refErr);
-                DataService.saveMatches(merged as any);
+                saveMerged(merged as any);
                 matchesUpserted = merged.length;
               }
             }
           } catch (e) {
             console.error('SyncService: exception upserting matches', e);
-            DataService.saveMatches(merged as any);
+            saveMerged(merged as any);
             matchesUpserted = merged.length;
           }
         } else {
-          DataService.saveMatches(merged as any);
+          saveMerged(merged as any);
           matchesUpserted = merged.length;
         }
       } catch (e) {
         console.error('SyncService: error merging matches', e);
-        DataService.saveMatches(matches as any);
+        saveMerged(matches as any);
       }
     } else if (mErr) {
       console.error('SyncService: failed to pull matches', mErr);
@@ -584,14 +615,26 @@ export async function performFullRefresh(options?: { reload?: boolean }) {
         }
 
         // After migration, fetch authoritative matches from server and persist them
-        // This enforces server-wins for matches so other clients receive deletions
+        // This enforces server-wins for matches so other clients receive deletions.
+        // Scoped to the selected event — see the comment on the equivalent pull
+        // in _migrateLocalToServerBody — and other events' local matches are
+        // preserved rather than dropped by the full-array overwrite.
         try {
           const client = getSupabaseClient();
           if (client) {
-            const { data: serverMatches, error: smErr } = await client.from('matches').select('*');
+            const eventKey = DataService.getSelectedEvent();
+            const matchesQuery = eventKey
+              ? client.from('matches').select('*').eq('event_key', eventKey)
+              : client.from('matches').select('*');
+            const { data: serverMatches, error: smErr } = await matchesQuery;
             if (!smErr && Array.isArray(serverMatches)) {
               const mapped = serverMatches.map((m: any) => ({ ...m, updatedAt: m.updated_at ? Date.parse(m.updated_at) : Date.now(), deletedAt: m.deleted_at ? Date.parse(m.deleted_at) : null }));
-              DataService.saveMatches(mapped as any);
+              const localOther = eventKey
+                ? DataService.getMatches({ allEvents: true }).filter(
+                    (m: any) => !DataService.matchBelongsToEvent(m, eventKey)
+                  )
+                : [];
+              DataService.saveMatches([...localOther, ...mapped] as any);
             }
           }
         } catch (e) {
@@ -1484,11 +1527,28 @@ export async function pushMatchesToServer(matches: any[]) {
       }
     }
 
-    // refresh authoritative rows
-    const { data: refreshed, error: refErr } = await client.from('matches').select('*');
+    // Refresh authoritative rows for the event(s) just pushed — normally just
+    // one. Pulling every event on the server (as this used to) is what made
+    // saving a newly-loaded event's matches bring back the previous event's
+    // teams: the very next line replaces local storage wholesale.
+    const refreshQuery =
+      eventKeys.length === 1
+        ? client.from('matches').select('*').eq('event_key', eventKeys[0])
+        : eventKeys.length > 1
+          ? client.from('matches').select('*').in('event_key', eventKeys)
+          : client.from('matches').select('*');
+    const { data: refreshed, error: refErr } = await refreshQuery;
     if (refErr) throw refErr;
     if (refreshed) {
-      const mapped = refreshed.map((m: any) => ({ ...m, updatedAt: m.updated_at ? Date.parse(m.updated_at) : Date.now(), deletedAt: m.deleted_at ? Date.parse(m.deleted_at) : null }));
+      const localOther = eventKeys.length
+        ? DataService.getMatches({ allEvents: true }).filter(
+            (m: any) => !eventKeys.some((ek) => DataService.matchBelongsToEvent(m, ek))
+          )
+        : [];
+      const mapped = [
+        ...localOther,
+        ...refreshed.map((m: any) => ({ ...m, updatedAt: m.updated_at ? Date.parse(m.updated_at) : Date.now(), deletedAt: m.deleted_at ? Date.parse(m.deleted_at) : null })),
+      ];
       DataService.saveMatches(mapped as any);
       return mapped.length;
     }
@@ -1524,11 +1584,21 @@ export async function deleteMatchesFromServer(keys: string[]) {
 }
 
 // fetch matches currently stored on Supabase (optionally limit) and include event_key
-export async function fetchServerMatches(limit = 500) {
+/**
+ * Matches on the server for one event, defaulting to whichever event is
+ * currently selected. Pass `eventKey` explicitly for callers that track
+ * their own event-selection state rather than relying on
+ * `DataService.getSelectedEvent()`, which can lag one render behind a fresh
+ * pick — e.g. the "Queued matches on server" panel.
+ */
+export async function fetchServerMatches(limit = 500, eventKey?: string | null) {
   const client = getSupabaseClient();
   if (!client) throw new Error('Supabase client not configured; cannot fetch matches.');
 
-  const { data, error } = await client.from('matches').select('*').order('updated_at', { ascending: false }).limit(limit);
+  const key = eventKey !== undefined ? eventKey : DataService.getSelectedEvent();
+  let query = client.from('matches').select('*').order('updated_at', { ascending: false }).limit(limit);
+  if (key) query = query.eq('event_key', key);
+  const { data, error } = await query;
   if (error) throw error;
   return data || [];
 }

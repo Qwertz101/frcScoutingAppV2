@@ -164,7 +164,7 @@ export function MatchSelection({ onBack }: MatchSelectionProps) {
             setServerLoading(true);
             try {
               await performFullRefresh({ reload: false });
-              const rows = await fetchServerMatches();
+              const rows = await fetchServerMatches(500, selectedEvent || null);
               setServerMatches(rows as any[]);
             } catch (e) {
               console.error('Failed to refresh server matches', e);
