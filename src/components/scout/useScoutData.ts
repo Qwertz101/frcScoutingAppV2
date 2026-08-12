@@ -109,8 +109,15 @@ export function useScoutData() {
   }, [timelines, cvLogs]);
 
   const metrics = useMemo(
-    () => buildAllTeamMetrics(rows, teamKeys, matches, timelines, bpsReport),
-    [rows, teamKeys, matches, timelines, bpsReport]
+    // By request: the workspace shows ONLY BPS (timeline + CV scoreboard)
+    // data now, not the legacy fuel-count form. Passing no legacy rows means
+    // buildTeamMetrics has nothing to fall back to, so a team with no fused
+    // BPS match is "unscouted" rather than showing old-form or CSV-imported
+    // season stats. `rows` itself is untouched and still returned from this
+    // hook — CSV export/backup (StatsImportControl) still needs the real
+    // scouting_records — only the metrics/ranking build stops reading it.
+    () => buildAllTeamMetrics([], teamKeys, matches, timelines, bpsReport),
+    [teamKeys, matches, timelines, bpsReport]
   );
 
   const metricsByTeam = useMemo(() => {
