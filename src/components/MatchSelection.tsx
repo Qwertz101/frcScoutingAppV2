@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Event, Match } from '../types';
 import { fetchEvents, fetchEventMatches, getRuntimeTbaKey, setRuntimeTbaKey, clearRuntimeTbaKey } from '../services/tbaApi';
 import { DataService } from '../services/dataService';
-import { migrateLocalToServer, pushMatchesToServer, deleteMatchesFromServer, fetchServerMatches, performFullRefresh } from '../services/syncService';
+import { migrateLocalToServer, pushMatchesToServer, deleteMatchesFromServer, fetchServerMatches, performFullRefresh, setCurrentEventOnServer } from '../services/syncService';
 import { readableMatchLabel, compareMatches } from '../utils/match';
 
 interface MatchSelectionProps {
@@ -93,6 +93,12 @@ export function MatchSelection({ onBack }: MatchSelectionProps) {
         setMatches(sorted);
         DataService.saveMatches(sorted as any[]);
         DataService.setSelectedEvent(eventKey);
+        // Mirror onto the server so every OTHER device (every scouter, who
+        // never opens this screen) converges on this event too, instead of
+        // silently keeping whatever event their own local cache last held.
+        setCurrentEventOnServer(eventKey).catch((e) =>
+          console.warn('loadMatches: failed to set current event on server', e)
+        );
       } else {
         // No matches returned — treat as 'not yet released'
         setMatches([]);

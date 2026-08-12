@@ -617,6 +617,24 @@ export async function performFullRefresh(options?: { reload?: boolean }) {
           console.warn('performFullRefresh: migrateLocalToServer failed', e);
         }
 
+        // Sync this device's selected event from whichever one the admin has
+        // marked current on the server, BEFORE the event-scoped reads below
+        // run. A scouter's device never calls DataService.setSelectedEvent
+        // itself (only Match Selection does), so without this it stays
+        // permanently unset on a scouter's browser and every event-scoped
+        // read below falls back to "no event selected -> show everything" —
+        // e.g. a scouter's Match Schedule showing two different events'
+        // Qualification 1 side by side. Runs on every full refresh, not just
+        // login, so an admin switching events mid-event reaches scouters who
+        // are already signed in.
+        try {
+          const currentEvent = await fetchCurrentEventKey();
+          if (currentEvent) DataService.setSelectedEvent(currentEvent);
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn('performFullRefresh: fetchCurrentEventKey failed', e);
+        }
+
         // After migration, fetch authoritative matches from server and persist them
         // This enforces server-wins for matches so other clients receive deletions.
         // Scoped to the selected event — see the comment on the equivalent pull
@@ -1611,6 +1629,54 @@ export async function fetchServerMatches(limit = 500, eventKey?: string | null) 
   const { data, error } = await query;
   if (error) throw error;
   return data || [];
+}
+
+/**
+ * The event marked current on the server, or null if none is (a fresh
+ * install, or the schema-current-event.sql migration hasn't been run yet —
+ * treated the same as "no current event" rather than an error).
+ *
+ * This is what lets a scouter's device, which never opens Match Selection
+ * and so never calls DataService.setSelectedEvent() itself, converge on the
+ * same event the admin has active. Every client calls this on login/refresh
+ * and mirrors the result into its own local selected-event.
+ */
+export async function fetchCurrentEventKey(): Promise<string | null> {
+  const client = getSupabaseClient();
+  if (!client) return null;
+  const { data, error } = await client
+    .from('events')
+    .select('key')
+    .eq('is_current', true)
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    // Missing column (migration not run) or any other read failure: degrade
+    // to "no current event" rather than surfacing a hard error on login.
+    console.warn('fetchCurrentEventKey: read failed, treating as unset', error);
+    return null;
+  }
+  return data?.key ?? null;
+}
+
+/**
+ * Mark one event current on the server (unmarking whatever was before) and
+ * update this device's own local selection to match. Called from Match
+ * Selection whenever the admin picks an event, so every OTHER device picks
+ * it up on their next login/refresh.
+ */
+export async function setCurrentEventOnServer(eventKey: string): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) throw new Error('Supabase client not configured; cannot set current event.');
+
+  const { error: clearErr } = await client.from('events').update({ is_current: false }).eq('is_current', true);
+  if (clearErr) throw clearErr;
+
+  const { error: setErr } = await client.from('events').upsert(
+    { key: eventKey, is_current: true },
+    { onConflict: 'key' }
+  );
+  if (setErr) throw setErr;
 }
 
 let initialized = false;

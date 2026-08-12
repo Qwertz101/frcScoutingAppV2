@@ -107,7 +107,14 @@ function App() {
   const handleLogin = async (userData: User) => {
     setUser(userData);
     try {
-      // Ensure we pull authoritative server state before showing matches so scouters see latest assignments
+      // Ensure we pull authoritative server state before showing matches so
+      // scouters see latest assignments. This also syncs this device's
+      // selected event from whichever one the admin has marked current on
+      // the server — the admin is the only one who ever calls
+      // DataService.setSelectedEvent locally (from Match Selection), so a
+      // scouter's device would otherwise never have one set at all, and
+      // every event-scoped read falls back to "show everything" (e.g. two
+      // different events' Qualification 1 on one Match Schedule).
       await performFullRefresh({ reload: false });
     } catch (e) {
       // ignore errors but continue to show UI
