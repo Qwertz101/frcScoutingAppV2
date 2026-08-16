@@ -67,15 +67,20 @@ const META: Record<ActionKind, ActionMeta> = ACTIONS.reduce((acc, a) => {
   return acc;
 }, {} as Record<ActionKind, ActionMeta>);
 
-/** 2026 REBUILT shift boundaries — first entry whose `until` exceeds elapsed. */
+/**
+ * 2026 REBUILT shift boundaries — first entry whose `until` exceeds elapsed.
+ * AUTO 0:20; a 3s SCORING DELAY; then TELEOP's 2:20 splits into a 10s
+ * TRANSITION SHIFT, four 25s SHIFTS, and a 30s END GAME (manual, Table 6-2).
+ */
 const SEGMENTS: Array<{ until: number; label: string }> = [
-  { until: 20, label: 'AUTO' },
-  { until: 30, label: 'TRANSITION SHIFT' },
-  { until: 55, label: 'SHIFT 1' },
-  { until: 80, label: 'SHIFT 2' },
-  { until: 105, label: 'SHIFT 3' },
-  { until: 130, label: 'SHIFT 4' },
-  { until: 160, label: 'END GAME' },
+  { until: AUTO_LEN, label: 'AUTO' },
+  { until: AUTO_LEN + AUTO_TELEOP_DELAY, label: 'SCORING DELAY' },
+  { until: AUTO_LEN + AUTO_TELEOP_DELAY + 10, label: 'TRANSITION SHIFT' },
+  { until: AUTO_LEN + AUTO_TELEOP_DELAY + 35, label: 'SHIFT 1' },
+  { until: AUTO_LEN + AUTO_TELEOP_DELAY + 60, label: 'SHIFT 2' },
+  { until: AUTO_LEN + AUTO_TELEOP_DELAY + 85, label: 'SHIFT 3' },
+  { until: AUTO_LEN + AUTO_TELEOP_DELAY + 110, label: 'SHIFT 4' },
+  { until: MATCH_LEN, label: 'END GAME' },
 ];
 
 /** Anything this short is a finger bouncing between buttons, not an action. */
@@ -118,26 +123,22 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
   const openKind = useRef<ActionKind | null>(null);
 
   /**
-   * Seconds since the match started, at this instant — on the same "scoring
-   * domain" every other timestamp in the app uses (TELEOP starts immediately
-   * at AUTO_LEN, no gap).
-   *
-   * The real field has a silent AUTO_TELEOP_DELAY between the periods where
-   * nothing scores and drivers do not have control. Wall-clock time keeps
-   * moving through it, so without correction a scout's segment timestamps
-   * for the whole of TELEOP would sit AUTO_TELEOP_DELAY seconds "ahead" of
-   * where the CV stream (which reads TELEOP's countdown plate directly, and
-   * so never sees the delay at all) puts the same real moment. Pausing here
-   * for exactly that long — mirroring the real field going quiet — keeps
-   * both streams on one timeline instead of two that quietly disagree.
+   * Seconds since the match started, at this instant — plain wall-clock time,
+   * uncorrected. `MATCH_LEN` already includes `AUTO_TELEOP_DELAY`, so this
+   * needs no pausing or compression: it is true elapsed time by
+   * construction, on the same timeline the CV stream computes (see
+   * `AUTO_TELEOP_DELAY`'s doc in `types/index.ts`). What the delay actually
+   * requires is refusing to record anything while it is in progress — see
+   * `holdStart` and the force-close in the tick effect below — not any
+   * adjustment to the clock itself.
    */
-  const now = useCallback(() => {
-    if (!startedAt.current) return 0;
-    const real = (Date.now() - startedAt.current) / 1000;
-    if (real <= AUTO_LEN) return real;
-    if (real <= AUTO_LEN + AUTO_TELEOP_DELAY) return AUTO_LEN;
-    return Math.min(MATCH_LEN, real - AUTO_TELEOP_DELAY);
-  }, []);
+  const now = useCallback(
+    () => (startedAt.current ? Math.min(MATCH_LEN, (Date.now() - startedAt.current) / 1000) : 0),
+    []
+  );
+
+  /** True while the field is in the silent AUTO->TELEOP handoff. */
+  const inDelay = (t: number) => t >= AUTO_LEN && t < AUTO_LEN + AUTO_TELEOP_DELAY;
 
   // Resume: one timeline per scouter/robot/match, so an already-scouted match
   // opens on its summary rather than silently starting a second recording.
@@ -180,16 +181,23 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
     [closeOpen, now]
   );
 
-  // 100ms tick: elapsed counts up 0 -> 160, the display counts down.
+  // 100ms tick: elapsed counts up 0 -> MATCH_LEN, the display counts down.
   useEffect(() => {
     if (phase !== 'live') return;
     const id = window.setInterval(() => {
       const e = now();
+      // A hold still open exactly as AUTO ends cannot legitimately continue
+      // into the delay — the field goes quiet, drivers do not have control,
+      // and nothing recorded in [AUTO_LEN, AUTO_LEN+AUTO_TELEOP_DELAY) would
+      // mean anything. Force-close at the boundary rather than let it run on.
+      if (openKind.current != null && elapsed < AUTO_LEN && e >= AUTO_LEN) {
+        closeOpen(AUTO_LEN);
+      }
       setElapsed(e);
       if (e >= MATCH_LEN) finishMatch(false);
     }, 100);
     return () => window.clearInterval(id);
-  }, [phase, now, finishMatch]);
+  }, [phase, now, finishMatch, closeOpen, elapsed]);
 
   const startMatch = () => {
     startedAt.current = Date.now();
@@ -203,12 +211,16 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
   // thumb off a button mid-hold and the segment still closes exactly once.
   const holdStart = (e: React.PointerEvent<HTMLButtonElement>, kind: ActionKind) => {
     e.preventDefault();
+    const at = now();
+    // The buttons are visually locked during the delay (see the `locked`
+    // render below); this is the actual enforcement — nothing can start
+    // recording while drivers do not have control.
+    if (inDelay(at)) return;
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {
       /* capture is best-effort; the up/cancel handlers still fire */
     }
-    const at = now();
     closeOpen(at);
     openKind.current = kind;
     openAt.current = at;
@@ -278,6 +290,7 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
     setPhase('pre');
   };
 
+  const locked = inDelay(elapsed);
   const activeColor = active ? META[active].color : null;
   const remaining = elapsed < AUTO_LEN ? AUTO_LEN - elapsed : MATCH_LEN - elapsed;
   const clock = fmt(remaining);
@@ -505,7 +518,9 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
       <section className="lm-page">
         <div className="lm-panel">
           <div className="lm-panel-top">
-            <span className="lm-phase">{elapsed < AUTO_LEN ? 'AUTO PERIOD' : 'TELEOP PERIOD'}</span>
+            <span className="lm-phase">
+              {elapsed < AUTO_LEN ? 'AUTO PERIOD' : locked ? 'SCORING DELAY — LOCKED' : 'TELEOP PERIOD'}
+            </span>
             <span className="lm-segment">{segmentLabel(elapsed)}</span>
           </div>
 
@@ -515,16 +530,16 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
                 key={i}
                 className="lm-digit"
                 style={{
-                  color: activeColor ?? IDLE_TEXT,
-                  borderColor: activeColor ?? IDLE_BORDER,
+                  color: locked ? '#8a9aa2' : (activeColor ?? IDLE_TEXT),
+                  borderColor: locked ? '#8a9aa2' : (activeColor ?? IDLE_BORDER),
                 }}
               >
                 {d}
               </span>
             ))}
             <span className="lm-colon">
-              <i style={{ background: activeColor ?? IDLE_TEXT }} />
-              <i style={{ background: activeColor ?? IDLE_TEXT }} />
+              <i style={{ background: locked ? '#8a9aa2' : (activeColor ?? IDLE_TEXT) }} />
+              <i style={{ background: locked ? '#8a9aa2' : (activeColor ?? IDLE_TEXT) }} />
             </span>
           </div>
 
@@ -559,8 +574,16 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
                 <div key={a.kind} className="lm-action-slot">
                   <button
                     className="lm-action"
+                    disabled={locked}
                     style={
-                      on
+                      locked
+                        ? {
+                            background: '#eef4f6',
+                            color: '#b3c3c9',
+                            boxShadow: 'inset 0 0 0 2.5px #dfe9ec',
+                            cursor: 'not-allowed',
+                          }
+                        : on
                         ? {
                             background: a.color,
                             color: '#000',
@@ -593,9 +616,13 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
             <span className="lm-state-label">Current State</span>
             <span
               className="lm-state-value"
-              style={{ color: activeColor ?? '#6a6a6a' }}
+              style={{ color: locked ? '#000' : (activeColor ?? '#6a6a6a') }}
             >
-              {active ? META[active].label.replace('\n', ' ') : 'IDLE'}
+              {locked
+                ? `LOCKED (${Math.ceil(AUTO_LEN + AUTO_TELEOP_DELAY - elapsed)}s)`
+                : active
+                ? META[active].label.replace('\n', ' ')
+                : 'IDLE'}
             </span>
           </div>
         </div>
