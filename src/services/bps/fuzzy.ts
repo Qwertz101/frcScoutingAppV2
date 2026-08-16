@@ -73,7 +73,19 @@ const SIGMA = 0.8;
 /** Occupancy below this leaves a second unattributable — counted as orphan. */
 const MIN_COVERAGE = 0.08;
 
-/** Widest per-timeline alignment shift considered, in seconds. */
+/**
+ * Widest per-timeline alignment shift considered, in seconds.
+ *
+ * Deliberately small: this corrects one scout's own reaction-time jitter,
+ * not a structural bug in how time is recorded — a genuine recording defect
+ * (like the AUTO/TELEOP delay not being accounted for, see
+ * `AUTO_TELEOP_DELAY` in `types/index.ts`) should be fixed at its source,
+ * not silently absorbed here by letting the search reach for a large shift.
+ * The simulation study this model is built on measured even a "rookie"
+ * scout's typical timing error under 2.2s; ±5s already gives that headroom
+ * with margin, and the final shift is clamped to this bound explicitly (see
+ * below) so the parabolic refinement step can never push a result past it.
+ */
 const MAX_SHIFT = 5;
 const SHIFT_STEP = 0.5;
 
@@ -432,6 +444,12 @@ function alignTimelines(
           if (Math.abs(d) <= 1) bestShift += d * SHIFT_STEP;
         }
       }
+      // The refinement step above can nudge the grid's own endpoint outward
+      // by up to half a step (5.0 -> 5.5), which would silently breach
+      // MAX_SHIFT. Clamp explicitly rather than relying on the grid bound
+      // alone — the cap is a promise about the largest correction this step
+      // can ever make, not just its usual behaviour.
+      bestShift = Math.max(-MAX_SHIFT, Math.min(MAX_SHIFT, bestShift));
       next.set(tl.id, bestShift);
     });
   }

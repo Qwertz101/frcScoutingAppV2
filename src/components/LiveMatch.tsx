@@ -3,6 +3,7 @@ import {
   ActionKind,
   ActionSegment,
   AUTO_LEN,
+  AUTO_TELEOP_DELAY,
   ClimbResult,
   DataConfidence,
   MATCH_LEN,
@@ -116,11 +117,27 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
   const openAt = useRef<number | null>(null);
   const openKind = useRef<ActionKind | null>(null);
 
-  /** Seconds since the match started, at this instant. */
-  const now = useCallback(
-    () => (startedAt.current ? Math.min(MATCH_LEN, (Date.now() - startedAt.current) / 1000) : 0),
-    []
-  );
+  /**
+   * Seconds since the match started, at this instant — on the same "scoring
+   * domain" every other timestamp in the app uses (TELEOP starts immediately
+   * at AUTO_LEN, no gap).
+   *
+   * The real field has a silent AUTO_TELEOP_DELAY between the periods where
+   * nothing scores and drivers do not have control. Wall-clock time keeps
+   * moving through it, so without correction a scout's segment timestamps
+   * for the whole of TELEOP would sit AUTO_TELEOP_DELAY seconds "ahead" of
+   * where the CV stream (which reads TELEOP's countdown plate directly, and
+   * so never sees the delay at all) puts the same real moment. Pausing here
+   * for exactly that long — mirroring the real field going quiet — keeps
+   * both streams on one timeline instead of two that quietly disagree.
+   */
+  const now = useCallback(() => {
+    if (!startedAt.current) return 0;
+    const real = (Date.now() - startedAt.current) / 1000;
+    if (real <= AUTO_LEN) return real;
+    if (real <= AUTO_LEN + AUTO_TELEOP_DELAY) return AUTO_LEN;
+    return Math.min(MATCH_LEN, real - AUTO_TELEOP_DELAY);
+  }, []);
 
   // Resume: one timeline per scouter/robot/match, so an already-scouted match
   // opens on its summary rather than silently starting a second recording.

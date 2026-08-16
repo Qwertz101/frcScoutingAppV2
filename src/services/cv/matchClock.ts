@@ -21,6 +21,16 @@
  * What is *not* free is the AUTO/TELEOP ambiguity: `0:20` is both the start of
  * AUTO and the 20-seconds-left mark of TELEOP. That cannot be resolved from one
  * frame, so it is resolved from the sequence — see `MatchClock`.
+ *
+ * NOT A BUG: `elapsedFrom` computes TELEOP elapsed as `MATCH_LEN - remaining`,
+ * which treats TELEOP as starting the instant AUTO ends — but the manual
+ * specifies a real `AUTO_TELEOP_DELAY` of dead time between them (see
+ * `types/index.ts`). This file does not need to know about that delay: it
+ * reads the literal digits off TELEOP's own countdown plate, which shows
+ * 2:20 the moment TELEOP truly starts regardless of how much real time it
+ * took to get there. The delay is invisible here by construction, not missed
+ * by oversight. It only mattered where a clock ran on *wall time* instead —
+ * see the fix in `components/LiveMatch.tsx`.
  */
 
 import { AUTO_LEN, MATCH_LEN, TELEOP_LEN } from '../../types';

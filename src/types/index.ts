@@ -93,6 +93,25 @@ export const AUTO_LEN = 20;
 export const TELEOP_LEN = 140;
 export const MATCH_LEN = AUTO_LEN + TELEOP_LEN;
 
+/**
+ * Real dead time between AUTO and TELEOP, in seconds — manual §6.4: "There is
+ * a 3-second delay between AUTO and TELEOP for scoring purposes." Nothing
+ * scores and drivers do not have control during this window.
+ *
+ * `AUTO_LEN`/`MATCH_LEN` deliberately do NOT include it — every occupancy
+ * bin, window boundary and phase split in the app indexes seconds on a
+ * "scoring domain" where TELEOP is treated as starting immediately at
+ * `AUTO_LEN`, because that is what the CV stream's own timestamps already do
+ * (it reads the literal digits off TELEOP's countdown plate, which shows
+ * 2:20 the instant TELEOP truly starts — the 3s of real time it took to get
+ * there is invisible to a clock reading that only cares what the plate says).
+ * Only the SCOUT's live-tracking clock in LiveMatch.tsx needs this constant:
+ * it runs on true wall-clock time and must pause here so its segment
+ * timestamps land on the same scoring domain as everything else, instead of
+ * running 3 seconds "ahead" of the CV stream for the whole of TELEOP.
+ */
+export const AUTO_TELEOP_DELAY = 3;
+
 /** One continuous stretch of a single action, in seconds from match start. */
 export interface ActionSegment {
   action: ActionKind;
