@@ -110,12 +110,13 @@ export function TeamDeepDive({ team, data, pick, onBack, onFocusTeam }: TeamDeep
   }, [metrics]);
 
   /**
-   * Tallest per-match total, for scaling the auto/teleop stacked bars.
+   * Tallest per-match total, for scaling the auto/teleop/tower stacked bars.
    *
-   * The stack height is taken from the segments rather than `points` because on
-   * a BPS match the tower estimate is deliberately not folded into `points`
-   * (the CV scoreboard already contains the climb) — scaling by `points` alone
-   * would let those stacks overflow their track.
+   * On a BPS match the three segments now sum to `points` exactly — the fuel
+   * halves are anchored to TBA's climb-free alliance total and the climb is
+   * added on top — so the stack can never overflow its track. The max against
+   * the summed segments is kept only to absorb rounding, since `points` is a
+   * whole number while the segments are not.
    */
   const barMax = useMemo(
     () =>
@@ -225,7 +226,7 @@ export function TeamDeepDive({ team, data, pick, onBack, onFocusTeam }: TeamDeep
                   className="pl-mbm-col"
                   title={
                     m.source === 'bps'
-                      ? `${m.label}: ${m.points} pts from BPS (auto ${m.autoFuel}, teleop ${m.teleopFuel}; climb ${m.towerPoints ? 'yes' : 'no'}, already inside the total)${m.died ? ' — went out of order' : ''}`
+                      ? `${m.label}: ${m.points} pts — auto ${m.autoFuel} + teleop ${m.teleopFuel} fuel, climb ${m.towerPoints} (from TBA)${m.died ? ' — went out of order' : ''}`
                       : `${m.label}: ${m.points} pts (auto ${m.autoFuel}, teleop ${m.teleopFuel}, tower ${m.towerPoints})${m.died ? ' — died' : ''}`
                   }
                 >

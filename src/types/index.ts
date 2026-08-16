@@ -103,6 +103,45 @@ export interface ActionSegment {
 export type ClimbResult = 'climbed' | 'attempted' | 'none';
 
 /**
+ * Auto + endgame tower points TBA attributes to one robot in one match.
+ *
+ * Ground truth, not a scout's estimate: TBA's `score_breakdown` names which
+ * robot occupied each tower slot (`autoTowerRobot1/2/3`,
+ * `endGameTowerRobot1/2/3`), positionally matched to that alliance's
+ * `team_keys`. This replaced the scout's climb question — see
+ * `services/tbaApi.fetchEventClimbData`.
+ */
+export interface TowerCredit {
+  auto: number;
+  endgame: number;
+}
+
+/** matchKey -> teamKey -> that robot's tower credit for the match. */
+export type ClimbByMatch = Record<string, Record<string, TowerCredit>>;
+
+/**
+ * Everything the app imports from TBA's published match results.
+ *
+ * Both halves come from the same `score_breakdown` fetch, and both are
+ * ground truth rather than scouted estimates.
+ */
+export interface TbaMatchScores {
+  climbByMatch: ClimbByMatch;
+  /**
+   * "matchKey|alliance" -> the alliance's AUTO + TELEOP fuel points, with
+   * climb, fouls and adjustments excluded. This is the anchor target the
+   * per-match points are rescaled to.
+   *
+   * Verified against every 2026 qualification match at 2026cagle:
+   *   hubScore.autoPoints + hubScore.teleopPoints === hubScore.totalPoints
+   *   totalPoints === hubScore.totalPoints + totalTowerPoints
+   *                   + foulPoints + adjustPoints
+   * so `hubScore.totalPoints` is exactly "score minus climb minus fouls".
+   */
+  fuelByAlliance: Record<string, number>;
+}
+
+/**
  * How much the scout trusts their own tracking. Feeds the solver's weight
  * matrix — low-confidence matches can be down-weighted or excluded.
  */

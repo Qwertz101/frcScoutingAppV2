@@ -24,9 +24,15 @@ import '../styles/livematch.css';
  * time-stamped, producing a per-robot action timeline that the solver later
  * fuses with the CV scoreboard log.
  *
- * Five phases live in this one screen — pre-match, live tracking, climb,
- * confidence, and the export summary — because a scout in the stands should
- * never have to navigate anywhere mid-match.
+ * Four phases live in this one screen — pre-match, live tracking, confidence,
+ * and the export summary — because a scout in the stands should never have
+ * to navigate anywhere mid-match.
+ *
+ * There used to be a fifth phase asking whether the robot climbed. It is
+ * gone: TBA's published score breakdown names which robot occupied the auto
+ * and endgame tower slots, which is ground truth rather than a scout's
+ * estimate, so the app imports it instead of asking — see
+ * `services/tbaApi.fetchEventClimbData` and `utils/teamMetrics.ts`.
  */
 
 interface LiveMatchProps {
@@ -38,7 +44,7 @@ interface LiveMatchProps {
   existing?: any;
 }
 
-type Phase = 'pre' | 'live' | 'climb' | 'confidence' | 'summary';
+type Phase = 'pre' | 'live' | 'confidence' | 'summary';
 
 interface ActionMeta {
   kind: ActionKind;
@@ -98,7 +104,10 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
   const [elapsed, setElapsed] = useState(0);
   const [segments, setSegments] = useState<ActionSegment[]>([]);
   const [active, setActive] = useState<ActionKind | null>(null);
-  const [climb, setClimb] = useState<ClimbResult>('none');
+  // No longer collected from the scout — TBA's score breakdown supplies real
+  // climb points instead (see the module doc above). Kept as a fixed value
+  // only because TimelineScoutingData.climb is still part of the record shape.
+  const climb: ClimbResult = 'none';
   const [confidence, setConfidence] = useState<DataConfidence>('high');
   const [endedEarly, setEndedEarly] = useState(false);
   const [saved, setSaved] = useState<TimelineScoutingData | null>(null);
@@ -125,7 +134,6 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
     if (!prior) return;
     setSaved(prior);
     setSegments(prior.segments);
-    setClimb(prior.climb);
     setConfidence(prior.confidence);
     setEndedEarly(!!prior.endedEarly);
     setElapsed(MATCH_LEN);
@@ -150,7 +158,7 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
     (early: boolean) => {
       closeOpen(now());
       setEndedEarly(early);
-      setPhase('climb');
+      setPhase('confidence');
     },
     [closeOpen, now]
   );
@@ -246,7 +254,6 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
     setSaved(null);
     setSegments([]);
     setActive(null);
-    setClimb('none');
     setConfidence('high');
     setEndedEarly(false);
     setElapsed(0);
@@ -356,39 +363,7 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
     );
   }
 
-  /* ---------------- 03 climb ---------------- */
-  if (phase === 'climb') {
-    const choices: Array<{ value: ClimbResult; label: string; bg: string; fg: string }> = [
-      { value: 'climbed', label: 'CLIMBED SUCCESSFULLY', bg: '#00baff', fg: '#000' },
-      { value: 'attempted', label: 'ATTEMPTED — FAILED', bg: '#33becc', fg: '#000' },
-      { value: 'none', label: 'NO ATTEMPT', bg: '#000', fg: '#fff' },
-    ];
-    return (
-      <div className="cc-root">
-        {header}
-        <section className="lm-page">
-          <div className="lm-center">
-            <h1 className="lm-title">DID TEAM {teamNumber} CLIMB?</h1>
-            {choices.map((c) => (
-              <button
-                key={c.value}
-                className="lm-choice"
-                style={{ background: c.bg, color: c.fg }}
-                onClick={() => {
-                  setClimb(c.value);
-                  setPhase('confidence');
-                }}
-              >
-                {c.label}
-              </button>
-            ))}
-          </div>
-        </section>
-      </div>
-    );
-  }
-
-  /* ---------------- 04 confidence ---------------- */
+  /* ---------------- 03 confidence ---------------- */
   if (phase === 'confidence') {
     const choices: Array<{ value: DataConfidence; label: string; bg: string; fg: string }> = [
       { value: 'high', label: 'HIGH — TRACKED CLEANLY', bg: '#00baff', fg: '#000' },
@@ -424,11 +399,9 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
     );
   }
 
-  /* ---------------- 05 summary ---------------- */
+  /* ---------------- 04 summary ---------------- */
   if (phase === 'summary') {
     const tracked = Object.values(totals).reduce((a, b) => a + b, 0) || 1;
-    const climbLabel =
-      climb === 'climbed' ? 'Climbed' : climb === 'attempted' ? 'Attempted' : 'No attempt';
 
     return (
       <div className="cc-root">
@@ -441,9 +414,6 @@ export function LiveMatch({ match, user, onBack, onSubmit, existing }: LiveMatch
           <div className="lm-badges">
             <span className="lm-badge" style={{ background: '#eaf7fb', color: '#0b4fa0' }}>
               Confidence · {confidence.toUpperCase()}
-            </span>
-            <span className="lm-badge" style={{ background: '#e7f1fe', color: '#1179ee' }}>
-              Climb · {climbLabel}
             </span>
             {endedEarly && (
               <span className="lm-badge" style={{ background: '#fdeeef', color: '#c2323b' }}>

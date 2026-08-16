@@ -18,6 +18,9 @@ import { SolveOptions, solveBps, toRateMap } from './solver';
 export { buildWindows, buildAllianceWindows } from './windows';
 export { solveBps, toRateMap } from './solver';
 export type { SolveOptions, SolveOutput } from './solver';
+export { runFuzzyPipeline, occupancy, buildUnits } from './fuzzy';
+export { buildMatchPoints, matchPointsKey, anchorSummary } from './matchPoints';
+export type { MatchPointsMap, MatchPointsEntry } from './matchPoints';
 
 /**
  * The full BPS pipeline: fuse the two streams, then run the four optimisation

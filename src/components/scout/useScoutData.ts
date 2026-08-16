@@ -1,15 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CvMatchLog, ScoutingData, TimelineScoutingData } from '../../types';
+import { CvMatchLog, ScoutingData, TbaMatchScores, TimelineScoutingData } from '../../types';
 import { DataService } from '../../services/dataService';
 import { loadScoutingRows } from '../../services/scoutingRows';
-import { fetchEventRankings } from '../../services/tbaApi';
+import { fetchEventTbaScores, fetchEventRankings } from '../../services/tbaApi';
 import {
   fetchCvLogs,
   fetchTimelines,
   getCvLogs,
   getTimelines,
 } from '../../services/bpsStore';
-import { BpsReport, runBpsPipeline } from '../../services/bps';
+import {
+  BpsReport,
+  MatchPointsMap,
+  anchorSummary,
+  buildMatchPoints,
+  runFuzzyPipeline,
+} from '../../services/bps';
 import {
   buildAllTeamMetrics,
   teamsFromMatches,
@@ -26,6 +32,10 @@ import {
  * additionally because it is O(teams²): it must run once per data load, not
  * once per render and certainly not once per tab.
  */
+
+/** How often to re-check TBA for results published since the last look. */
+const TBA_POLL_MS = 120_000;
+
 export function useScoutData() {
   const [rows, setRows] = useState<ScoutingData[]>([]);
   const [timelines, setTimelines] = useState<TimelineScoutingData[]>([]);
@@ -33,6 +43,7 @@ export function useScoutData() {
   const [loading, setLoading] = useState(true);
   const [dataError, setDataError] = useState<string | null>(null);
   const [rankings, setRankings] = useState<number[]>([]);
+  const [tba, setTba] = useState<TbaMatchScores>({ climbByMatch: {}, fuelByAlliance: {} });
   const [reloadToken, setReloadToken] = useState(0);
 
   const matches = useMemo(
@@ -87,6 +98,37 @@ export function useScoutData() {
     };
   }, [eventKey]);
 
+  /**
+   * TBA's published results: per-robot climb credit, and each alliance's
+   * fuel-only total used to anchor the solve.
+   *
+   * Re-polled on an interval, not just on mount, because during a live event
+   * TBA publishes a match's breakdown some minutes after it is played — a
+   * match scouted before its results posted would otherwise sit unanchored
+   * and climbless until the page was reloaded. Cheap: one request per poll,
+   * and the response is small.
+   *
+   * Empty is not an error: no TBA key, an event with nothing published yet,
+   * or a network blip all land here, and every consumer degrades to the
+   * unanchored, climbless figure rather than breaking.
+   */
+  useEffect(() => {
+    if (!eventKey) {
+      setTba({ climbByMatch: {}, fuelByAlliance: {} });
+      return;
+    }
+    let mounted = true;
+    const pull = () => {
+      fetchEventTbaScores(eventKey).then((d) => mounted && setTba(d));
+    };
+    pull();
+    const id = window.setInterval(pull, TBA_POLL_MS);
+    return () => {
+      mounted = false;
+      window.clearInterval(id);
+    };
+  }, [eventKey, reloadToken]);
+
   const teamKeys = useMemo(() => {
     const fromMatches = teamsFromMatches(matches);
     if (fromMatches.length) return fromMatches;
@@ -101,12 +143,25 @@ export function useScoutData() {
   const bpsReport = useMemo<BpsReport | null>(() => {
     if (!timelines.length || !cvLogs.length) return null;
     try {
-      return runBpsPipeline(timelines, cvLogs);
+      return runFuzzyPipeline(timelines, cvLogs);
     } catch (e) {
       console.error('useScoutData: BPS solve failed, falling back to legacy', e);
       return null;
     }
   }, [timelines, cvLogs]);
+
+  /**
+   * Per-robot, per-match points: solved fuel rates, rescaled to TBA's
+   * published fuel total for that alliance, plus that robot's own TBA climb.
+   *
+   * Keyed on the timelines, so a robot only picks up climb points for
+   * matches it was actually scouted in — scouting an event reveals its TBA
+   * data match by match instead of exposing every future result at once.
+   */
+  const matchPoints = useMemo<MatchPointsMap>(
+    () => buildMatchPoints(timelines, bpsReport, tba.fuelByAlliance, tba.climbByMatch),
+    [timelines, bpsReport, tba]
+  );
 
   const metrics = useMemo(
     // By request: the workspace shows ONLY BPS (timeline + CV scoreboard)
@@ -116,8 +171,8 @@ export function useScoutData() {
     // season stats. `rows` itself is untouched and still returned from this
     // hook — CSV export/backup (StatsImportControl) still needs the real
     // scouting_records — only the metrics/ranking build stops reading it.
-    () => buildAllTeamMetrics([], teamKeys, matches, timelines, bpsReport),
-    [teamKeys, matches, timelines, bpsReport]
+    () => buildAllTeamMetrics([], teamKeys, matches, timelines, bpsReport, matchPoints),
+    [teamKeys, matches, timelines, bpsReport, matchPoints]
   );
 
   const metricsByTeam = useMemo(() => {
@@ -157,11 +212,16 @@ export function useScoutData() {
 
   const scoutedCount = useMemo(() => metrics.filter((m) => m.hasData).length, [metrics]);
 
+  /** How much of the solve TBA was able to anchor — a data-quality signal. */
+  const anchoring = useMemo(() => anchorSummary(matchPoints), [matchPoints]);
+
   return {
     rows,
     timelines,
     cvLogs,
     bpsReport,
+    matchPoints,
+    anchoring,
     hasBps,
     loading,
     dataError,

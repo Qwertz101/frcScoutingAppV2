@@ -53,9 +53,10 @@ export function BpsFootnote() {
       with the CV scoreboard log, and each robot gets a points-per-second rate multiplied by the
       time it was flagged scoring. The choice is made per match, so a team can be
       <strong> mixed</strong>. Anything carrying a <span className="pl-src-badge bps">BPS</span>{' '}
-      badge came from the solver; everything else is legacy. BPS matches have no fuel or auto-climb
-      breakdown — the solver attributes scoreboard points, not game pieces — and their climb is
-      recorded as climbed / not, never by level.
+      badge came from the solver; everything else is legacy. BPS matches have no fuel breakdown —
+      the solver attributes scoreboard points, not game pieces. Climb points are not scouted at
+      all: they come straight from TBA's published match results, which name the exact robot that
+      occupied each tower slot.
     </p>
   );
 }

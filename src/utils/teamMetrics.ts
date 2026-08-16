@@ -1,5 +1,11 @@
 import { MATCH_LEN, ScoutingData, TimelineScoutingData } from '../types';
-import { BpsReport, actionTotals, matchPointsFromTimeline } from '../services/bps';
+import {
+  BpsReport,
+  MatchPointsMap,
+  actionTotals,
+  matchPointsFromTimeline,
+  matchPointsKey,
+} from '../services/bps';
 import {
   matchPointsFor,
   autoFuelOf,
@@ -8,7 +14,6 @@ import {
   autoClimbLevel,
   teleopClimbLevel,
   robotDiedIn,
-  SCORING,
 } from './scoring';
 
 /**
@@ -227,44 +232,58 @@ function collapseMatch(matchKey: string, entries: ScoutingData[]): TeamMatchPoin
  * shape the legacy path produces, so every downstream statistic is unchanged.
  *
  * Concept mapping (see the module header for why this is per match):
- *   points     ← solved rate × seconds flagged shooting, auto and teleop apart
- *   autoFuel   ← AUTO points   (a points figure, not a fuel count)
- *   teleopFuel ← TELEOP points (likewise)
- *   climbLevel ← climb === 'climbed' ? 1 : 0. The timeline records whether the
- *                robot climbed, never which level, so level 1 is assumed.
- *   towerPoints← an ESTIMATE from that climb, deliberately NOT added into
- *                `points`: the CV scoreboard the solver fits already contains
- *                the climb, so counting it again would double it. The field
- *                exists so the Traversal RP forecast keeps working.
+ *   autoFuel   ← AUTO fuel points, after anchoring (a points figure, not a
+ *                fuel count)
+ *   teleopFuel ← TELEOP fuel points, likewise
+ *   towerPoints← this robot's own auto + endgame tower points, from TBA's
+ *                per-robot attribution
+ *   points     ← autoFuel + teleopFuel + towerPoints, i.e. the robot's whole
+ *                contribution. Climb IS included now: the fuel figures were
+ *                anchored to TBA's climb-free total, so adding the climb back
+ *                completes the picture instead of double-counting it. (Before
+ *                anchoring existed, the CV scoreboard the solver fitted still
+ *                contained the climb, which is why the old code had to leave
+ *                towerPoints out of the total.)
+ *   autoClimbed← true when this robot's TBA auto tower credit is nonzero
+ *   climbLevel ← 1 when its TBA endgame tower credit is nonzero. TBA records
+ *                the level string too, but nothing downstream consumes more
+ *                than "did they score" — see `climbRate`.
  *   died       ← the match contains an `oof` segment
- *   autoClimbed← always false; the timeline model does not distinguish an auto
- *                climb from a teleop one. Deliberately unmapped.
+ *
+ * `matchPoints` is precomputed per alliance-match because anchoring needs the
+ * whole alliance at once, and this function only ever sees one robot. When it
+ * has no entry — no TBA key, or results not published yet — the raw solved
+ * figures are used unanchored and the climb is simply absent.
  */
 function collapseBpsMatch(
   matchKey: string,
   timelines: TimelineScoutingData[],
   report: BpsReport,
-  teamKey: string
+  teamKey: string,
+  matchPoints?: MatchPointsMap
 ): TeamMatchPoint {
   const { label, number } = matchLabel(matchKey);
   const rates = report.byTeam[teamKey];
-  const pts = timelines.map((t) => matchPointsFromTimeline(t, rates));
   const totals = timelines.map(actionTotals);
-
-  const climbed =
-    timelines.filter((t) => t.climb === 'climbed').length / timelines.length >= 0.5;
   const oof = mean(totals.map((t) => t.oof ?? 0));
+
+  const anchored = matchPoints?.[matchPointsKey(matchKey, teamKey)];
+  // Unanchored fallback: the solver's own per-timeline figure, no climb.
+  const raw = timelines.map((t) => matchPointsFromTimeline(t, rates));
+  const autoFuel = anchored ? anchored.auto : round2(mean(raw.map((p) => p.auto)));
+  const teleopFuel = anchored ? anchored.teleop : round2(mean(raw.map((p) => p.teleop)));
+  const towerPoints = anchored ? anchored.climb : 0;
 
   return {
     matchKey,
     label,
     matchNumber: number,
-    points: Math.round(mean(pts.map((p) => p.total))),
-    autoFuel: round2(mean(pts.map((p) => p.auto))),
-    teleopFuel: round2(mean(pts.map((p) => p.teleop))),
-    towerPoints: climbed ? SCORING.tower.teleop.level1 : 0,
-    autoClimbed: false,
-    climbLevel: climbed ? 1 : 0,
+    points: Math.round(autoFuel + teleopFuel + towerPoints),
+    autoFuel,
+    teleopFuel,
+    towerPoints,
+    autoClimbed: anchored ? anchored.climbAuto > 0 : false,
+    climbLevel: anchored && anchored.climbEndgame > 0 ? 1 : 0,
     died: oof > 0,
     scouters: timelines.length,
     source: 'bps',
@@ -350,7 +369,8 @@ export function buildTeamMetrics(
   teamKey: string,
   entries: ScoutingData[],
   matchesScheduled = 0,
-  bpsInput?: TeamBpsInput
+  bpsInput?: TeamBpsInput,
+  matchPoints?: MatchPointsMap
 ): TeamMetrics {
   const report = bpsInput?.report ?? null;
   const teamTimelines = bpsInput?.timelines ?? [];
@@ -384,7 +404,7 @@ export function buildTeamMetrics(
     ...Object.keys(byMatch)
       .filter((k) => !bpsByMatch[k])
       .map((k) => collapseMatch(k, byMatch[k])),
-    ...bpsMatchKeys.map((k) => collapseBpsMatch(k, bpsByMatch[k], report!, teamKey)),
+    ...bpsMatchKeys.map((k) => collapseBpsMatch(k, bpsByMatch[k], report!, teamKey, matchPoints)),
   ].sort((a, b) => a.matchNumber - b.matchNumber);
 
   const points = matches.map((m) => m.points);
@@ -496,7 +516,8 @@ export function buildAllTeamMetrics(
   teamKeys: string[],
   matches: any[] = [],
   timelines: TimelineScoutingData[] = [],
-  report: BpsReport | null = null
+  report: BpsReport | null = null,
+  matchPoints: MatchPointsMap = {}
 ): TeamMetrics[] {
   const byTeam: Record<string, ScoutingData[]> = {};
   rows.forEach((r) => {
@@ -543,10 +564,13 @@ export function buildAllTeamMetrics(
   );
 
   return allKeys.map((tk) =>
-    buildTeamMetrics(tk, byTeam[tk] || [], scheduledFor(tk), {
-      timelines: timelinesByTeam[tk] || [],
-      report,
-    })
+    buildTeamMetrics(
+      tk,
+      byTeam[tk] || [],
+      scheduledFor(tk),
+      { timelines: timelinesByTeam[tk] || [], report },
+      matchPoints
+    )
   );
 }
 
