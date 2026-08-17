@@ -409,10 +409,13 @@ export function buildTeamMetrics(
 
   const points = matches.map((m) => m.points);
   const avg = mean(points);
-  const q1 = percentile(points, 0.25);
-  const q3 = percentile(points, 0.75);
-  const iqr = q3 - q1;
-  const lowFence = q1 - 1.5 * iqr;
+  // Classification only: the Tukey fence that decides which matches are
+  // outliers has to be computed from the FULL set, same as any Tukey fence —
+  // it would be circular to classify outliers using quartiles that already
+  // exclude them.
+  const clsQ1 = percentile(points, 0.25);
+  const clsQ3 = percentile(points, 0.75);
+  const lowFence = clsQ1 - 1.5 * (clsQ3 - clsQ1);
 
   // A match is excluded from the "normal range" if the robot died or the
   // score fell below the lower Tukey fence.
@@ -423,6 +426,19 @@ export function buildTeamMetrics(
 
   const adjMean = mean(keptPoints);
   const adjSd = stdDev(keptPoints, adjMean);
+
+  // Display quartiles: computed from keptPoints, the SAME set floor/ceiling
+  // use, so floor <= q1 <= median <= q3 <= ceiling holds by construction.
+  // Computing these from the full `points` instead (as `clsQ1`/`clsQ3` do,
+  // deliberately, for classification) can place them outside a floor/ceiling
+  // that excluded an outlier — a team down to one kept match after an
+  // exclusion collapses floor and ceiling to that single value while the
+  // full-set quartiles sit elsewhere entirely, which is what was producing
+  // DistributionBar's band as a tiny mispositioned blob disconnected from
+  // its own whiskers rather than a coherent (if extremely narrow) band.
+  const q1 = percentile(keptPoints, 0.25);
+  const q3 = percentile(keptPoints, 0.75);
+  const iqr = q3 - q1;
 
   const bpsMatches = matches.filter((m) => m.source === 'bps');
   const hasBps = bpsMatches.length > 0;
@@ -469,7 +485,9 @@ export function buildTeamMetrics(
     adjMean: round2(adjMean),
     sd: round2(stdDev(points, avg)),
     adjSd: round2(adjSd),
-    median: round2(percentile(points, 0.5)),
+    // Same basis as q1/q3 above — the normal range's own median, not the
+    // full set's (which an excluded outlier could pull outside floor..ceiling).
+    median: round2(percentile(keptPoints, 0.5)),
     q1: round2(q1),
     q3: round2(q3),
     iqr: round2(iqr),
