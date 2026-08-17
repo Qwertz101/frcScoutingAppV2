@@ -75,7 +75,19 @@ export function DistributionBar({ team, scaleMax, threshold, height = BASE_HEIGH
   // Quartile stops, re-expressed as percentages *of the band* rather than the axis.
   const lq1 = clampPct(((q1P - eMin) / bandW) * 100);
   const lq3 = clampPct(((q3P - eMin) / bandW) * 100);
-  const feather = Math.max(0.5, Math.min(lq1, (overlap / bandW) * 100 * 1.6));
+
+  // Two blends share the room between the band's edge and the IQR:
+  // transparent->OUTER (width = feather), then OUTER->INNER (width = lq1 -
+  // feather). A team with a tight IQR sitting close to its floor or ceiling
+  // has little room on that side, and greedily spending the whole gap on
+  // the first blend — feather approaching or equal to lq1 — collapses the
+  // second to zero width, which reads as a hard color line rather than a
+  // fade. Splitting the gap keeps both visible no matter how tight it is;
+  // the final clamp is a hard guarantee feather can never reach lq1 itself,
+  // independent of the floor/ceiling picked above.
+  const halfGap = Math.min(lq1, 100 - lq3);
+  const featherTarget = Math.max(1, Math.min(halfGap * 0.45, 8));
+  const feather = Math.min(featherTarget, Math.max(0, halfGap - 0.15));
 
   const bandBg =
     `linear-gradient(90deg, transparent 0%, ${OUTER} ${feather.toFixed(2)}%, ` +

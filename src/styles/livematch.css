@@ -214,28 +214,35 @@
   transition: background 0.35s;
 }
 
-/* hold-to-track buttons */
+/* hold-to-track buttons — a 2x2 grid, not 1x4: a scout is holding a phone
+   one-handed, and four buttons crammed into a single row leaves a target
+   too narrow to hit reliably and text too small to read (the old 1x4 layout
+   clamped font-size down to 9px). Two per row roughly doubles both hit
+   width and text size for the same screen. */
 
 .cc-root .lm-actions {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, 1fr);
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-height: 320px;
 }
 
 .cc-root .lm-action-slot {
-  padding: 0 4px;
   min-width: 0;
+  min-height: 0;
+  display: flex;
 }
 
 .cc-root .lm-action {
   width: 100%;
   border: none;
-  border-radius: 14px;
-  padding: clamp(18px, 6vw, 30px) 4px;
+  border-radius: 20px;
+  padding: 12px;
   font-family: var(--font-display);
-  font-size: clamp(9px, 2.7vw, 24px);
+  font-size: clamp(22px, 6.5vw, 38px);
   line-height: 1.1;
   letter-spacing: 0.02em;
-  min-height: clamp(88px, 26vw, 116px);
   background: #fff;
   cursor: pointer;
   user-select: none;
