@@ -216,3 +216,71 @@ export async function fetchEventMatches(eventKey: string) {
     return [];
   }
 }
+/**
+ * A robot photo for one team, newest season first.
+ *
+ * Cached in localStorage because TBA media is one request per team per year
+ * and the picklist renders a card for every robot at the event — without the
+ * cache, every visit to the tab would fire dozens of requests for images that
+ * do not change during a competition. A miss is cached too (as an empty
+ * string), so a team with no photo is not re-queried on every render.
+ */
+const PHOTO_CACHE_KEY = 'frc-team-photos';
+
+function photoCache(): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem(PHOTO_CACHE_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function cachePhoto(team: number, url: string) {
+  try {
+    const all = photoCache();
+    all[String(team)] = url;
+    localStorage.setItem(PHOTO_CACHE_KEY, JSON.stringify(all));
+  } catch {
+    // storage full — the photo simply gets fetched again next time
+  }
+}
+
+function pickMediaUrl(media: any[]): string {
+  for (const m of media || []) {
+    if (m?.direct_url && /\.(jpg|jpeg|png|webp)$/i.test(m.direct_url)) return m.direct_url;
+    if (m?.type === 'cdphotothread' && m?.details?.image_partial) {
+      return (
+        'https://www.thebluealliance.com/cdphotothread/img/' +
+        String(m.details.image_partial).replace('_l.jpg', '_m.jpg')
+      );
+    }
+  }
+  return '';
+}
+
+export async function fetchTeamPhoto(team: number, years = [2026, 2025, 2024]): Promise<string> {
+  const cached = photoCache()[String(team)];
+  if (cached !== undefined) return cached;
+
+  const key = effectiveTbaKey();
+  if (!key) return '';
+
+  for (const year of years) {
+    try {
+      const res = await fetch(`${TBA_BASE_URL}/team/frc${team}/media/${year}`, {
+        headers: { 'X-TBA-Auth-Key': key },
+      });
+      if (!res.ok) continue;
+      const url = pickMediaUrl(await res.json());
+      if (url) {
+        cachePhoto(team, url);
+        return url;
+      }
+    } catch (e) {
+      // Offline or blocked: leave it uncached so a later visit can retry.
+      return '';
+    }
+  }
+  cachePhoto(team, '');
+  return '';
+}

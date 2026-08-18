@@ -33,11 +33,24 @@ export interface AllianceSlot {
   picks: number[];
 }
 
-/** A hypothetical "captain + us + 2nd pick" permutation in the picklist tree. */
+/**
+ * One planned pick branch: a 1st-pick target and the 2nd-pick options ranked
+ * for the case where that 1st pick is still on the board when we are on the
+ * clock.
+ */
 export interface TreeBranch {
   id: number;
-  cap: number | null;
-  second: number | null;
+  /** The 1st-pick target this branch is built around. */
+  first: number | null;
+  /** 2nd-pick options in priority order. */
+  seconds: number[];
+}
+
+/** The pre-v2 branch shape, kept only so saved branches survive the upgrade. */
+interface LegacyTreeBranch {
+  id: number;
+  cap?: number | null;
+  second?: number | null;
 }
 
 function read<T>(key: string, fallback: T): T {
@@ -95,15 +108,29 @@ export class PicklistService {
     write(STORAGE_KEYS.BOARD, board);
   }
 
+  /**
+   * Saved branches, upgraded in place from the old `{ cap, second }` shape.
+   *
+   * Branches used to be a single captain plus a single 2nd pick; they are now
+   * a 1st-pick target with an ordered list of 2nd-pick options. Old entries
+   * are mapped rather than dropped so a team that planned its picks before
+   * this build does not lose them, and empty ones are discarded because the
+   * new builder has no notion of a blank branch.
+   */
   static getBranches(): TreeBranch[] {
-    const branches = read<TreeBranch[]>(STORAGE_KEYS.BRANCHES, []);
-    if (!branches.length) {
-      return [
-        { id: 1, cap: null, second: null },
-        { id: 2, cap: null, second: null },
-      ];
-    }
-    return branches;
+    const raw = read<(TreeBranch & LegacyTreeBranch)[]>(STORAGE_KEYS.BRANCHES, []);
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((b, i) => ({
+        id: typeof b?.id === 'number' ? b.id : i + 1,
+        first: b?.first ?? b?.cap ?? null,
+        seconds: Array.isArray(b?.seconds)
+          ? b.seconds
+          : b?.second != null
+            ? [b.second]
+            : [],
+      }))
+      .filter((b) => b.first != null);
   }
   static setBranches(branches: TreeBranch[]): void {
     write(STORAGE_KEYS.BRANCHES, branches);
@@ -128,10 +155,7 @@ export class PicklistService {
   /** Clear the board and tree, keeping tier ordering and DNP notes. */
   static resetBoard(): void {
     PicklistService.setBoard(emptyBoard());
-    PicklistService.setBranches([
-      { id: 1, cap: null, second: null },
-      { id: 2, cap: null, second: null },
-    ]);
+    PicklistService.setBranches([]);
   }
 
   /** Wipe every picklist decision. */

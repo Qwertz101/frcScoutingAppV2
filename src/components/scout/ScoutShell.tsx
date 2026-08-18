@@ -3,22 +3,23 @@ import { ArrowLeft } from 'lucide-react';
 import { useScoutData } from './useScoutData';
 import { usePicklistState } from './usePicklistState';
 import { FieldRanking } from './FieldRanking';
-import { TeamAnalysis } from './TeamAnalysis';
 import { MatchStrategy } from './MatchStrategy';
 import { RankForecast } from './RankForecast';
 import { Picklist } from '../picklist/Picklist';
+import { AllianceSelection } from '../picklist/AllianceSelection';
+import { TeamDeepDive } from './TeamDeepDive';
 import { StatsImportControl } from './StatsImportControl';
 import '../picklist/picklist.css';
 // Modal/banner classes for the import dialog, which the picklist sheet has no
 // equivalent for.
 import '../../styles/cc.css';
 
-type Tab = 'rank' | 'pick' | 'scout' | 'strat' | 'predict';
+type Tab = 'rank' | 'pick' | 'alliance' | 'strat' | 'predict';
 
 const TABS: { key: Tab; label: string }[] = [
   { key: 'rank', label: 'Field Ranking' },
   { key: 'pick', label: 'Picklist' },
-  { key: 'scout', label: 'Team Analysis' },
+  { key: 'alliance', label: 'Alliance Selection' },
   { key: 'strat', label: 'Match Strategy' },
   { key: 'predict', label: 'Rank Forecast' },
 ];
@@ -53,11 +54,15 @@ export function ScoutShell({ onBack }: ScoutShellProps) {
   const data = useScoutData();
   const pick = usePicklistState(data.rankedTeams, !data.loading);
 
-  /** Jump straight to a robot's deep dive from any screen. */
-  const openTeam = (team: number) => {
-    setFocusTeam(team);
-    setTab('scout');
-  };
+  /**
+   * Jump straight to a robot's deep dive from any screen.
+   *
+   * The deep dive is an overlay over whichever tab is open rather than a tab
+   * of its own — there is no longer a Team Analysis tab to land on, and
+   * closing it should put the user back where they were mid-task instead of
+   * on a screen they never chose.
+   */
+  const openTeam = (team: number) => setFocusTeam(team);
 
   return (
     <div className={`picklist-root${dark ? ' dark' : ''}`}>
@@ -79,7 +84,7 @@ export function ScoutShell({ onBack }: ScoutShellProps) {
               className={`pl-nav-btn${tab === t.key ? ' active' : ''}`}
               onClick={() => {
                 setTab(t.key);
-                if (t.key !== 'scout') setFocusTeam(null);
+                setFocusTeam(null);
               }}
             >
               {t.label}
@@ -139,18 +144,23 @@ export function ScoutShell({ onBack }: ScoutShellProps) {
             </div>
           )}
 
-          {tab === 'rank' && <FieldRanking data={data} pick={pick} onOpenTeam={openTeam} />}
-          {tab === 'pick' && <Picklist data={data} pick={pick} />}
-          {tab === 'scout' && (
-            <TeamAnalysis
+          {focusTeam != null && data.metricsFor(focusTeam) ? (
+            <TeamDeepDive
+              team={data.metricsFor(focusTeam)!}
               data={data}
               pick={pick}
-              focusTeam={focusTeam}
+              onBack={() => setFocusTeam(null)}
               onFocusTeam={setFocusTeam}
             />
+          ) : (
+            <>
+              {tab === 'rank' && <FieldRanking data={data} pick={pick} onOpenTeam={openTeam} />}
+              {tab === 'pick' && <Picklist data={data} pick={pick} />}
+              {tab === 'alliance' && <AllianceSelection data={data} pick={pick} />}
+              {tab === 'strat' && <MatchStrategy data={data} pick={pick} onOpenTeam={openTeam} />}
+              {tab === 'predict' && <RankForecast data={data} pick={pick} onOpenTeam={openTeam} />}
+            </>
           )}
-          {tab === 'strat' && <MatchStrategy data={data} pick={pick} onOpenTeam={openTeam} />}
-          {tab === 'predict' && <RankForecast data={data} pick={pick} onOpenTeam={openTeam} />}
         </>
       )}
     </div>

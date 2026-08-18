@@ -1,13 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { TeamMetrics } from '../../utils/teamMetrics';
 import { ScoutData } from './useScoutData';
 import { PicklistState } from './usePicklistState';
-import { DistributionBar } from './DistributionBar';
-import { RP_THRESHOLDS } from '../../utils/scoring';
-import { tagsFor, fmtPts } from '../picklist/insights';
+import { fmtPts } from '../picklist/insights';
+import { denialFor } from '../picklist/allianceModel';
+import { roleOf, ROLE_COLOR, useAllianceContext } from '../picklist/roles';
 import { BpsFootnote, SourceBadge } from './BpsBits';
-
-type SortKey = 'adj' | 'cons' | 'auto' | 'ceil' | 'bps';
 
 interface FieldRankingProps {
   data: ScoutData;
@@ -15,247 +13,237 @@ interface FieldRankingProps {
   onOpenTeam: (team: number) => void;
 }
 
-/** Reliability strip: one cell per scheduled match, coloured by outcome. */
-function ReliabilityStrip({ team }: { team: TeamMetrics }) {
-  const slots = Math.max(team.matchesScheduled, team.matchesPlayed, 1);
-  const byIndex = team.matches;
-
+/**
+ * One robot's normal range, drawn as a band that fades out towards the floor
+ * and the ceiling: solid through the middle of the distribution, washed out at
+ * the extremes it only occasionally reaches.
+ */
+function bandGradient(t: TeamMetrics): string {
+  const core = ROLE_COLOR[roleOf(t)];
+  const span = Math.max(1, t.ceiling - t.floor);
+  const f1 = ((t.median - t.floor) * 0.45 * 100) / span;
+  const f2 = 100 - ((t.ceiling - t.median) * 0.45 * 100) / span;
+  const soft = (a: number) => `rgba(0,186,255,${a})`;
   return (
-    <div className="pl-rel">
-      {Array.from({ length: slots }, (_, i) => {
-        const m = byIndex[i];
-        let cls = 'empty';
-        let tip = 'not scouted';
-        if (m) {
-          if (m.died) { cls = 'dead'; tip = `${m.label}: died`; }
-          else if (team.outliers.some((o) => o.matchKey === m.matchKey)) { cls = 'low'; tip = `${m.label}: ${m.points} pts (low)`; }
-          else if (m.points >= team.q3) { cls = 'high'; tip = `${m.label}: ${m.points} pts`; }
-          else { cls = 'ok'; tip = `${m.label}: ${m.points} pts`; }
-        }
-        return <span key={i} className={`pl-rel-cell ${cls}`} title={tip} />;
-      })}
-    </div>
+    `linear-gradient(90deg, ${soft(0.05)} 0%, ${soft(0.85)} ${(f1 * 0.5).toFixed(1)}%, ` +
+    `${core} ${f1.toFixed(1)}%, ${core} ${f2.toFixed(1)}%, ` +
+    `${soft(0.85)} ${(f2 + (100 - f2) * 0.5).toFixed(1)}%, ${soft(0.05)} 100%)`
   );
 }
 
+/**
+ * The field, ordered.
+ *
+ * Above the defence line teams are ranked by what they score; below it, by how
+ * much they deny. The line itself is draggable because where it belongs is a
+ * judgement call about this specific field — there is no threshold that is
+ * right at every event, and the strategy team is the one who knows whether the
+ * 9th-best scorer is really a better pick than the best defender.
+ */
 export function FieldRanking({ data, pick, onOpenTeam }: FieldRankingProps) {
-  const [sortBy, setSortBy] = useState<SortKey>('adj');
-  const { metrics, fieldMedian, hasSynthetic, hasBps } = data;
+  const { metrics, hasBps } = data;
+  const ctx = useAllianceContext(data);
 
-  const sorted = useMemo(() => {
-    const copy = metrics.filter((m) => m.hasData || m.matchesScheduled > 0);
-    const key: Record<SortKey, (t: TeamMetrics) => number> = {
-      adj: (t) => t.adjMean,
-      cons: (t) => t.consistency,
-      auto: (t) => t.autoAvg,
-      ceil: (t) => t.ceiling,
-      bps: (t) => t.bps,
-    };
-    return copy.sort((a, b) => key[sortBy](b) - key[sortBy](a));
-  }, [metrics, sortBy]);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [dragging, setDragging] = useState(false);
 
-  /** Shared axis so every distribution bar is directly comparable. */
+  /** Teams that are actually at this event, best scorers first. */
+  const byOffense = useMemo(
+    () =>
+      metrics
+        .filter((m) => m.hasData || m.matchesScheduled > 0)
+        .sort((a, b) => b.adjMean - a.adjMean),
+    [metrics]
+  );
+
+  const divider = Math.max(1, Math.min(Math.max(1, byOffense.length - 1), pick.defenseLine));
+
+  const ordered = useMemo(
+    () => [
+      ...byOffense.slice(0, divider),
+      ...byOffense.slice(divider).sort((a, b) => denialFor(b, ctx) - denialFor(a, ctx)),
+    ],
+    [byOffense, divider, ctx]
+  );
+
+  /** Shared axis so every band on the screen is directly comparable. */
   const scaleMax = useMemo(() => {
     const top = Math.max(...metrics.map((m) => m.ceiling), 0);
     return Math.max(50, Math.ceil((top * 1.05) / 10) * 10);
   }, [metrics]);
 
-  const sortBtn = (k: SortKey, label: string) => (
-    <button
-      className={`pl-sort${sortBy === k ? ' active' : ''}`}
-      onClick={() => setSortBy(k)}
-    >
-      {label}
-    </button>
-  );
+  const pct = (v: number) => `${Math.min(100, (v / scaleMax) * 100)}%`;
+
+  // Dragging the defence line is tracked on the window, not the handle: the
+  // pointer routinely leaves the thin strip mid-drag, and a handle-local
+  // listener would drop the gesture the moment it did.
+  useEffect(() => {
+    if (!dragging) return;
+    const move = (ev: MouseEvent | TouchEvent) => {
+      const el = listRef.current;
+      if (!el || byOffense.length === 0) return;
+      const pt = 'touches' in ev ? ev.touches[0] : ev;
+      const rect = el.getBoundingClientRect();
+      const rowH = rect.height / byOffense.length;
+      const idx = Math.round((pt.clientY - rect.top) / rowH);
+      const next = Math.max(1, Math.min(byOffense.length - 1, idx));
+      if (next !== pick.defenseLine) pick.setDefenseLine(next);
+      if (ev.cancelable) ev.preventDefault();
+    };
+    const up = () => setDragging(false);
+    window.addEventListener('mousemove', move);
+    window.addEventListener('touchmove', move, { passive: false });
+    window.addEventListener('mouseup', up);
+    window.addEventListener('touchend', up);
+    return () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('touchmove', move as EventListener);
+      window.removeEventListener('mouseup', up);
+      window.removeEventListener('touchend', up);
+    };
+  }, [dragging, byOffense.length, pick]);
 
   return (
     <div className="pl-body">
       <div className="pl-title-row">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
           <span className="pl-eyebrow">Step 1 — read the field</span>
-          <h1 className="pl-h1">EVERY ROBOT, EVERY MATCH</h1>
-          <p className="pl-lede" style={{ textAlign: 'left', flexBasis: 'auto', maxWidth: 640 }}>
-            Blue deepens with percentile — bottom 25%, middle 50% (IQR), top 25% — across each
-            robot's normal range. Low-performing matches outside that range are excluded from the
-            band and flagged with a “!” instead.
-          </p>
+          <h1 className="pl-h1">FIELD RANKING</h1>
         </div>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {sortBtn('adj', 'Avg pts')}
-          {sortBtn('cons', 'Consistency')}
-          {sortBtn('auto', 'Auto')}
-          {sortBtn('ceil', 'Ceiling')}
-          {/* Only offered once something on the field has a solved rate. */}
-          {hasBps && sortBtn('bps', 'BPS')}
+        <div className="pl-fr-legend">
+          <span><i className="pl-fr-key-band" />floor → ceiling</span>
+          <span><i className="pl-fr-key-med" />median</span>
+          <span><i className="pl-fr-key-dots" />match by match</span>
         </div>
       </div>
 
-      <div className="pl-legend">
-        <span><span className="pl-legend-band" />outer 25% · middle 50%</span>
-        <span><span className="pl-legend-median" />median</span>
-        <span><span className="pl-legend-whisker" />floor / ceiling</span>
-        <span><span className="pl-legend-out">!</span>low outlier</span>
-        <span><span className="pl-legend-death" />died mid-match</span>
-      </div>
-
-      <div className="pl-card">
-        <div className="pl-rank-scroll">
-          {/*
-            The header lives inside the same scrolling box as the rows (rather
-            than as a sibling above it) so both share the exact scrollbar
-            gutter — as a sibling, the vertical scrollbar shrinks the rows'
-            available width but not the header's, and every column drifts out
-            of alignment by the scrollbar's width.
-          */}
-          <div className={`pl-rank-head${hasBps ? ' with-bps' : ''}`}>
-            <span>Rank</span>
-            <span>Team</span>
-            {/* Padding matches .pl-dist's own horizontal margins so both the
-                label and the threshold caption sit over the bar they describe. */}
-            <span className="pl-rank-head-dist">
-              <span>Match-point distribution</span>
-              <span className="pl-rank-head-rp">
-                Energized RP · {RP_THRESHOLDS.regional.energized} pts
-              </span>
-            </span>
-            <span style={{ textAlign: 'center' }}>Flags</span>
-            <span style={{ textAlign: 'right', paddingRight: 8 }}>Avg pts</span>
-            {hasBps && <span style={{ textAlign: 'right', paddingRight: 8 }}>BPS</span>}
-            <span style={{ textAlign: 'center' }}>Reliability</span>
-            <span style={{ paddingLeft: 12 }}>Role</span>
-            <span style={{ textAlign: 'right' }}>Actions</span>
+      <div className="pl-card pl-fr-card">
+        {ordered.length === 0 && (
+          <div className="pl-empty">
+            No teams yet. Import an event under <strong>Select Matches</strong>.
           </div>
+        )}
 
-          {sorted.length === 0 && (
-            <div className="pl-empty">
-              No teams yet. Import an event under <strong>Select Matches</strong>.
-            </div>
-          )}
-
-          {sorted.map((t, i) => {
-            const isDnp = pick.dnpTeams.has(t.teamNumber);
-            const inPick = pick.tier1.includes(t.teamNumber);
-            const inCmp = pick.compare.includes(t.teamNumber);
+        <div
+          ref={listRef}
+          className="pl-fr-list"
+          style={{ userSelect: dragging ? 'none' : 'auto' }}
+        >
+          {ordered.map((t, i) => {
+            const isDef = i >= divider;
+            const core = ROLE_COLOR[roleOf(t)];
+            const denied = denialFor(t, ctx);
             const isUs = t.teamNumber === pick.ourTeam;
+            const isDnp = pick.dnpTeams.has(t.teamNumber);
+            const slots = Math.max(t.matchesScheduled, t.matches.length, 1);
 
             return (
-              <div
-                key={t.teamKey}
-                className={`pl-rank-row${isUs ? ' us' : ''}${isDnp ? ' dnp' : ''}${
-                  hasBps ? ' with-bps' : ''
-                }`}
-              >
-                <span className="pl-rank-num">{i + 1}</span>
-
-                <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  <button className="pl-rank-team" onClick={() => onOpenTeam(t.teamNumber)}>
-                    {t.team}
-                  </button>
-                  <span className="pl-rank-sub">
-                    {t.hasData ? `${t.matchesPlayed} scouted` : 'unscouted'}
-                    {t.isSynthetic ? ' · reconstructed' : ''}{' '}
-                    <SourceBadge team={t} />
+              <div key={t.teamKey} className="pl-fr-rowwrap">
+                <div
+                  className={`pl-fr-row${isDef ? ' def' : ''}${isUs ? ' us' : ''}${
+                    isDnp ? ' dnp' : ''
+                  }`}
+                >
+                  <span
+                    className="pl-fr-rank"
+                    style={{ color: i < 8 ? 'var(--blue-600)' : 'var(--text-faint)' }}
+                  >
+                    {i + 1}
                   </span>
-                </div>
 
-                <DistributionBar
-                  team={t}
-                  scaleMax={scaleMax}
-                  threshold={RP_THRESHOLDS.regional.energized}
-                />
-
-                <div className="pl-rank-flags">
-                  {t.outliers.length > 0 ? (
-                    <span
-                      className="pl-flag"
-                      title={t.outliers.map((o) => `${o.label}: ${o.points} pts`).join(', ')}
-                    >
-                      <span className="pl-flag-mark">!</span>
-                      {t.outliers.length} low
+                  <span className="pl-fr-team">
+                    <button className="pl-fr-team-num" onClick={() => onOpenTeam(t.teamNumber)}>
+                      {t.team}
+                    </button>
+                    <span className="pl-fr-team-sub">
+                      {t.hasData ? `${t.matchesPlayed} scouted` : 'unscouted'}
+                      {t.isSynthetic ? ' · reconstructed' : ''} <SourceBadge team={t} />
                     </span>
-                  ) : (
-                    <span className="pl-dash">—</span>
-                  )}
-                </div>
+                  </span>
 
-                <div className="pl-rank-mean">
-                  <span className="pl-rank-mean-num">{fmtPts(t.adjMean)}</span>
-                  <span className="pl-rank-mean-sub">
-                    auto {fmtPts(t.autoAvg)} · climb {Math.round(t.climbRate)}%
+                  <span className="pl-fr-viz">
+                    <span className="pl-fr-band">
+                      <span className="pl-fr-band-track" />
+                      {t.hasData && (
+                        <>
+                          <span
+                            className="pl-fr-band-fill"
+                            style={{
+                              left: pct(t.floor),
+                              width: pct(Math.max(1, t.ceiling - t.floor)),
+                              background: bandGradient(t),
+                            }}
+                          />
+                          <span className="pl-fr-whisker" style={{ left: pct(t.floor) }} />
+                          <span className="pl-fr-whisker" style={{ left: pct(t.ceiling) }} />
+                          <span
+                            className="pl-fr-median"
+                            style={{ left: `calc(${pct(t.median)} - 2.5px)` }}
+                          />
+                        </>
+                      )}
+                    </span>
+                    <span className="pl-fr-dots">
+                      {Array.from({ length: slots }, (_, k) => {
+                        const m = t.matches[k];
+                        const tip = m
+                          ? `${m.label} · ${Math.round(m.points)} pts${m.died ? ' · died' : ''}`
+                          : 'not scouted';
+                        const color = !m
+                          ? 'var(--border)'
+                          : m.died
+                            ? '#000'
+                            : m.points >= t.median
+                              ? core
+                              : '#cfe0e6';
+                        return (
+                          <span
+                            key={k}
+                            className="pl-fr-dot"
+                            title={tip}
+                            style={{ background: color }}
+                          />
+                        );
+                      })}
+                    </span>
+                  </span>
+
+                  <span className="pl-fr-metric">
+                    <span
+                      className="pl-fr-metric-num"
+                      style={{ color: isDef ? 'var(--teal-500)' : 'var(--text)' }}
+                    >
+                      {isDef ? fmtPts(denied) : fmtPts(t.adjMean)}
+                    </span>
+                    <span className="pl-fr-metric-label">{isDef ? 'pts denied' : 'avg pts'}</span>
                   </span>
                 </div>
 
-                {hasBps && (
-                  <div className={`pl-rank-bps${t.hasBps ? '' : ' none'}`}>
-                    {t.hasBps ? (
-                      <>
-                        <span className="pl-rank-bps-num" title="Solved points per second">
-                          {t.bps.toFixed(2)}
-                        </span>
-                        <span className="pl-rank-bps-sub">
-                          auto {t.autoBps.toFixed(2)} · tele {t.teleopBps.toFixed(2)}
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        {/* Legacy-only robot: say so plainly rather than
-                            leaving a dash where a number ought to be. */}
-                        <span className="pl-rank-bps-num" title="No CV-fused matches — legacy scouting only">
-                          legacy
-                        </span>
-                        <span className="pl-rank-bps-sub">no BPS data</span>
-                      </>
-                    )}
+                {i === divider - 1 && (
+                  <div
+                    className={`pl-fr-divider${dragging ? ' dragging' : ''}`}
+                    onMouseDown={(e) => { e.stopPropagation(); setDragging(true); }}
+                    onTouchStart={(e) => { e.stopPropagation(); setDragging(true); }}
+                  >
+                    <span className="pl-fr-divider-tag">Defense line ⇕</span>
+                    <span className="pl-fr-divider-rule" />
+                    <span className="pl-fr-divider-hint">Below: ranked by denial</span>
                   </div>
                 )}
-
-                <div className="pl-rank-rel">
-                  <ReliabilityStrip team={t} />
-                </div>
-
-                <div className="pl-rank-tags">
-                  {tagsFor(t, fieldMedian).slice(0, 3).map((tag) => (
-                    <span
-                      key={tag.label}
-                      className="pl-tag"
-                      style={{ background: tag.bg, color: tag.fg }}
-                    >
-                      {tag.label}
-                    </span>
-                  ))}
-                </div>
-
-                <div className="pl-rank-actions">
-                  <button
-                    className={`pl-act${inPick ? ' on' : ''}`}
-                    title="Add to 1st-pick shortlist"
-                    onClick={() => pick.addToPicklist(t.teamNumber)}
-                  >
-                    +
-                  </button>
-                  <button
-                    className={`pl-act${inCmp ? ' on' : ''}`}
-                    title="Add to compare"
-                    onClick={() => pick.toggleCompare(t.teamNumber)}
-                  >
-                    ‖
-                  </button>
-                  <button
-                    className={`pl-act${isDnp ? ' on danger' : ''}`}
-                    title="Do not pick"
-                    onClick={() => pick.toggleDnp(t.teamNumber)}
-                  >
-                    ×
-                  </button>
-                </div>
               </div>
             );
           })}
         </div>
       </div>
 
-      {hasSynthetic && <SyntheticFootnote />}
+      {!ctx.hasBps && ordered.length > 0 && (
+        <p className="pl-note">
+          No CV-fused matches yet, so “pts denied” below the defence line is estimated from the
+          scouters' 0–4 defence rating rather than from measured defensive time.
+        </p>
+      )}
+
+      {data.hasSynthetic && <SyntheticFootnote />}
       {hasBps && <BpsFootnote />}
     </div>
   );
@@ -267,8 +255,7 @@ export function SyntheticFootnote() {
     <p className="pl-note pl-synth-note">
       Rows marked <strong>reconstructed</strong> were rebuilt from an exported season-averages CSV.
       Their auto/teleop averages, climb rates and death counts are real; the match-to-match spread
-      (band, floor, ceiling, consistency) is illustrative rather than observed. Distribution bars for
-      these teams are drawn dashed.
+      (band, floor, ceiling, consistency) is illustrative rather than observed.
     </p>
   );
 }
