@@ -38,7 +38,7 @@ function CropPreview({ plane, label }: { plane: GrayPlane | null; label: string 
   );
 }
 
-interface QuadEditorProps {
+interface QuadSpec {
   quad: Quad;
   onChange: (q: Quad) => void;
   /** Which region this is — drives the stroke colour. */
@@ -47,32 +47,71 @@ interface QuadEditorProps {
 }
 
 /**
- * The four draggable corners of one score region.
+ * The draggable corners of all three score regions, in one shared overlay.
  *
- * Two of these are rendered, one per alliance, because the two scores are not
- * adjacent halves of one box on a real broadcast — the match timer sits between
- * them. They are colour-coded rather than numbered so an operator can tell at a
- * glance that the blue box is on the blue plate and has not been dragged onto
- * the alliance name or the clock.
+ * These used to be three independent overlays stacked directly on top of one
+ * another (one per region, each covering the whole video). That made corner
+ * dragging flaky wherever two regions' edges meet — the blue/timer and
+ * timer/red boundaries — because the browser's hit-test just returns
+ * whichever element is topmost in paint order at that pixel, which is a fact
+ * about DOM order, not about which corner the operator's cursor is actually
+ * nearest to. The timer region, rendered last, silently won every such
+ * conflict; a drag aimed at blue's or red's inner corner would move the timer
+ * plate instead, with no visual cue for why "nothing happened" to the box
+ * being watched.
  *
- * Pointer events rather than mouse events, and capture on the handle, so a drag
- * keeps tracking when the finger or cursor leaves the box — which it will, since
- * the corners live on the edges.
+ * The fix is to hit-test in application space instead of relying on the DOM:
+ * on pointerdown, find the single closest handle across all three quads (in
+ * real pixels, since the box need not be square) and drag that one,
+ * regardless of which element the browser happened to report as the target.
  */
-function QuadHandles({ quad, onChange, tone, label }: QuadEditorProps) {
-  const drag = useRef<number | null>(null);
+function QuadOverlay({ quads }: { quads: QuadSpec[] }) {
+  const drag = useRef<{ quadIndex: number; pointIndex: number } | null>(null);
   const boxRef = useRef<HTMLDivElement | null>(null);
 
-  const move = (e: React.PointerEvent) => {
-    if (drag.current === null) return;
+  const toLocal = (e: React.PointerEvent) => {
     const box = boxRef.current?.getBoundingClientRect();
-    if (!box || !box.width || !box.height) return;
+    if (!box || !box.width || !box.height) return null;
+    return {
+      x: Math.min(Math.max((e.clientX - box.left) / box.width, 0), 1),
+      y: Math.min(Math.max((e.clientY - box.top) / box.height, 0), 1),
+      box,
+    };
+  };
 
-    const x = Math.min(Math.max((e.clientX - box.left) / box.width, 0), 1);
-    const y = Math.min(Math.max((e.clientY - box.top) / box.height, 0), 1);
+  const move = (e: React.PointerEvent) => {
+    if (!drag.current) return;
+    const local = toLocal(e);
+    if (!local) return;
+    const { quadIndex, pointIndex } = drag.current;
+    const spec = quads[quadIndex];
+    const next = spec.quad.map((p, i) =>
+      i === pointIndex ? { x: local.x, y: local.y } : p
+    ) as Quad;
+    spec.onChange(next);
+  };
 
-    const next = quad.map((p, i) => (i === drag.current ? { x, y } : p)) as Quad;
-    onChange(next);
+  const onHandleDown = (e: React.PointerEvent) => {
+    const local = toLocal(e);
+    if (!local) return;
+    const { box } = local;
+    const candidates: { quadIndex: number; pointIndex: number; d: number }[] = [];
+    quads.forEach((spec, qi) => {
+      spec.quad.forEach((p, pi) => {
+        const dx = (p.x - local.x) * box.width;
+        const dy = (p.y - local.y) * box.height;
+        candidates.push({ quadIndex: qi, pointIndex: pi, d: dx * dx + dy * dy });
+      });
+    });
+    const best = candidates.reduce((a, b) => (b.d < a.d ? b : a));
+    drag.current = { quadIndex: best.quadIndex, pointIndex: best.pointIndex };
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+
+  const onHandleUp = (e: React.PointerEvent) => {
+    drag.current = null;
+    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
   };
 
   return (
@@ -90,39 +129,40 @@ function QuadHandles({ quad, onChange, tone, label }: QuadEditorProps) {
         preserveAspectRatio="none"
         style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
       >
-        <polygon
-          className={`cv-quad ${tone}`}
-          points={quad.map((p) => `${p.x * 100},${p.y * 100}`).join(' ')}
-        />
+        {quads.map((spec) => (
+          <polygon
+            key={spec.tone}
+            className={`cv-quad ${spec.tone}`}
+            points={spec.quad.map((p) => `${p.x * 100},${p.y * 100}`).join(' ')}
+          />
+        ))}
       </svg>
 
-      <span
-        className={`cv-quad-tag ${tone}`}
-        style={{
-          left: `${Math.min(...quad.map((p) => p.x)) * 100}%`,
-          top: `${Math.min(...quad.map((p) => p.y)) * 100}%`,
-        }}
-      >
-        {label}
-      </span>
-
-      {quad.map((p, i) => (
-        <div
-          key={i}
-          className={`cv-handle ${tone}`}
-          style={{ left: `${p.x * 100}%`, top: `${p.y * 100}%` }}
-          onPointerDown={(e) => {
-            drag.current = i;
-            (e.target as HTMLElement).setPointerCapture(e.pointerId);
-            e.preventDefault();
+      {quads.map((spec) => (
+        <span
+          key={spec.tone}
+          className={`cv-quad-tag ${spec.tone}`}
+          style={{
+            left: `${Math.min(...spec.quad.map((p) => p.x)) * 100}%`,
+            top: `${Math.min(...spec.quad.map((p) => p.y)) * 100}%`,
           }}
-          onPointerMove={move}
-          onPointerUp={(e) => {
-            drag.current = null;
-            (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-          }}
-        />
+        >
+          {spec.label}
+        </span>
       ))}
+
+      {quads.map((spec) =>
+        spec.quad.map((p, i) => (
+          <div
+            key={`${spec.tone}-${i}`}
+            className={`cv-handle ${spec.tone}`}
+            style={{ left: `${p.x * 100}%`, top: `${p.y * 100}%` }}
+            onPointerDown={onHandleDown}
+            onPointerMove={move}
+            onPointerUp={onHandleUp}
+          />
+        ))
+      )}
     </div>
   );
 }
@@ -298,12 +338,16 @@ export function CvTracker({ onBack }: CvTrackerProps) {
                     Upload a file, paste a direct video URL, or share your screen.
                   </div>
                 )}
-                <QuadHandles quad={t.blueQuad} onChange={t.setBlueQuad} tone="blue" label="Blue" />
-                <QuadHandles quad={t.redQuad} onChange={t.setRedQuad} tone="red" label="Red" />
-                {/* The clock plate is a first-class region: it is what stamps
-                    every sample with a real match time, so a mis-dragged box
-                    here costs the whole log its alignment. */}
-                <QuadHandles quad={t.timerQuad} onChange={t.setTimerQuad} tone="timer" label="Timer" />
+                <QuadOverlay
+                  quads={[
+                    { quad: t.blueQuad, onChange: t.setBlueQuad, tone: 'blue', label: 'Blue' },
+                    { quad: t.redQuad, onChange: t.setRedQuad, tone: 'red', label: 'Red' },
+                    // The clock plate is a first-class region: it is what
+                    // stamps every sample with a real match time, so a
+                    // mis-dragged box here costs the whole log its alignment.
+                    { quad: t.timerQuad, onChange: t.setTimerQuad, tone: 'timer', label: 'Timer' },
+                  ]}
+                />
               </div>
 
               <div className="cv-controls">
