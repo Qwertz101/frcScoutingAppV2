@@ -409,6 +409,39 @@ export function normalizePolarity(plane: GrayPlane): GrayPlane {
   return { data: out, width: plane.width, height: plane.height };
 }
 
+/**
+ * Force the binarized ink to be the minority class, after thresholding.
+ *
+ * `normalizePolarity` guesses polarity from the *grayscale* median against a
+ * fixed 128 — which assumes the plate is either clearly dark or clearly light.
+ * A washed-out plate (stage lighting glare, a phone's auto-exposure blowing
+ * out a saturated colour, both seen on real audience footage) breaks that
+ * assumption: the background can measure well above 128 while the numerals,
+ * being pure white, are brighter still. Both classes land on the "light" side
+ * of the fixed cutoff, so the guess leaves the image unflipped — and Sauvola,
+ * which has no notion of "ink colour" and only marks whichever pixel is
+ * darker than its local neighbourhood, then marks the plate as ink and the
+ * numerals as background. `digitComponents` finds nothing digit-shaped in
+ * that image, or at best a handful of stray dark speckle.
+ *
+ * There is no grayscale-level fix for this — the two classes are genuinely
+ * both bright, in absolute terms, on this footage. But post-threshold there
+ * is an assumption that always holds regardless of either class's brightness:
+ * glyph ink is a small fraction of any real digit crop's area, never close to
+ * half. So whichever binary class is the *majority* is the plate, and
+ * whichever is the minority is ink — a purely relative test, immune to the
+ * plate's actual colour or exposure.
+ */
+export function fixBinaryPolarity(plane: GrayPlane): GrayPlane {
+  let black = 0;
+  for (let i = 0; i < plane.data.length; i++) if (plane.data[i] === 0) black++;
+  if (black <= plane.data.length / 2) return plane;
+
+  const out = new Uint8ClampedArray(plane.data.length);
+  for (let i = 0; i < plane.data.length; i++) out[i] = plane.data[i] === 0 ? 255 : 0;
+  return { data: out, width: plane.width, height: plane.height };
+}
+
 /* ------------------------------------------------------------------ *
  * Digit segmentation
  * ------------------------------------------------------------------ */
@@ -675,7 +708,7 @@ export function preprocessCrop(crop: GrayPlane, opts?: Partial<PrepOptions>): Pr
   const o = { ...PREP_VARIANTS[0], ...opts };
 
   const gray = normalizePolarity(contrastStretch(crop));
-  const binary = sauvolaThreshold(upscale(gray, o.upscaleBy), undefined, o.sauvolaK);
+  const binary = fixBinaryPolarity(sauvolaThreshold(upscale(gray, o.upscaleBy), undefined, o.sauvolaK));
 
   const line = segmentDigits(binary, o.gapFactor);
   if (!line) return null;

@@ -373,6 +373,22 @@ export const RESYNC_AFTER = 3;
  * values: an early version required three equal reads, which almost never
  * happens while a match is actively scoring, and it left the tracker 18 points
  * adrift for a whole match.
+ *
+ * The candidate must also never resync BELOW `prev`. `gate()` rejects a read
+ * for two different reasons — 'jump' (climbing too fast to trust in one step)
+ * and 'decrease' (score went down, which never happens mid-match) — and this
+ * resync path exists only to recover from the first kind, a real score that
+ * outran MAX_JUMP while `prev` sat stale. Checking candidates only against
+ * *each other* and not against `prev` blurs that distinction: three
+ * consecutive misreads that happen to agree with one another (a box drifted
+ * onto the wrong digits, a compression artefact that persists for a few
+ * frames) satisfy the exact same consistency test, and would silently drag
+ * the trusted score down to whatever those misreads show — the ScoreGate
+ * overriding the one invariant ('scores don't decrease') it exists to
+ * enforce. Reproduced on real audience footage: a several-second run of
+ * dropped-digit misreads reading `1` resynced the tracker down from a real
+ * 98, and every correct read for the rest of the match was then rejected as
+ * a `decrease` against that wrong low anchor.
  */
 export class ScoreGate {
   private prev: number;
@@ -402,7 +418,7 @@ export class ScoreGate {
 
     this.rejections++;
 
-    if (read.value !== null && read.value >= 0) {
+    if (read.value !== null && read.value >= 0 && read.value >= this.prev) {
       const consistent =
         this.candidate !== null &&
         read.value >= this.candidate - 1 &&
