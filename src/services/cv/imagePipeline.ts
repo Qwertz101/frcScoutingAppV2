@@ -505,6 +505,33 @@ function inkComponents(plane: GrayPlane): { labels: Int32Array; comps: Component
 }
 
 /**
+ * Widest a kept blob may be, as a multiple of its own height.
+ *
+ * This has to clear a *pair* of touching numerals, not a single one. Two
+ * digits that merge when binarized form one blob roughly twice as wide as a
+ * digit — and `recognizePlane` is explicitly built to handle that case, by
+ * accepting a read whose character count exceeds the blob count. But it only
+ * ever gets the chance if the merged blob survives this filter in the first
+ * place. At the old 1.6 the merged pair was discarded outright, which loses
+ * *both* digits rather than merging them: measured on real audience footage,
+ * a red score of `254` came back as `2`, `164` as `1` and `377` as `3`, every
+ * one of them at 96% confidence, because only the one un-merged leading digit
+ * was left standing.
+ *
+ * Merging is more likely on this footage than on a clean broadcast for two
+ * compounding reasons — a washed-out plate binarizes with fatter strokes, and
+ * `rectifyToGray` stretches a narrow operator box out to the fixed 256x160
+ * target, widening every glyph in it. So the operator's box aspect ratio
+ * silently decided whether digits survived, which is not a judgement a hand-
+ * drawn rectangle should be making.
+ *
+ * 2.6 clears a two-digit merge while still rejecting a three-digit run (~3.3x)
+ * and the full-width plate bars this filter exists to catch — those are caught
+ * by the edge and fill tests below regardless.
+ */
+const MAX_GLYPH_ASPECT = 2.6;
+
+/**
  * Keep only the blobs that could be a numeral and redraw them on clean white.
  *
  * This is where most of the accuracy comes from. The two things that wrecked the
@@ -513,7 +540,7 @@ function inkComponents(plane: GrayPlane): { labels: Int32Array; comps: Component
  * read as `1`. Both are trivially separable from a digit by shape:
  *
  *   - a digit is a decent fraction of the strip height, but not all of it;
- *   - a digit is taller than it is wide (or close to square), never a slab;
+ *   - a digit (or a merged pair) is not a wide slab — see MAX_GLYPH_ASPECT;
  *   - a digit's bounding box is not ~100% filled — a solid bar is.
  *
  * Returns null when nothing digit-like survives, which the caller treats as a
@@ -550,7 +577,7 @@ function digitComponents(
       !touchesSide &&
       ch >= h * 0.3 && // not speckle
       ch <= h * 0.95 && // not a full-height bar
-      cw <= ch * 1.6 && // not a slab
+      cw <= ch * MAX_GLYPH_ASPECT && // not a slab
       cw >= ch * 0.12 && // not an edge artifact
       cw >= 3 &&
       fill <= 0.93 && // a solid rectangle is not a glyph
