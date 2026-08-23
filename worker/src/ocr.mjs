@@ -87,11 +87,22 @@ export async function createPool(size = defaultWorkers(), onProgress) {
      */
     async *ordered(source, fn) {
       const inflight = [];
-      for await (const item of source) {
-        inflight.push(this.run((w) => fn(w, item)));
-        if (inflight.length >= size) yield await inflight.shift();
+      try {
+        for await (const item of source) {
+          inflight.push(this.run((w) => fn(w, item)));
+          if (inflight.length >= size) yield await inflight.shift();
+        }
+        while (inflight.length) yield await inflight.shift();
+      } finally {
+        // The consumer is allowed to stop early -- `process.mjs` breaks as soon
+        // as the score settles -- and when it does there are still up to `size`
+        // recognitions in flight. Without draining them here they outlive the
+        // loop and the pool gets terminated out from under them: those calls
+        // then land on a null worker and take the process down *after* a
+        // perfectly good log has already been written. Settling is the normal
+        // way a match ends on real footage, so this is the common path.
+        await Promise.allSettled(inflight);
       }
-      while (inflight.length) yield await inflight.shift();
     },
 
     async terminate() {

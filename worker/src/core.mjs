@@ -30,7 +30,14 @@ export const ocrCore = require(join(GEN, 'services/cv/scoreboardOcr.core.js'));
 export const clock = require(join(GEN, 'services/cv/matchClock.js'));
 export const types = require(join(GEN, 'types/index.js'));
 
-export const { detectScoreRegions, detectScoreRegionsStable, isOverlayPresent } = pipeline;
+export const {
+  detectScoreRegions,
+  detectScoreRegionsStable,
+  isOverlayPresent,
+  rectifyToGray,
+  SCORE_RECT_W,
+  SCORE_RECT_H,
+} = pipeline;
 export const { bootOcr, createOcr, readFrame, recognizeTimer, recognizeCrop, ScoreGate } = ocrCore;
 export const { MatchClock, parseTimerText } = clock;
 export const { AUTO_LEN, MATCH_LEN, TELEOP_LEN } = types;

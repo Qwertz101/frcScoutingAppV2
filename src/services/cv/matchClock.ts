@@ -128,6 +128,30 @@ export class MatchClock {
   offered = 0;
   accepted = 0;
 
+  /**
+   * Video time of the green flag, once the clock has locked on.
+   *
+   * This is what lets a scanner say *where* a match began rather than merely
+   * that one is in progress. It is derived from the reading that started the
+   * clock — `at` minus however far into the match that reading says we are —
+   * so it is back-dated to the real start even though corroboration means we
+   * only find out about it a couple of frames late. That lag costs latency,
+   * not accuracy.
+   */
+  greenFlagAt: number | null = null;
+
+  /**
+   * The reading currently being corroborated, if any.
+   *
+   * Exposed for the scanner's coarse pass, which wants to know that something
+   * clock-shaped is happening before it pays for a fine pass, and would
+   * otherwise have to infer it from `state.started` staying false.
+   */
+  get pending(): { remaining: number; at: number; hits: number } | null {
+    if (this.candHits <= 0 || this.candRemaining < 0) return null;
+    return { remaining: this.candRemaining, at: this.candAt, hits: this.candHits };
+  }
+
   get state(): ClockState {
     return {
       started: this.started,
@@ -187,6 +211,10 @@ export class MatchClock {
           // AUTO here; nothing in a single frame can distinguish them, and an
           // operator who starts that late has already lost the match anyway.
           this.phase = remaining > AUTO_LEN ? 'teleop' : 'auto';
+          // After `phase`, never before: `elapsedFrom` measures against AUTO's
+          // 20s or the full 163s depending on it, so computing this a line
+          // earlier would silently back-date the flag by the whole of AUTO.
+          this.greenFlagAt = at - this.elapsedFrom(remaining);
           this.commit(remaining, at);
           return this.state;
         }
