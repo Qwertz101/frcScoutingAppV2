@@ -1,0 +1,93 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>golden OCR log</title>
+<style>
+  body { font: 13px/1.5 ui-monospace, Consolas, monospace; background: #10171b; color: #e8eef1; padding: 16px; }
+  h1 { font-size: 15px; letter-spacing: .08em; text-transform: uppercase; color: #33becc; }
+  #log { white-space: pre; }
+</style>
+<h1>golden OCR log</h1>
+<video id="v" muted crossorigin="anonymous" style="display:none"></video>
+<div id="log">loading…</div>
+<script type="module">
+import './ocr.mjs';
+
+const v = document.getElementById('v');
+const logEl = document.getElementById('log');
+const log = (s) => { logEl.textContent += s + '\n'; };
+const save = (name, body) => fetch('/save', { method: 'POST', body: JSON.stringify({ name, ...body }) });
+
+function load(name) {
+  return new Promise((resolve, reject) => {
+    v.onloadedmetadata = () => resolve({ w: v.videoWidth, h: v.videoHeight, dur: v.duration });
+    v.onerror = () => reject(new Error('load failed: ' + name));
+    v.src = '/video/' + encodeURIComponent(name);
+  });
+}
+
+async function seek(t) {
+  await new Promise((r) => { v.currentTime = t; v.onseeked = r; });
+  await new Promise((r) => setTimeout(r, 250));
+}
+
+function frameData() {
+  const c = document.createElement('canvas');
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  const cx = c.getContext('2d', { willReadFrequently: true });
+  cx.drawImage(v, 0, 0);
+  return { canvas: c, imageData: cx.getImageData(0, 0, c.width, c.height) };
+}
+
+/**
+ * Produce a deterministic OCR log for one clip.
+ *
+ * Quads come from `detectScoreRegionsStable` rather than being hardcoded, so
+ * the golden covers the detector and the OCR chain together — but they are
+ * captured ONCE and reused for every frame, so a detector difference shows up
+ * as a single visible quad change rather than as noise smeared across every
+ * sample.
+ */
+window.golden = async (name, from, to, step) => {
+  window.__done = false;
+  const meta = await load(name);
+  log(`\n=== ${name}  ${meta.w}x${meta.h}  ${meta.dur.toFixed(1)}s ===`);
+
+  // Stable quads from 7 frames spread across the clip.
+  const probe = [];
+  for (let i = 0; i < 7; i++) {
+    await seek(((i + 0.5) / 7) * meta.dur);
+    probe.push(frameData().imageData);
+  }
+  const quads = window.__cv.detectScoreRegionsStable(probe);
+  if (!quads) { log('  no stable quads — aborting'); return; }
+  const fmt = (q) => q.map((p) => `${p.x.toFixed(6)},${p.y.toFixed(6)}`).join(' ');
+  log(`  blue  ${fmt(quads.blue)}`);
+  log(`  red   ${fmt(quads.red)}`);
+  log(`  timer ${fmt(quads.timer)}`);
+
+  log('  booting OCR…');
+  const ocr = await window.__cv.getOcr((s, p) => { logEl.textContent = logEl.textContent.replace(/\n  ocr: .*$/, '') + `\n  ocr: ${s} ${(p * 100).toFixed(0)}%`; });
+  const blueGate = new window.__cv.ScoreGate(0);
+  const redGate = new window.__cv.ScoreGate(0);
+
+  const samples = [];
+  for (let t = from; t <= to; t += step) {
+    await seek(t);
+    const { canvas } = frameData();
+    const r = await window.__cv.readOne(
+      ocr.worker, canvas, v.videoWidth, v.videoHeight,
+      quads.blue, quads.red, quads.timer, blueGate, redGate
+    );
+    samples.push({ t: +t.toFixed(3), ...r });
+    log(`  t=${String(t).padStart(5)}  b=${r ? r.blue : '-'} r=${r ? r.red : '-'}  raw ${r && r.blueRaw.text || '--'}/${r && r.redRaw.text || '--'}  timer ${r && r.timer.text || '--'}`);
+  }
+
+  const out = { clip: name, w: meta.w, h: meta.h, quads, from, to, step, samples };
+  await save(`golden_${name.replace(/\.mp4$/, '')}`, { json: out });
+  log(`\n  wrote golden_${name.replace(/\.mp4$/, '')}.json  (${samples.length} samples)`);
+  window.__done = true;
+  return out;
+};
+
+logEl.textContent = 'ready — call golden("Einstein1.mp4", 90, 120, 2)\n';
+</script>

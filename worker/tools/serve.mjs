@@ -30,6 +30,11 @@ const TYPES = {
   '.json': 'application/json',
   '.mp4': 'video/mp4',
   '.png': 'image/png',
+  // tesseract.js fetches its language data as a gzip and sniffs the extension;
+  // serving it as octet-stream is fine, but it must NOT be given
+  // Content-Encoding: gzip or the worker double-decompresses it.
+  '.gz': 'application/gzip',
+  '.wasm': 'application/wasm',
 };
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
@@ -100,6 +105,12 @@ http
     const url = decodeURIComponent(req.url.split('?')[0]);
     if (url.startsWith('/video/')) {
       return sendFile(req, res, path.join(VIDEO_DIR, url.slice('/video/'.length)));
+    }
+    // Mounted rather than copied: these are the same worker/WASM/traineddata
+    // files the app ships, and the harness must exercise the app's build of
+    // them, not a stale duplicate.
+    if (url.startsWith('/tesseract/')) {
+      return sendFile(req, res, path.join(HERE, '../../public/tesseract', url.slice('/tesseract/'.length)));
     }
     sendFile(req, res, path.join(HERE, url === '/' ? 'probe.html' : url));
   })

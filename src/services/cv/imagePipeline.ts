@@ -973,6 +973,78 @@ export interface BandDiagnostic {
   score?: number;
 }
 
+/** Near-white is "glyph ink" on a colour plate. */
+const GLYPH_LUMA = 175;
+/** Rows below this fraction of the peak white count are between glyph bands. */
+const GLYPH_ROW_FLOOR = 0.15;
+/** Padding added around the found digits, as a fraction of their height. */
+const GLYPH_PAD = 0.18;
+
+/**
+ * The rows actually occupied by the score's numerals, within one x range.
+ *
+ * Measuring the *plate* instead was the subtler half of the venue-footage
+ * failure, and it survived the first fix because a plate is genuinely found —
+ * just not the part of it that matters. The alliance-name label sits on the
+ * same coloured plate as the score, so a colour-based vertical extent has no
+ * way to tell "NEWTON" from "332" and lands somewhere between them: measured
+ * on real footage the chosen rows cut the digits in half horizontally, which
+ * reads as confident garbage rather than as a failure.
+ *
+ * The numerals are white on colour, so they can be found directly. Of the
+ * white row-bands in the box — the broadcast title, the alliance label, the
+ * score — the score is the one with the most ink, because being the largest
+ * text in the box is what makes it the score. That holds on both layouts we
+ * have footage for: a Championship overlay with the label above the score, and
+ * a district broadcast with team numbers inline beside it.
+ */
+function glyphRows(
+  frame: ImageData,
+  x0: number,
+  x1: number,
+  ySearchLo: number,
+  ySearchHi: number
+): { top: number; bottom: number; mass: number } | null {
+  const W = frame.width;
+  const ax0 = Math.max(0, Math.round(x0));
+  const ax1 = Math.min(W - 1, Math.round(x1));
+  const ay0 = Math.max(0, Math.round(ySearchLo));
+  const ay1 = Math.min(frame.height - 1, Math.round(ySearchHi));
+  if (ax1 <= ax0 || ay1 <= ay0) return null;
+
+  const counts = new Int32Array(ay1 - ay0 + 1);
+  let peak = 0;
+  for (let y = ay0; y <= ay1; y++) {
+    let n = 0;
+    for (let x = ax0; x <= ax1; x++) {
+      const i = (y * W + x) * 4;
+      if (frame.data[i] > GLYPH_LUMA && frame.data[i + 1] > GLYPH_LUMA && frame.data[i + 2] > GLYPH_LUMA) {
+        n++;
+      }
+    }
+    counts[y - ay0] = n;
+    if (n > peak) peak = n;
+  }
+  if (peak === 0) return null;
+
+  const floor = peak * GLYPH_ROW_FLOOR;
+  let best: { top: number; bottom: number; mass: number } | null = null;
+  let start = -1;
+  let mass = 0;
+  for (let i = 0; i <= counts.length; i++) {
+    const v = i < counts.length ? counts[i] : -1;
+    if (v >= floor) {
+      if (start < 0) start = i;
+      mass += v;
+    } else if (start >= 0) {
+      if (!best || mass > best.mass) best = { top: ay0 + start, bottom: ay0 + i - 1, mass };
+      start = -1;
+      mass = 0;
+    }
+  }
+  return best;
+}
+
 /** Mean luma and desaturated fraction of a rectangle — the timer-plate test. */
 function flatBrightness(
   frame: ImageData,
@@ -1219,24 +1291,33 @@ function evaluateBand(
     return run ?? [by0, by1];
   };
 
-  const [byTop0, byBot0] = plateRows(blueX[0], blueX[1], 1);
-  const [ryTop0, ryBot0] = plateRows(redX[0], redX[1], 2);
+  // Search the plate's colour extent first, then find the numerals inside it.
+  // The colour pass sets a sane window; the glyph pass is what actually decides
+  // the crop, because only it can tell the score from the label sharing its
+  // plate.
+  const [pbTop, pbBot] = plateRows(blueX[0], blueX[1], 1);
+  const [prTop, prBot] = plateRows(redX[0], redX[1], 2);
+  const searchLo = Math.min(pbTop, prTop) - bandH;
+  const searchHi = Math.max(pbBot, prBot) + bandH;
 
-  // The two plates are halves of ONE horizontal bar, so they must occupy the
-  // same rows. Intersecting the two independent measurements is what makes the
-  // vertical extent reproducible: each side alone is ambiguous, because the
-  // alliance-name label above the score is the same colour as the score plate
-  // and merges with it at some thresholds but not others — measured on real
-  // footage, the blue side's reported height swung between 20 and 190 rows
-  // frame to frame while red sat still. Only the rows where BOTH sides are
-  // their own colour are the score row, and the labels do not survive that.
-  //
-  // A pair whose halves cannot agree on a row range is not a scoreboard at all,
-  // so an empty intersection rejects the whole candidate rather than guessing —
-  // and the band search simply moves on to the next candidate.
-  const byTop = Math.max(byTop0, ryTop0);
-  const byBot = Math.min(byBot0, ryBot0);
-  if (byBot - byTop + 1 < MIN_PLATE_ROWS) return reject('plate rows disagree');
+  const bGlyph = glyphRows(frame, blueX[0], blueX[1], searchLo, searchHi);
+  const rGlyph = glyphRows(frame, redX[0], redX[1], searchLo, searchHi);
+  if (!bGlyph || !rGlyph) return reject('no numerals in plates');
+
+  // Both scores sit on one baseline at one cap height, so the two independent
+  // measurements should overlap. When they do, their union is the row range —
+  // it recovers a short digit ("1") from its taller neighbour. When they do
+  // not, the pair is not one scoreboard and is rejected rather than averaged
+  // into something that crops both.
+  const overlap =
+    Math.min(bGlyph.bottom, rGlyph.bottom) - Math.max(bGlyph.top, rGlyph.top) + 1;
+  if (overlap < MIN_PLATE_ROWS) return reject('numeral rows disagree');
+
+  const gTop = Math.min(bGlyph.top, rGlyph.top);
+  const gBot = Math.max(bGlyph.bottom, rGlyph.bottom);
+  const pad = Math.max(2, Math.round((gBot - gTop + 1) * GLYPH_PAD));
+  const byTop = gTop - pad;
+  const byBot = gBot + pad;
   const [ryTop, ryBot] = [byTop, byBot];
 
   // Inset to drop the plate's own border, which otherwise segments as a
@@ -1247,8 +1328,12 @@ function evaluateBand(
   };
   const [bx0, bx1] = inset(blueX[0], blueX[1], 0.04);
   const [rx0, rx1] = inset(redX[0], redX[1], 0.04);
-  const [byA, byB] = inset(byTop, byBot + 1, 0.06);
-  const [ryA, ryB] = inset(ryTop, ryBot + 1, 0.06);
+  // No vertical inset any more: the 6% shrink existed to pull the crop off a
+  // colour-measured plate's own border, and the rows are now measured from the
+  // numerals themselves and already padded outward by `GLYPH_PAD`. Insetting
+  // here would eat that padding straight back off the digits.
+  const [byA, byB] = [byTop, byBot + 1];
+  const [ryA, ryB] = [ryTop, ryBot + 1];
 
   // The timer plate fills the gap. Its vertical extent is the alliance plates'
   // main row — the sub-row underneath (`2 / 6  :08` on the reference feed) is a

@@ -39,5 +39,6 @@ public/_probe/
 # per-clip results. All regenerable by `node worker/tools/serve.mjs` plus a
 # probe run, and the PNGs are large. The harness sources themselves ARE tracked.
 worker/tools/pipeline.mjs
+worker/tools/ocr.mjs
 worker/tools/out/
 worker/tools/serve.log
