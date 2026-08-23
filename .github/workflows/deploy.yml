@@ -27,6 +27,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # Type-checks src/services/cv against lib ES2020 with no DOM at all, so
+      # reintroducing a `document`, `canvas` or `ImageData` reference into the
+      # shared CV core fails the build here rather than at a competition, when
+      # the Node worker turns out not to start.
+      - name: Check the CV core is still DOM-free
+        run: npm run worker:check
+
       - name: Build
         run: npm run build
         env:

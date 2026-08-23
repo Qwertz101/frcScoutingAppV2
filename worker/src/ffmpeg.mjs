@@ -1,0 +1,213 @@
+/**
+ * Video -> RGBA frames, as an async iterator.
+ *
+ * The browser tracker seeks the <video> element once per sample because a media
+ * element offers no other way to get at an arbitrary frame. Node has no such
+ * constraint, and repeating that pattern here would be the worst decision
+ * available: one long-lived sequential decode is far faster than N seeks, and
+ * it gives *better* timestamps, because frame n is deterministically at
+ * `start + n / fps` rather than wherever the decoder happened to land.
+ *
+ * Nothing is written to disk. Frames exist only while the consumer holds them.
+ */
+
+import { spawn, execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { promisify } from 'node:util';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+const execFileAsync = promisify(execFile);
+
+/* ------------------------------------------------------------------ *
+ * Locating the binaries
+ * ------------------------------------------------------------------ */
+
+/**
+ * winget installs ffmpeg into a versioned per-user folder and then edits the
+ * user PATH, which an already-running process never sees. Checking the install
+ * location directly means the worker runs immediately after `winget install`
+ * rather than only after a reboot -- exactly the sort of thing that otherwise
+ * wastes an hour at 8am on match day.
+ */
+function wingetCandidates(exe) {
+  const packages = join(homedir(), 'AppData/Local/Microsoft/WinGet/Packages');
+  const roots = [
+    'Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe',
+    'yt-dlp.yt-dlp_Microsoft.Winget.Source_8wekyb3d8bbwe',
+  ];
+  const out = [];
+  for (const r of roots) {
+    out.push(join(packages, r, exe + '.exe'));
+    for (const sub of ['ffmpeg-9.0-full_build', 'ffmpeg-7.1-full_build']) {
+      out.push(join(packages, r, sub, 'bin', exe + '.exe'));
+    }
+  }
+  return out;
+}
+
+const resolved = new Map();
+
+/** Absolute path to `exe`, honouring an explicit env override first. */
+export function resolveBin(exe) {
+  if (resolved.has(exe)) return resolved.get(exe);
+  const envKey = exe.replace(/-/g, '_').toUpperCase() + '_PATH';
+  const candidates = [process.env[envKey], ...wingetCandidates(exe)].filter(Boolean);
+  const hit = candidates.find((p) => existsSync(p)) ?? exe; // else trust PATH
+  resolved.set(exe, hit);
+  return hit;
+}
+
+/* ------------------------------------------------------------------ *
+ * Probing
+ * ------------------------------------------------------------------ */
+
+/** Frame size and duration, straight from the container. */
+export async function probe(input) {
+  const { stdout } = await execFileAsync(
+    resolveBin('ffprobe'),
+    [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=width,height,avg_frame_rate:format=duration',
+      '-of', 'json',
+      input,
+    ],
+    { maxBuffer: 1 << 20 }
+  );
+  const j = JSON.parse(stdout);
+  const s = j.streams && j.streams[0];
+  if (!s || !s.width || !s.height) throw new Error('no video stream in ' + input);
+  return {
+    width: s.width,
+    height: s.height,
+    duration: Number(j.format && j.format.duration) || 0,
+    frameRate: s.avg_frame_rate,
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Frame iteration
+ * ------------------------------------------------------------------ */
+
+/**
+ * Yield one object per output frame, shaped so it satisfies `RgbaFrame`
+ * structurally and goes straight into `readFrame` with no adapter -- the same
+ * shape the browser's `ImageData` satisfies.
+ *
+ * Backpressure matters more than it looks: 1080p RGBA is 8.3 MB per frame and
+ * OCR is ~1s per frame against a decode that runs far faster than realtime.
+ * stdout is paused while the consumer works, so ffmpeg blocks on the pipe
+ * instead of Node buffering gigabytes of frames nobody has looked at yet.
+ */
+export async function* frames(input, opts = {}) {
+  const { start = 0, duration, fps = 1, scaleWidth, stdin } = opts;
+
+  let width = opts.width;
+  let height = opts.height;
+  if (!width || !height) {
+    const p = await probe(input);
+    width = p.width;
+    height = p.height;
+  }
+  if (scaleWidth && scaleWidth < width) {
+    height = Math.round((height * scaleWidth) / width / 2) * 2;
+    width = scaleWidth;
+  }
+
+  const filters = ['fps=' + fps];
+  if (scaleWidth) filters.push('scale=' + width + ':' + height);
+
+  const args = ['-hide_banner', '-loglevel', 'error'];
+  // `-ss` BEFORE `-i` is input seeking: ffmpeg jumps in the container rather
+  // than decoding and discarding everything up to `start`. On a 6-hour VOD that
+  // is the difference between instant and minutes.
+  if (start > 0) args.push('-ss', String(start));
+  args.push('-i', input);
+  if (duration != null) args.push('-t', String(duration));
+  args.push('-vf', filters.join(','), '-f', 'rawvideo', '-pix_fmt', 'rgba', '-');
+
+  const child = spawn(resolveBin('ffmpeg'), args, {
+    stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+  });
+  if (stdin) stdin.pipe(child.stdin);
+
+  let stderr = '';
+  child.stderr.on('data', (b) => {
+    stderr += b.toString();
+    if (stderr.length > 8192) stderr = stderr.slice(-8192);
+  });
+
+  const frameBytes = width * height * 4;
+  const chunks = [];
+  let pending = 0;
+  let index = 0;
+  let done = false;
+  let failure = null;
+  let wake = null;
+
+  const notify = () => {
+    const w = wake;
+    wake = null;
+    if (w) w();
+  };
+
+  child.stdout.on('data', (c) => {
+    chunks.push(c);
+    pending += c.length;
+    if (pending >= frameBytes) child.stdout.pause();
+    notify();
+  });
+  child.stdout.on('end', () => { done = true; notify(); });
+  child.on('error', (e) => { failure = e; done = true; notify(); });
+  child.on('close', (code) => {
+    if (code && !failure) failure = new Error('ffmpeg exited ' + code + ': ' + stderr.trim());
+    done = true;
+    notify();
+  });
+
+  /** Pull exactly one frame's worth of bytes out of the chunk queue. */
+  const take = () => {
+    const buf = Buffer.allocUnsafe(frameBytes);
+    let off = 0;
+    while (off < frameBytes) {
+      const c = chunks[0];
+      const need = frameBytes - off;
+      if (c.length <= need) {
+        c.copy(buf, off);
+        off += c.length;
+        chunks.shift();
+      } else {
+        c.copy(buf, off, 0, need);
+        chunks[0] = c.subarray(need);
+        off += need;
+      }
+    }
+    pending -= frameBytes;
+    return buf;
+  };
+
+  try {
+    for (;;) {
+      while (pending < frameBytes && !done) {
+        child.stdout.resume();
+        await new Promise((r) => { wake = r; });
+      }
+      if (failure) throw failure;
+      // A trailing partial frame is discarded rather than padded: half a frame
+      // of pixels would read as a plausible-looking wrong number.
+      if (pending < frameBytes) break;
+
+      const buf = take();
+      yield {
+        data: new Uint8ClampedArray(buf.buffer, buf.byteOffset, frameBytes),
+        width,
+        height,
+        at: start + index / fps,
+        index: index++,
+      };
+    }
+  } finally {
+    if (!child.killed) child.kill('SIGKILL');
+  }
+}

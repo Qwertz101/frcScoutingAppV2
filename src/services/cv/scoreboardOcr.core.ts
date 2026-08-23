@@ -62,17 +62,20 @@ export interface OcrConfig {
 let loading: Promise<OcrHandle> | null = null;
 
 /**
- * Boot (or reuse) the digit-only OCR worker.
+ * Boot one digit-only OCR worker, with no caching.
  *
  * PSM 7 (single text line) plus a digits-only whitelist is a large accuracy win:
  * it stops tesseract from proposing layout hypotheses for what is always one
  * short run of numerals, and removes every letter/punctuation confusion
  * (0/O, 1/l/I, 5/S, 8/B) from the candidate set outright.
+ *
+ * Separate from `createOcr` because the browser wants exactly one worker and
+ * the Node worker wants a pool of N. Sharing the singleton would silently
+ * collapse the pool to a single instance and quietly cost the throughput the
+ * whole unattended pipeline depends on.
  */
-export function createOcr(cfg: OcrConfig): Promise<OcrHandle> {
-  if (loading) return loading;
-
-  loading = (async () => {
+export function bootOcr(cfg: OcrConfig): Promise<OcrHandle> {
+  return (async () => {
     // Dynamic import: this is the only place tesseract.js is referenced, so it
     // lands in its own chunk that the main bundle never requests.
     const Tesseract = await import('tesseract.js');
@@ -85,7 +88,11 @@ export function createOcr(cfg: OcrConfig): Promise<OcrHandle> {
       // Blob-URL workers inherit the page origin, which keeps the copied
       // worker script same-origin and out of the service worker's way.
       workerBlobURL: cfg.workerBlobURL ?? true,
-      logger: cfg.logger ? (m: any) => cfg.logger!(m.status, m.progress) : undefined,
+      // A no-op rather than `undefined`: tesseract's own default logger only
+      // applies when the key is absent, and its Node worker calls the value
+      // unconditionally, so passing undefined throws on the first progress
+      // event instead of quietly logging nothing.
+      logger: cfg.logger ? (m: any) => cfg.logger!(m.status, m.progress) : () => {},
     });
 
     await worker.setParameters({
@@ -103,11 +110,29 @@ export function createOcr(cfg: OcrConfig): Promise<OcrHandle> {
     return {
       worker,
       terminate: async () => {
-        loading = null;
         await worker.terminate();
       },
     };
   })();
+}
+
+/**
+ * Boot (or reuse) the process-wide OCR worker.
+ *
+ * One worker per page is the right answer in the browser: booting costs seconds
+ * and downloads the WASM core, and the operator only ever reads one frame at a
+ * time anyway.
+ */
+export function createOcr(cfg: OcrConfig): Promise<OcrHandle> {
+  if (loading) return loading;
+
+  loading = bootOcr(cfg).then((h) => ({
+    worker: h.worker,
+    terminate: async () => {
+      loading = null;
+      await h.terminate();
+    },
+  }));
 
   loading.catch(() => {
     loading = null;

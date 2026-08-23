@@ -1,0 +1,7 @@
+{
+  "name": "frc-scouting-worker",
+  "private": true,
+  "type": "module",
+  "description": "Unattended match capture -> CV processing. Runs on the workshop PC.",
+  "dependencies": {}
+}

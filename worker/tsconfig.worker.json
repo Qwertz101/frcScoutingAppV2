@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "lib": ["ES2020"],
+    "types": [],
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": false,
+    "declaration": false,
+    "outDir": "gen",
+    "rootDir": "../src"
+  },
+  "files": [
+    "../src/types/index.ts",
+    "../src/services/cv/imagePipeline.ts",
+    "../src/services/cv/matchClock.ts",
+    "../src/services/cv/encodeImage.ts",
+    "../src/services/cv/scoreboardOcr.core.ts"
+  ]
+}
