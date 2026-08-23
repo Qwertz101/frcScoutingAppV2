@@ -3,10 +3,11 @@
 Unattended scoreboard reading for match day. Runs on the workshop PC; the
 scouting lead supervises over AnyDesk.
 
-Status: **M4 complete** — a multi-match recording can be scanned for match
-starts, and each match processed end to end, entirely unattended. Match
-identification (M5) and the Supabase writer + dashboard (M6) are not built yet,
-so nothing is written anywhere: the worker prints logs and that is all.
+Status: **M5 complete** — a multi-match recording can be scanned for match
+starts, each match processed end to end, and the match it belongs to identified
+from the team numbers on screen. The Supabase writer and dashboard (M6) are not
+built yet, so nothing is written anywhere: the worker prints logs and that is
+all.
 
 ## No video is ever stored
 
@@ -91,6 +92,41 @@ enough to be a single match. A ten-minute overlay hold produces nothing, because
 a start invented there would be identified as some real match and written over
 it.
 
+## Identifying the match
+
+`cv_logs.match_key` is the primary key and the writer upserts on it, so a wrong
+answer here does not add a bad row — it *destroys a good one*. Everything about
+this module follows from that: it abstains readily, and an acceptance needs a
+*margin* over the runner-up rather than merely being the best of a bad set.
+
+The signal is the team numbers printed on the alliance plates, matched as a set
+against the event's qualification schedule. A set is the right shape because the
+OCR's failure mode is dropping a number, not inventing a plausible one, and six
+teams appear together in exactly one qual match. Matching is side-aware — a
+number seen on the blue plate only counts towards that match's blue alliance —
+which is what produces the margin, since near-repeat alliances are common but
+near-repeats on the *same sides* are not.
+
+Finding the numbers needs the plate's full extent, which is not what
+`detectScoreRegions` reports: that stops at the first non-plate colour, which on
+a broadcast overlay is the nearest team logo. `plateExtent` walks outwards from
+the score instead, stepping over the logo islands, capped at four score-widths
+because a venue with alliance-coloured walls otherwise never stops. Then the
+band is split into separate numbers by the gaps between glyphs, and each is read
+with the same digit-count guard the scores use, so a dropped digit abstains
+instead of becoming a different, entirely plausible team.
+
+Two things measured rather than assumed:
+
+**Team numbers are not all four digits.** 2026cagle fields team 22 and team 4.
+Restricting to three-to-five digit groups made two teams permanently invisible
+and silently capped identification at 5 of 6.
+
+**One preparation variant is not enough.** One clip's overlay over-inks badly
+enough at the default Sauvola k that all three of its numbers merge into single
+blobs. All three `PREP_VARIANTS` are tried and the results voted, exactly as the
+score reader does.
+
 ## Design
 
 Two things differ from the browser tracker, and only two:
@@ -122,6 +158,8 @@ npm run worker:check       # the CV core still compiles with no DOM at all
 npm run worker:golden      # Node reproduces the browser's readings
 npm run worker:vod         # build the synthetic multi-match VOD (--hold variant too)
 npm run worker:check-scan  # score the scanner against it
+npm run worker:check-identify    # name each clip's match, using only the pixels
+npm run worker:check-thresholds  # can any partial read resolve to the WRONG match?
 ```
 
 `worker:check` runs in CI. It type-checks `src/services/cv` against
@@ -159,6 +197,49 @@ was built at.
 
 Processing each match at the scanner's own timestamps reproduces all five finals
 exactly, at 720p, with no operator input anywhere in the chain.
+
+Identification, against the real 2026cagle schedule from TBA — the clips are
+named after the quals they are, but nothing in the pipeline is told the name,
+and it has to land on the right key out of 74:
+
+| clip | read | result |
+|---|---|---|
+| Qual2 | blue 9505 8033 3255 · red 6934 696 2659 | qm2, 6/6, runner-up 2 |
+| Qual3 | almost nothing | **abstains** |
+| Qual6 | blue 3512 6560 2404 · red 22 | qm6, 4/6, runner-up 2 |
+| Qual9 | blue 6934 3255 9772 · red 3965 7415 9696 | qm9, 6/6, runner-up 2 |
+
+**3 correct, 1 abstained, 0 wrong.**
+
+Four clips is not a sample you can set a threshold from, but the risk being
+managed is a property of the *schedule*, which is fully known. Enumerating every
+subset of every match — the realistic degradation, since the OCR drops numbers
+rather than inventing them — gives:
+
+| teams read | correct | abstain | wrong |
+|---|---|---|---|
+| 2 of 6 | 0 | 1110 | **0** |
+| 3 of 6 | 0 | 1480 | **0** |
+| 4 of 6 | 1110 | 0 | **0** |
+| 5 of 6 | 444 | 0 | **0** |
+| 6 of 6 | 74 | 0 | **0** |
+
+The thresholds sit exactly on the cliff: at four teams identification is always
+correct, below four it always abstains, and **no dropped read can reach a wrong
+match key**. The caveat this does not cover is an *invented* number that happens
+to belong to another match; the vote counts are what guard that, and they are
+not close (confident numbers score 10–15 across the sampled frames, fragments
+score 1–4).
+
+### Not built
+
+The plan's `teams+time` and `sequence` fallbacks are deliberately not
+implemented. Both need a wall-clock mapping from video time, which does not
+exist until live capture (M7), so neither could be tested — and `sequence` in
+particular is the one link in the chain that guesses. Given that four teams is
+enough to be certain and abstaining costs only a dashboard row, they buy little
+and risk the thing this module exists to prevent. Unidentified matches surface
+for a human to assign.
 
 ~30s of wall time per match against a ~7 minute match cadence is roughly 14x
 headroom, on 8 OCR workers.

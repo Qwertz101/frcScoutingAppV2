@@ -643,19 +643,39 @@ export function segmentDigits(
   // failure. Redrawing each glyph into its own cell with a uniform gap and a
   // shared baseline removes that entire failure mode.
   onLine.sort((a, b) => a.c.x0 - b.c.x0);
+  return { plane: redrawLine(labels, w, onLine, medH, gapFactor), count: onLine.length };
+}
 
+/** One glyph, as `digitComponents` reports it. */
+type Glyph = { id: number; c: { x0: number; y0: number; x1: number; y1: number } };
+
+/**
+ * Redraw a run of glyphs as one clean, evenly-spaced line.
+ *
+ * Shared by the score reader and the team-number reader so that both feed
+ * tesseract images with identical spacing characteristics — the spacing is a
+ * large part of why this works at all, and having two versions drift apart
+ * would show up as one of them mysteriously reading worse.
+ */
+function redrawLine(
+  labels: Int32Array,
+  w: number,
+  glyphs: Glyph[],
+  medH: number,
+  gapFactor: number
+): GrayPlane {
   const gap = Math.max(4, Math.round(medH * gapFactor));
-  const baseline = Math.max(...onLine.map((k) => k.c.y1));
-  const top = Math.min(...onLine.map((k) => k.c.y0));
+  const baseline = Math.max(...glyphs.map((k) => k.c.y1));
+  const top = Math.min(...glyphs.map((k) => k.c.y0));
   const oh = baseline - top + 1;
 
-  const widths = onLine.map((k) => k.c.x1 - k.c.x0 + 1);
-  const ow = widths.reduce((a, b) => a + b, 0) + gap * (onLine.length - 1);
+  const widths = glyphs.map((k) => k.c.x1 - k.c.x0 + 1);
+  const ow = widths.reduce((a, b) => a + b, 0) + gap * (glyphs.length - 1);
   const out = new Uint8ClampedArray(Math.max(1, ow) * oh).fill(255);
 
   let penX = 0;
-  for (let gi = 0; gi < onLine.length; gi++) {
-    const { id, c } = onLine[gi];
+  for (let gi = 0; gi < glyphs.length; gi++) {
+    const { id, c } = glyphs[gi];
     // Only x moves: keeping each glyph's original row preserves the one baseline
     // they already share, without re-deriving it per glyph.
     for (let y = c.y0; y <= c.y1; y++) {
@@ -666,7 +686,74 @@ export function segmentDigits(
     }
     penX += widths[gi] + gap;
   }
-  return { plane: { data: out, width: ow, height: oh }, count: onLine.length };
+  return { data: out, width: ow, height: oh };
+}
+
+/** One run of digits found in a wide band, with where it sat. */
+export interface NumberGroup {
+  plane: GrayPlane;
+  count: number;
+  /** Horizontal extent in the source plane, for left/right side tests. */
+  x0: number;
+  x1: number;
+}
+
+/**
+ * Split a wide crop into the separate numbers printed across it.
+ *
+ * `segmentDigits` reads *one* number and refuses more than three glyphs,
+ * because a fourth blob on a score plate is scoreboard furniture. A team-number
+ * row is the opposite situation: several numbers of three to five digits, laid
+ * out side by side with logos between them. So the glyphs are clustered by the
+ * gaps between them instead — within a number the gap is kerning, between
+ * numbers it is layout, and the two differ by a lot more than the noise does.
+ *
+ * Groups whose digit count could not be a team number are dropped here rather
+ * than passed on, because every surviving group is about to be OCR'd and a
+ * spurious one costs a full recognize call and an opportunity to be wrong.
+ */
+export function segmentNumberGroups(
+  plane: GrayPlane,
+  opts: {
+    /** Gap, in median glyph heights, that separates two numbers. */
+    splitGap?: number;
+    minDigits?: number;
+    maxDigits?: number;
+    gapFactor?: number;
+  } = {}
+): NumberGroup[] {
+  const { splitGap = 0.55, minDigits = 2, maxDigits = 5, gapFactor = 0.28 } = opts;
+  const seg = digitComponents(plane);
+  if (!seg) return [];
+  const { labels, onLine, medH } = seg;
+  if (!onLine.length) return [];
+
+  const sorted = [...onLine].sort((a, b) => a.c.x0 - b.c.x0);
+  const threshold = medH * splitGap;
+
+  const groups: Glyph[][] = [];
+  let current: Glyph[] = [sorted[0]];
+  for (let i = 1; i < sorted.length; i++) {
+    const gap = sorted[i].c.x0 - sorted[i - 1].c.x1;
+    if (gap > threshold) {
+      groups.push(current);
+      current = [];
+    }
+    current.push(sorted[i]);
+  }
+  groups.push(current);
+
+  const out: NumberGroup[] = [];
+  for (const g of groups) {
+    if (g.length < minDigits || g.length > maxDigits) continue;
+    out.push({
+      plane: redrawLine(labels, plane.width, g, medH, gapFactor),
+      count: g.length,
+      x0: Math.min(...g.map((k) => k.c.x0)),
+      x1: Math.max(...g.map((k) => k.c.x1)),
+    });
+  }
+  return out;
 }
 
 /** Resample a binary plane so its height matches `target`, then re-binarize. */
@@ -759,6 +846,47 @@ export function preprocessCrop(crop: GrayPlane, opts?: Partial<PrepOptions>): Pr
   };
 }
 
+/** A prepared team-number crop, and where across the band it was found. */
+export interface PreparedGroup extends PreparedCrop {
+  x0: number;
+  x1: number;
+}
+
+/**
+ * The wide-crop -> several-OCR-ready-images chain.
+ *
+ * The team-number counterpart of `preprocessCrop`, sharing every stage with it
+ * except the segmentation: same polarity handling, same Sauvola threshold, same
+ * scale-and-pad, so a tuning fix to one is a tuning fix to both. Only the split
+ * differs, because this crop holds several numbers rather than one.
+ *
+ * The per-group `digitCount` is the point of doing it this way. It flows into
+ * `recognizePlane`'s length guard, which is what makes a dropped digit an
+ * abstention rather than a different, entirely plausible team number.
+ */
+export function prepareNumberGroups(
+  crop: GrayPlane,
+  opts?: Partial<PrepOptions> & { splitGap?: number; minDigits?: number; maxDigits?: number }
+): PreparedGroup[] {
+  const o = { ...PREP_VARIANTS[0], ...opts };
+  const gray = normalizePolarity(contrastStretch(crop));
+  const binary = fixBinaryPolarity(sauvolaThreshold(upscale(gray, o.upscaleBy), undefined, o.sauvolaK));
+
+  return segmentNumberGroups(binary, {
+    gapFactor: o.gapFactor,
+    splitGap: opts?.splitGap,
+    minDigits: opts?.minDigits,
+    maxDigits: opts?.maxDigits,
+  }).map((g) => ({
+    plane: padWhite(scaleToHeight(g.plane, o.targetH), 24),
+    digitCount: g.count,
+    // Reported in the *binarized* plane's coordinates, which are `upscaleBy`
+    // times the crop's. Normalised so callers do not have to know that.
+    x0: g.x0 / binary.width,
+    x1: g.x1 / binary.width,
+  }));
+}
+
 /**
  * Expand a grayscale plane to RGBA bytes.
  *
@@ -801,6 +929,82 @@ function classifyPixel(r: number, g: number, b: number): 0 | 1 | 2 {
   if (b === mx && b - r > 45 && b - g > 25) return 1; // blue plate
   if (r === mx && r - b > 55 && r - g > 55) return 2; // red plate
   return 0;
+}
+
+/**
+ * How far either side of the score the plate is allowed to reach, as a multiple
+ * of the score box's own width.
+ */
+export const MAX_PLATE_SPAN = 4;
+
+/**
+ * How far the alliance plate extends either side of the score.
+ *
+ * `detectScoreRegions` deliberately reports the *contiguous* colour run around
+ * the numerals, which stops at the first thing that is not plate colour — on a
+ * broadcast overlay that is the nearest team logo, and on an arena scoreboard
+ * it is the timer or a divider. That is exactly right for cropping a score and
+ * exactly wrong for finding the team numbers, which live in the rest of the
+ * plate on the far side of those logos.
+ *
+ * So walk outwards from the score instead, treating a column as plate when
+ * enough of the score's own rows are the alliance colour, and stepping over
+ * gaps up to `maxGap` of the frame width. The logos are islands a few percent
+ * wide; the end of the plate is everything after it.
+ *
+ * Returns normalised `[x0, x1]`.
+ */
+export function plateExtent(
+  frame: RgbaFrame,
+  scoreQuad: Quad,
+  side: PlateSide,
+  maxGap = 0.045,
+  maxSpan = MAX_PLATE_SPAN
+): [number, number] {
+  const want = side === 'blue' ? 1 : 2;
+  const W = frame.width;
+  const xs = scoreQuad.map((p) => p.x * W);
+  const ys = scoreQuad.map((p) => p.y * frame.height);
+  const y0 = Math.max(0, Math.floor(Math.min(...ys)));
+  const y1 = Math.min(frame.height - 1, Math.ceil(Math.max(...ys)));
+  const rows = y1 - y0 + 1;
+  if (rows < 2) return [Math.min(...xs) / W, Math.max(...xs) / W];
+
+  const isPlate = (x: number): boolean => {
+    let hit = 0;
+    for (let y = y0; y <= y1; y++) {
+      const i = (y * W + x) * 4;
+      if (classifyPixel(frame.data[i], frame.data[i + 1], frame.data[i + 2]) === want) hit++;
+    }
+    return hit >= rows * 0.5;
+  };
+
+  const gapLimit = Math.max(2, Math.round(maxGap * W));
+  // A venue whose walls are alliance-coloured — and plenty are — classifies as
+  // plate for hundreds of columns, so the walk needs a stop other than "ran out
+  // of colour". Measured on this footage a real plate is 4-5x the score box it
+  // contains; Qual6's red wall took the walk to 8x before this cap existed.
+  const scoreW = Math.max(1, Math.max(...xs) - Math.min(...xs));
+  const reach = scoreW * maxSpan;
+
+  const walk = (from: number, step: number): number => {
+    let edge = from;
+    let gap = 0;
+    for (let x = from + step; x >= 0 && x < W; x += step) {
+      if (Math.abs(x - from) > reach) break;
+      if (isPlate(x)) {
+        edge = x;
+        gap = 0;
+      } else if (++gap > gapLimit) {
+        break;
+      }
+    }
+    return edge;
+  };
+
+  const left = walk(Math.max(0, Math.floor(Math.min(...xs))), -1);
+  const right = walk(Math.min(W - 1, Math.ceil(Math.max(...xs))), 1);
+  return [left / W, right / W];
 }
 
 /**

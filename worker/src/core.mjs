@@ -35,10 +35,23 @@ export const {
   detectScoreRegionsStable,
   isOverlayPresent,
   rectifyToGray,
+  rectQuad,
+  prepareNumberGroups,
+  plateExtent,
+  PREP_VARIANTS,
+  segmentNumberGroups,
   SCORE_RECT_W,
   SCORE_RECT_H,
 } = pipeline;
-export const { bootOcr, createOcr, readFrame, recognizeTimer, recognizeCrop, ScoreGate } = ocrCore;
+export const {
+  bootOcr,
+  createOcr,
+  readFrame,
+  recognizeTimer,
+  recognizeCrop,
+  recognizePlane,
+  ScoreGate,
+} = ocrCore;
 export const { MatchClock, parseTimerText } = clock;
 export const { AUTO_LEN, MATCH_LEN, TELEOP_LEN } = types;
 
