@@ -20,6 +20,20 @@ export interface QuadPoint {
 /** Clockwise from top-left: TL, TR, BR, BL. */
 export type Quad = [QuadPoint, QuadPoint, QuadPoint, QuadPoint];
 
+/**
+ * A raw RGBA frame.
+ *
+ * Structurally identical to the browser's `ImageData`, which satisfies it
+ * without a cast — but naming it here is what lets every function below be
+ * compiled for Node, where the DOM `ImageData` type does not exist. ffmpeg
+ * hands out exactly this shape.
+ */
+export interface RgbaFrame {
+  readonly data: Uint8ClampedArray;
+  readonly width: number;
+  readonly height: number;
+}
+
 /** Axis-aligned quad helper, TL/TR/BR/BL, in 0..1 frame fractions. */
 export function rectQuad(x0: number, y0: number, x1: number, y1: number): Quad {
   return [
@@ -197,7 +211,7 @@ function sampleLuma(data: Uint8ClampedArray, w: number, h: number, x: number, y:
  * Returns one byte per pixel (luma), or null for a degenerate quad.
  */
 export function rectifyToGray(
-  frame: ImageData,
+  frame: RgbaFrame,
   quadFrac: Quad,
   w = SCORE_RECT_W,
   h = SCORE_RECT_H
@@ -745,8 +759,14 @@ export function preprocessCrop(crop: GrayPlane, opts?: Partial<PrepOptions>): Pr
   };
 }
 
-/** Wrap a grayscale plane back into RGBA ImageData for canvas / tesseract. */
-export function grayToImageData(plane: GrayPlane): ImageData {
+/**
+ * Expand a grayscale plane to RGBA bytes.
+ *
+ * Kept separate from wrapping those bytes in an `ImageData` — that wrapper is
+ * DOM-only and lives in `browserCanvas.ts`, so that this file stays compilable
+ * for Node.
+ */
+export function grayToRgba(plane: GrayPlane): Uint8ClampedArray {
   const rgba = new Uint8ClampedArray(plane.width * plane.height * 4);
   for (let i = 0; i < plane.data.length; i++) {
     const v = plane.data[i];
@@ -755,7 +775,7 @@ export function grayToImageData(plane: GrayPlane): ImageData {
     rgba[i * 4 + 2] = v;
     rgba[i * 4 + 3] = 255;
   }
-  return new ImageData(rgba, plane.width, plane.height);
+  return rgba;
 }
 
 /* ------------------------------------------------------------------ *
@@ -789,7 +809,7 @@ function classifyPixel(r: number, g: number, b: number): 0 | 1 | 2 {
  * Used for two things: deciding whether the overlay is on screen at all, and
  * sanity-checking an auto-detected region.
  */
-export function plateCoverage(frame: ImageData, quad: Quad, side: PlateSide): number {
+export function plateCoverage(frame: RgbaFrame, quad: Quad, side: PlateSide): number {
   const want = side === 'blue' ? 1 : 2;
   const xs = quad.map((p) => p.x * frame.width);
   const ys = quad.map((p) => p.y * frame.height);
@@ -823,7 +843,7 @@ export function plateCoverage(frame: ImageData, quad: Quad, side: PlateSide): nu
  */
 export const OVERLAY_MIN_COVERAGE = 0.18;
 
-export function isOverlayPresent(frame: ImageData, blueQuad: Quad, redQuad: Quad): boolean {
+export function isOverlayPresent(frame: RgbaFrame, blueQuad: Quad, redQuad: Quad): boolean {
   return (
     plateCoverage(frame, blueQuad, 'blue') >= OVERLAY_MIN_COVERAGE &&
     plateCoverage(frame, redQuad, 'red') >= OVERLAY_MIN_COVERAGE
@@ -999,7 +1019,7 @@ const GLYPH_PAD = 0.18;
  * a district broadcast with team numbers inline beside it.
  */
 function glyphRows(
-  frame: ImageData,
+  frame: RgbaFrame,
   x0: number,
   x1: number,
   ySearchLo: number,
@@ -1047,7 +1067,7 @@ function glyphRows(
 
 /** Mean luma and desaturated fraction of a rectangle — the timer-plate test. */
 function flatBrightness(
-  frame: ImageData,
+  frame: RgbaFrame,
   x0: number,
   x1: number,
   y0: number,
@@ -1093,7 +1113,7 @@ function flatBrightness(
  * merits — which requires running the whole geometry per candidate, not once.
  */
 function evaluateBand(
-  frame: ImageData,
+  frame: RgbaFrame,
   cls: Uint8Array,
   both: Int32Array,
   prefB: Int32Array,
@@ -1370,7 +1390,7 @@ function evaluateBand(
  * O(width) rather than O(width × height), so ~100 overlapping windows is a few
  * hundred thousand operations rather than tens of millions.
  */
-function bandCandidates(frame: ImageData): {
+function bandCandidates(frame: RgbaFrame): {
   cls: Uint8Array;
   both: Int32Array;
   prefB: Int32Array;
@@ -1437,7 +1457,7 @@ function bandCandidates(frame: ImageData): {
  * instrument for the constants above, and the first thing to reach for when
  * the detector picks the wrong thing on new footage.
  */
-export function analyzeBands(frame: ImageData): BandDiagnostic[] {
+export function analyzeBands(frame: RgbaFrame): BandDiagnostic[] {
   const { cls, both, prefB, prefR, bands } = bandCandidates(frame);
   return bands.map(([by0, by1]) => {
     const diag: BandDiagnostic = { by0, by1, bandH: by1 - by0 + 1, reject: null };
@@ -1468,7 +1488,7 @@ export function analyzeBands(frame: ImageData): BandDiagnostic[] {
  * Returns null when the frame does not look like a scoreboard at all, which the
  * caller reports rather than silently leaving the quads where they were.
  */
-export function detectScoreRegions(frame: ImageData): DetectedRegions | null {
+export function detectScoreRegions(frame: RgbaFrame): DetectedRegions | null {
   const { cls, both, prefB, prefR, bands } = bandCandidates(frame);
 
   let best: { regions: DetectedRegions; score: number } | null = null;
@@ -1507,7 +1527,7 @@ function quadCentre(q: Quad): { x: number; y: number } {
  * Returns the median detection among the agreeing majority, or null if no
  * majority agrees.
  */
-export function detectScoreRegionsStable(frames: ImageData[]): DetectedRegions | null {
+export function detectScoreRegionsStable(frames: RgbaFrame[]): DetectedRegions | null {
   const found = frames
     .map((f) => detectScoreRegions(f))
     .filter((r): r is DetectedRegions => r !== null);

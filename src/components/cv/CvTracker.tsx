@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { AUTO_LEN, CvScoreSample, MATCH_LEN } from '../../types';
 import { downloadCvLog, parseCvJson } from '../../services/bpsStore';
-import { GrayPlane, Quad, grayToImageData } from '../../services/cv/imagePipeline';
+import { GrayPlane, Quad } from '../../services/cv/imagePipeline';
+import { grayToImageData } from '../../services/cv/browserCanvas';
 import { useCvTracker } from './useCvTracker';
 import '../../styles/cvtracker.css';
 

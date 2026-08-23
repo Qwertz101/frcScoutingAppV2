@@ -33,16 +33,14 @@ import { ScoreGate, getOcr, readFrame } from '../../src/services/cv/scoreboardOc
    */
   async readOne(
     worker: any,
-    source: CanvasImageSource,
-    w: number,
-    h: number,
+    frame: any,
     blue: Quad,
     red: Quad,
     timer: Quad | null,
     blueGate: any,
     redGate: any
   ) {
-    const r = await readFrame(worker, source, w, h, blue, red, timer, blueGate, redGate);
+    const r = await readFrame(worker, frame, blue, red, timer, blueGate, redGate);
     if (!r) return null;
     return {
       blue: r.blue,

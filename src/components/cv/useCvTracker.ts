@@ -11,6 +11,7 @@ import {
   detectScoreRegions,
 } from '../../services/cv/imagePipeline';
 import { OcrHandle, ScoreGate, getOcr, readFrame } from '../../services/cv/scoreboardOcr';
+import { captureFrame } from '../../services/cv/browserCanvas';
 import { MatchClock, MatchPhase } from '../../services/cv/matchClock';
 
 export type SourceKind = 'none' | 'file' | 'url' | 'screen';
@@ -365,20 +366,14 @@ export function useCvTracker() {
     const h = v.videoHeight;
     if (!w || !h) return false;
 
-    let result;
+    // Pixels are obtained HERE rather than inside `readFrame`, which now takes
+    // raw pixels so that the identical recognition code can run in a Node
+    // worker against ffmpeg-decoded frames. That moves the tainted-canvas
+    // failure up to this call: `getImageData` is what throws, and it now sits
+    // on this side of the boundary.
+    let frame;
     try {
-      result = await readFrame(
-        worker,
-        v,
-        w,
-        h,
-        blueQuadRef.current,
-        redQuadRef.current,
-        // Once we have given up on the clock there is no point paying for it.
-        fallbackRef.current ? null : timerQuadRef.current,
-        blueGate.current,
-        redGate.current
-      );
+      frame = captureFrame(v, w, h);
     } catch (e: any) {
       // getImageData throws SecurityError on a tainted (cross-origin) canvas.
       if (e?.name === 'SecurityError') {
@@ -389,6 +384,18 @@ export function useCvTracker() {
       }
       throw e;
     }
+    if (!frame) return false;
+
+    const result = await readFrame(
+      worker,
+      frame,
+      blueQuadRef.current,
+      redQuadRef.current,
+      // Once we have given up on the clock there is no point paying for it.
+      fallbackRef.current ? null : timerQuadRef.current,
+      blueGate.current,
+      redGate.current
+    );
     if (!result) return false;
 
     // The overlay is not on screen — a replay, a crowd cut, a pit interview.
@@ -626,22 +633,16 @@ export function useCvTracker() {
       setError('Load footage and let a frame with the scoreboard on screen show first.');
       return;
     }
-    const c = document.createElement('canvas');
-    c.width = v.videoWidth;
-    c.height = v.videoHeight;
-    const ctx = c.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return;
-    ctx.drawImage(v, 0, 0, c.width, c.height);
-
-    let frame: ImageData;
+    let frame: ImageData | null;
     try {
-      frame = ctx.getImageData(0, 0, c.width, c.height);
+      frame = captureFrame(v, v.videoWidth, v.videoHeight);
     } catch {
       setError(
         'This video is cross-origin, so the browser will not let the page read its pixels. Upload the file directly, or use Share Screen.'
       );
       return;
     }
+    if (!frame) return;
 
     const found = detectScoreRegions(frame);
     if (!found) {

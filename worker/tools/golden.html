@@ -73,9 +73,9 @@ window.golden = async (name, from, to, step) => {
   const samples = [];
   for (let t = from; t <= to; t += step) {
     await seek(t);
-    const { canvas } = frameData();
+    const { imageData } = frameData();
     const r = await window.__cv.readOne(
-      ocr.worker, canvas, v.videoWidth, v.videoHeight,
+      ocr.worker, imageData,
       quads.blue, quads.red, quads.timer, blueGate, redGate
     );
     samples.push({ t: +t.toFixed(3), ...r });

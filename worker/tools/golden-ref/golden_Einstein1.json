@@ -1,0 +1,434 @@
+{
+  "clip": "Einstein1.mp4",
+  "w": 2630,
+  "h": 1452,
+  "quads": {
+    "blue": [
+      {
+        "x": 0.43254448669201523,
+        "y": 0.27479338842975204
+      },
+      {
+        "x": 0.4687673003802281,
+        "y": 0.27479338842975204
+      },
+      {
+        "x": 0.4687673003802281,
+        "y": 0.3002754820936639
+      },
+      {
+        "x": 0.43254448669201523,
+        "y": 0.3002754820936639
+      }
+    ],
+    "red": [
+      {
+        "x": 0.5133330798479088,
+        "y": 0.27479338842975204
+      },
+      {
+        "x": 0.5492045627376425,
+        "y": 0.27479338842975204
+      },
+      {
+        "x": 0.5492045627376425,
+        "y": 0.3002754820936639
+      },
+      {
+        "x": 0.5133330798479088,
+        "y": 0.3002754820936639
+      }
+    ],
+    "timer": [
+      {
+        "x": 0.4731634980988593,
+        "y": 0.27479338842975204
+      },
+      {
+        "x": 0.5088060836501902,
+        "y": 0.27479338842975204
+      },
+      {
+        "x": 0.5088060836501902,
+        "y": 0.3002754820936639
+      },
+      {
+        "x": 0.4731634980988593,
+        "y": 0.3002754820936639
+      }
+    ]
+  },
+  "from": 90,
+  "to": 120,
+  "step": 2,
+  "samples": [
+    {
+      "t": 90,
+      "blue": 0,
+      "red": 0,
+      "blueAccepted": false,
+      "redAccepted": false,
+      "blueRaw": {
+        "value": 252,
+        "confidence": 96,
+        "text": "252"
+      },
+      "redRaw": {
+        "value": 243,
+        "confidence": 96,
+        "text": "243"
+      },
+      "timer": {
+        "remaining": 80,
+        "text": "120",
+        "confidence": 96
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 92,
+      "blue": 0,
+      "red": 0,
+      "blueAccepted": false,
+      "redAccepted": false,
+      "blueRaw": {
+        "value": 252,
+        "confidence": 95,
+        "text": "252"
+      },
+      "redRaw": {
+        "value": 251,
+        "confidence": 96,
+        "text": "251"
+      },
+      "timer": {
+        "remaining": 78,
+        "text": "118",
+        "confidence": 97
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 94,
+      "blue": 269,
+      "red": 254,
+      "blueAccepted": true,
+      "redAccepted": true,
+      "blueRaw": {
+        "value": 269,
+        "confidence": 96,
+        "text": "269"
+      },
+      "redRaw": {
+        "value": 254,
+        "confidence": 96,
+        "text": "254"
+      },
+      "timer": {
+        "remaining": 76,
+        "text": "116",
+        "confidence": 96
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 96,
+      "blue": 294,
+      "red": 254,
+      "blueAccepted": true,
+      "redAccepted": true,
+      "blueRaw": {
+        "value": 294,
+        "confidence": 96,
+        "text": "294"
+      },
+      "redRaw": {
+        "value": 254,
+        "confidence": 94,
+        "text": "254"
+      },
+      "timer": {
+        "remaining": 74,
+        "text": "114",
+        "confidence": 96
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 98,
+      "blue": 318,
+      "red": 254,
+      "blueAccepted": true,
+      "redAccepted": true,
+      "blueRaw": {
+        "value": 318,
+        "confidence": 95,
+        "text": "318"
+      },
+      "redRaw": {
+        "value": 254,
+        "confidence": 96,
+        "text": "254"
+      },
+      "timer": {
+        "remaining": 72,
+        "text": "112",
+        "confidence": 94
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 100,
+      "blue": 332,
+      "red": 254,
+      "blueAccepted": true,
+      "redAccepted": true,
+      "blueRaw": {
+        "value": 332,
+        "confidence": 96,
+        "text": "332"
+      },
+      "redRaw": {
+        "value": 254,
+        "confidence": 96,
+        "text": "254"
+      },
+      "timer": {
+        "remaining": 70,
+        "text": "110",
+        "confidence": 96
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 102,
+      "blue": 334,
+      "red": 254,
+      "blueAccepted": true,
+      "redAccepted": true,
+      "blueRaw": {
+        "value": 334,
+        "confidence": 96,
+        "text": "334"
+      },
+      "redRaw": {
+        "value": 254,
+        "confidence": 96,
+        "text": "254"
+      },
+      "timer": {
+        "remaining": 68,
+        "text": "108",
+        "confidence": 96
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 104,
+      "blue": 334,
+      "red": 254,
+      "blueAccepted": false,
+      "redAccepted": true,
+      "blueRaw": {
+        "value": null,
+        "confidence": 0,
+        "text": ""
+      },
+      "redRaw": {
+        "value": 254,
+        "confidence": 96,
+        "text": "254"
+      },
+      "timer": {
+        "remaining": 66,
+        "text": "106",
+        "confidence": 96
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 106,
+      "blue": 366,
+      "red": 254,
+      "blueAccepted": true,
+      "redAccepted": true,
+      "blueRaw": {
+        "value": 366,
+        "confidence": 96,
+        "text": "366"
+      },
+      "redRaw": {
+        "value": 254,
+        "confidence": 96,
+        "text": "254"
+      },
+      "timer": {
+        "remaining": 64,
+        "text": "104",
+        "confidence": 96
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 108,
+      "blue": 367,
+      "red": 254,
+      "blueAccepted": true,
+      "redAccepted": true,
+      "blueRaw": {
+        "value": 367,
+        "confidence": 96,
+        "text": "367"
+      },
+      "redRaw": {
+        "value": 254,
+        "confidence": 96,
+        "text": "254"
+      },
+      "timer": {
+        "remaining": 62,
+        "text": "102",
+        "confidence": 96
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 110,
+      "blue": 367,
+      "red": 254,
+      "blueAccepted": true,
+      "redAccepted": true,
+      "blueRaw": {
+        "value": 367,
+        "confidence": 96,
+        "text": "367"
+      },
+      "redRaw": {
+        "value": 254,
+        "confidence": 96,
+        "text": "254"
+      },
+      "timer": {
+        "remaining": 60,
+        "text": "100",
+        "confidence": 96
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 112,
+      "blue": 376,
+      "red": 254,
+      "blueAccepted": true,
+      "redAccepted": true,
+      "blueRaw": {
+        "value": 376,
+        "confidence": 96,
+        "text": "376"
+      },
+      "redRaw": {
+        "value": 254,
+        "confidence": 96,
+        "text": "254"
+      },
+      "timer": {
+        "remaining": 58,
+        "text": "058",
+        "confidence": 96
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 114,
+      "blue": 386,
+      "red": 254,
+      "blueAccepted": true,
+      "redAccepted": true,
+      "blueRaw": {
+        "value": 386,
+        "confidence": 96,
+        "text": "386"
+      },
+      "redRaw": {
+        "value": 254,
+        "confidence": 96,
+        "text": "254"
+      },
+      "timer": {
+        "remaining": 56,
+        "text": "056",
+        "confidence": 96
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 116,
+      "blue": 396,
+      "red": 254,
+      "blueAccepted": true,
+      "redAccepted": true,
+      "blueRaw": {
+        "value": 396,
+        "confidence": 96,
+        "text": "396"
+      },
+      "redRaw": {
+        "value": 254,
+        "confidence": 96,
+        "text": "254"
+      },
+      "timer": {
+        "remaining": 54,
+        "text": "054",
+        "confidence": 96
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 118,
+      "blue": 413,
+      "red": 254,
+      "blueAccepted": true,
+      "redAccepted": true,
+      "blueRaw": {
+        "value": 413,
+        "confidence": 96,
+        "text": "413"
+      },
+      "redRaw": {
+        "value": 254,
+        "confidence": 96,
+        "text": "254"
+      },
+      "timer": {
+        "remaining": 52,
+        "text": "052",
+        "confidence": 96
+      },
+      "overlayPresent": true
+    },
+    {
+      "t": 120,
+      "blue": 413,
+      "red": 260,
+      "blueAccepted": true,
+      "redAccepted": true,
+      "blueRaw": {
+        "value": 413,
+        "confidence": 96,
+        "text": "413"
+      },
+      "redRaw": {
+        "value": 260,
+        "confidence": 96,
+        "text": "260"
+      },
+      "timer": {
+        "remaining": 50,
+        "text": "050",
+        "confidence": 96
+      },
+      "overlayPresent": true
+    }
+  ]
+}
