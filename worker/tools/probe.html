@@ -1,0 +1,154 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>detectScoreRegions probe</title>
+<style>
+  body { font: 13px/1.5 ui-monospace, Consolas, monospace; background: #10171b; color: #e8eef1; padding: 16px; }
+  h1 { font-size: 15px; letter-spacing: .08em; text-transform: uppercase; color: #33becc; }
+  #log { white-space: pre; }
+  .ok { color: #6ee7a8; } .bad { color: #ff7a85; }
+</style>
+<h1>detectScoreRegions probe</h1>
+<video id="v" muted crossorigin="anonymous" style="display:none"></video>
+<div id="log">loading…</div>
+<script type="module">
+// Namespace import, not named: `detectScoreRegionsStable` does not exist until
+// M1, and a named import of a missing export is a hard module-load error that
+// would take the whole harness down before it can measure the M0 baseline.
+import * as pipeline from './pipeline.mjs';
+const { detectScoreRegions, detectScoreRegionsStable } = pipeline;
+
+const v = document.getElementById('v');
+const logEl = document.getElementById('log');
+const log = (s) => { logEl.textContent += s + '\n'; };
+
+const save = (name, body) =>
+  fetch('/save', { method: 'POST', body: JSON.stringify({ name, ...body }) });
+
+/** Load a video and wait for metadata. */
+function load(name) {
+  return new Promise((resolve, reject) => {
+    v.onloadedmetadata = () => resolve({ w: v.videoWidth, h: v.videoHeight, dur: v.duration });
+    v.onerror = () => reject(new Error('load failed: ' + name));
+    v.src = '/video/' + encodeURIComponent(name);
+  });
+}
+
+/**
+ * Grab one frame as ImageData.
+ *
+ * The 250ms settle after `seeked` is not superstition: on these large files the
+ * event fires before the decoder has actually presented the new frame, and
+ * drawing immediately yields the PREVIOUS frame. That silently shifts every
+ * measurement by one sample, which is exactly the kind of error that looks
+ * like a detector bug.
+ */
+async function frameAt(t) {
+  await new Promise((r) => { v.currentTime = t; v.onseeked = r; });
+  await new Promise((r) => setTimeout(r, 250));
+  const c = document.createElement('canvas');
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  const cx = c.getContext('2d', { willReadFrequently: true });
+  cx.drawImage(v, 0, 0);
+  return { frame: cx.getImageData(0, 0, c.width, c.height), canvas: c, ctx: cx };
+}
+
+/** Draw the detected quads over a frame so a human can judge them. */
+function annotate(canvas, ctx, regions) {
+  if (!regions) return canvas;
+  const W = canvas.width, H = canvas.height;
+  const box = (quad, color, label) => {
+    const xs = quad.map((p) => p.x * W), ys = quad.map((p) => p.y * H);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs);
+    const y0 = Math.min(...ys), y1 = Math.max(...ys);
+    ctx.lineWidth = 3; ctx.strokeStyle = color;
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.fillStyle = color; ctx.font = 'bold 18px monospace';
+    ctx.fillText(label, x0, Math.max(16, y0 - 5));
+  };
+  box(regions.blue, '#3ba7ff', 'BLUE');
+  box(regions.red, '#ff5964', 'RED');
+  box(regions.timer, '#ffc107', 'TIMER');
+  if (regions.blueTeams) box(regions.blueTeams, '#7fd4ff', 'bTEAMS');
+  if (regions.redTeams) box(regions.redTeams, '#ffa3a9', 'rTEAMS');
+  return canvas;
+}
+
+const fmt = (q, W, H) => {
+  const xs = q.map((p) => p.x * W), ys = q.map((p) => p.y * H);
+  return `x${Math.round(Math.min(...xs))}-${Math.round(Math.max(...xs))} y${Math.round(Math.min(...ys))}-${Math.round(Math.max(...ys))}`;
+};
+
+/**
+ * Run the detector across evenly-spaced frames of one clip.
+ * `saveEvery` writes an annotated PNG every Nth frame for eyeballing.
+ */
+window.probeClip = async (name, n = 20, saveEvery = 5) => {
+  const meta = await load(name);
+  log(`\n=== ${name}  ${meta.w}x${meta.h}  ${meta.dur.toFixed(1)}s ===`);
+  const times = Array.from({ length: n }, (_, i) => ((i + 0.5) / n) * meta.dur);
+  const rows = [];
+  let hits = 0;
+  let msTotal = 0;
+  const frames = [];
+  for (let i = 0; i < times.length; i++) {
+    const t = times[i];
+    const { frame, canvas, ctx } = await frameAt(t);
+    if (frames.length < 7) frames.push(frame);
+    const t0 = performance.now();
+    const r = detectScoreRegions(frame);
+    msTotal += performance.now() - t0;
+    if (r) hits++;
+    rows.push({ t: +t.toFixed(1), found: !!r, blue: r ? fmt(r.blue, meta.w, meta.h) : null, red: r ? fmt(r.red, meta.w, meta.h) : null, timer: r ? fmt(r.timer, meta.w, meta.h) : null });
+    log(`  t=${t.toFixed(1).padStart(6)}s  ${r ? 'FOUND  ' + fmt(r.blue, meta.w, meta.h) + '  |  ' + fmt(r.red, meta.w, meta.h) : 'null'}`);
+    if (i % saveEvery === 0) {
+      annotate(canvas, ctx, r);
+      await save(`${name.replace(/\.mp4$/, '')}_t${Math.round(t)}`, { dataUrl: canvas.toDataURL('image/png') });
+    }
+  }
+  let stable = null;
+  try { stable = detectScoreRegionsStable ? detectScoreRegionsStable(frames) : null; } catch (e) { log('  stable threw: ' + e.message); }
+  const rate = hits / times.length;
+  const msPerFrame = msTotal / times.length;
+  log(`  frame-level: ${hits}/${times.length} = ${(rate * 100).toFixed(0)}%   stable: ${stable ? 'OK ' + fmt(stable.blue, meta.w, meta.h) : 'null'}   ${msPerFrame.toFixed(0)}ms/frame`);
+  const result = { name, ...meta, frameHits: hits, frames: times.length, rate, stable: !!stable, msPerFrame, rows };
+  await save(`result_${name.replace(/\.mp4$/, '')}`, { json: result });
+  return result;
+};
+
+/** Dump every candidate band and why it was rejected — the tuning instrument. */
+window.diagnose = async (name, t) => {
+  const meta = await load(name);
+  const { frame } = await frameAt(t);
+  const bands = pipeline.analyzeBands(frame);
+  log(`\n=== diagnose ${name} @${t}s  ${meta.w}x${meta.h} — ${bands.length} candidate bands ===`);
+  for (const b of bands) {
+    const parts = [
+      `y${String(b.by0).padStart(4)}-${String(b.by1).padStart(4)}`,
+      `h${String(b.bandH).padStart(3)}`,
+      b.gap !== undefined ? `gap${String(Math.round(b.gap)).padStart(4)}` : '',
+      b.plateLuma !== undefined ? `luma${b.plateLuma.toFixed(0).padStart(4)}` : '',
+      b.plateFlat !== undefined ? `flat${b.plateFlat.toFixed(2)}` : '',
+      b.symmetry !== undefined ? `sym${b.symmetry.toFixed(2)}` : '',
+      b.fill !== undefined ? `fill${b.fill.toFixed(2)}` : '',
+      b.sharpness !== undefined ? `sharp${b.sharpness.toFixed(1)}` : '',
+      b.score !== undefined ? `SCORE ${b.score.toFixed(3)}` : '',
+    ].filter(Boolean);
+    log(`  ${parts.join('  ')}   ${b.reject ? 'REJECT: ' + b.reject : 'accepted'}`);
+  }
+  window.__bands = bands;
+  return bands;
+};
+
+window.probeAll = async (n = 20) => {
+  const list = await (await fetch('/api/videos')).json();
+  const all = [];
+  for (const name of list) all.push(await window.probeClip(name, n));
+  log('\n===== SUMMARY =====');
+  for (const r of all) log(`  ${r.name.padEnd(16)} ${String(r.frameHits).padStart(3)}/${r.frames}  ${(r.rate * 100).toFixed(0).padStart(3)}%  stable=${r.stable}`);
+  await save('result_summary', { json: all });
+  window.__done = all;
+  return all;
+};
+
+logEl.textContent = 'ready — call probeAll()\n';
+</script>

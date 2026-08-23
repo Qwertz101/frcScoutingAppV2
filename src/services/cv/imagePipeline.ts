@@ -864,74 +864,317 @@ function longestRun(runs: [number, number][]): [number, number] | null {
   return best;
 }
 
-/**
- * Find the two score plates in a frame, with no operator input.
+/* ---- detector tuning constants -------------------------------------------
  *
- * The geometry that makes this tractable is that the bar is *symmetric about the
- * match timer*: a blue mass, a non-alliance-coloured timer plate, then a red
- * mass. So rather than trying to tell a score plate from an alliance-name plate
- * by colour — they are the same colour — we find the gap between the two masses
- * and use it as the ruler. The timer plate and the two score plates are all
- * about one 3-digit box wide, so the score box is the gap's width taken inward
- * from each mass's facing edge.
- *
- * Returns null when the frame does not look like a scoreboard at all, which the
- * caller reports rather than silently leaving the quads where they were.
+ * These were all measured, not guessed — see `analyzeBands` below, which is the
+ * diagnostic that produced them.
  */
-export function detectScoreRegions(frame: ImageData): DetectedRegions | null {
+
+/**
+ * How far down the frame to look for the bar.
+ *
+ * A clean broadcast puts it in the top few percent, but a camera pointed at a
+ * venue's own screen from the stands does not: on real Championship footage the
+ * bar sat at 24.5–30% of frame height, which the old 0.25 window bisected. 0.45
+ * covers that comfortably while still keeping the field carpet — which is
+ * alliance-coloured and enormous — out of the search.
+ */
+const SEARCH_DEPTH = 0.45;
+
+/**
+ * Minimum both-colours-on-one-row mass, as a fraction of frame width, for a row
+ * to join a candidate band.
+ *
+ * Lower than the old 0.08 on purpose. The old value was doing double duty as a
+ * *filter*, which it is bad at — it admitted a 70-row lighting truss while very
+ * nearly excluding the real 7-row scoreboard sliver. Filtering is now the
+ * scoring pass's job, so this only has to be permissive enough to not lose the
+ * true band.
+ */
+const BAND_MIN_MASS = 0.03;
+
+/**
+ * A scoreboard bar is a thin graphic. An arena lit blue on one side and red on
+ * the other is a tall diffuse mass, and that is the single cheapest way to tell
+ * them apart before doing any real work.
+ */
+const BAND_MAX_HEIGHT = 0.12;
+
+/** Timer-plate gap width, as a fraction of frame width. */
+const GAP_MIN = 0.015;
+const GAP_MAX = 0.14;
+
+/**
+ * The timer plate is white or near-white, and it is the one feature stage
+ * lighting cannot fake: an arena has no flat bright panel sitting exactly
+ * between its blue and red halves. This is the decisive rejection test.
+ */
+const PLATE_MIN_LUMA = 150;
+const PLATE_MIN_FLAT_FRACTION = 0.4;
+/** Saturation below this counts as "not an alliance colour". */
+const PLATE_FLAT_SAT = 0.2;
+
+/** Samples per axis for the white-plate test. See `flatBrightness`. */
+const PLATE_SAMPLE_SIDE = 24;
+
+/**
+ * The two alliance blocks are near-identical widths by design. Two unrelated
+ * lighting blobs are not.
+ */
+const MIN_SYMMETRY = 0.65;
+
+/** Fraction of a run's bounding box that must actually be its own colour. */
+const MIN_FILL = 0.3;
+
+/**
+ * Band-to-surroundings contrast: an opaque graphic has hard edges, light fades.
+ * Scoring only — see the note at its use site for why it must not be a filter.
+ */
+const SHARPNESS_CLAMP = 6;
+const MIN_SHARPNESS_TERM = 0.15;
+
+/** Rows the two plates must share for the pair to be one bar. */
+const MIN_PLATE_ROWS = 4;
+
+/**
+ * Window heights tried at every offset, as fractions of frame height, and the
+ * stride as a fraction of the window height.
+ *
+ * The bar's apparent height depends entirely on how much of the frame the
+ * scoreboard occupies — a broadcast overlay and a phone pointed at the venue's
+ * own screen differ by several times over — so the search is multi-scale.
+ */
+const WINDOW_HEIGHTS = [0.03, 0.05, 0.08, 0.12];
+const WINDOW_STRIDE = 0.34;
+
+/**
+ * Widest N runs of each colour considered as possible plates within one band.
+ *
+ * Bounds the pair search. In practice a band has a handful of runs at most, and
+ * the plate is always among the wider ones — it just is not reliably the
+ * widest, which is the whole reason the search exists.
+ */
+const MAX_RUNS_PER_COLOUR = 8;
+
+/** Per-band diagnostics, exported for tuning. See `analyzeBands`. */
+export interface BandDiagnostic {
+  by0: number;
+  by1: number;
+  bandH: number;
+  reject: string | null;
+  blueRun?: [number, number];
+  redRun?: [number, number];
+  gap?: number;
+  plateLuma?: number;
+  plateFlat?: number;
+  symmetry?: number;
+  fill?: number;
+  sharpness?: number;
+  score?: number;
+}
+
+/** Mean luma and desaturated fraction of a rectangle — the timer-plate test. */
+function flatBrightness(
+  frame: ImageData,
+  x0: number,
+  x1: number,
+  y0: number,
+  y1: number
+): { luma: number; flat: number } {
+  const W = frame.width;
+  const ax0 = Math.max(0, Math.round(x0));
+  const ax1 = Math.min(W - 1, Math.round(x1));
+  const ay0 = Math.max(0, Math.round(y0));
+  const ay1 = Math.min(frame.height - 1, Math.round(y1));
+  if (ax1 <= ax0 || ay1 <= ay0) return { luma: 0, flat: 0 };
+
+  // Subsampled. This is a mean and a fraction over a solid-coloured plate, so a
+  // few hundred samples answer it as well as sixty thousand do, and this runs
+  // inside the innermost candidate loop.
+  const stepX = Math.max(1, Math.floor((ax1 - ax0 + 1) / PLATE_SAMPLE_SIDE));
+  const stepY = Math.max(1, Math.floor((ay1 - ay0 + 1) / PLATE_SAMPLE_SIDE));
+
+  let lumaSum = 0;
+  let flat = 0;
+  let n = 0;
+  for (let y = ay0; y <= ay1; y += stepY) {
+    for (let x = ax0; x <= ax1; x += stepX) {
+      const i = (y * W + x) * 4;
+      const r = frame.data[i];
+      const g = frame.data[i + 1];
+      const b = frame.data[i + 2];
+      const mx = Math.max(r, g, b);
+      const mn = Math.min(r, g, b);
+      lumaSum += 0.299 * r + 0.587 * g + 0.114 * b;
+      if (mx === 0 || (mx - mn) / mx < PLATE_FLAT_SAT) flat++;
+      n++;
+    }
+  }
+  return { luma: lumaSum / n, flat: flat / n };
+}
+
+/**
+ * Score one candidate band and, if it survives, build the regions from it.
+ *
+ * Split out of `detectScoreRegions` because the fix for venue footage was to
+ * stop trusting the *longest* band and start evaluating every candidate on its
+ * merits — which requires running the whole geometry per candidate, not once.
+ */
+function evaluateBand(
+  frame: ImageData,
+  cls: Uint8Array,
+  both: Int32Array,
+  prefB: Int32Array,
+  prefR: Int32Array,
+  by0: number,
+  by1: number,
+  diag: BandDiagnostic
+): { regions: DetectedRegions; score: number } | null {
   const W = frame.width;
   const H = frame.height;
-  // The bar always lives in the top strip; searching the whole frame just invites
-  // bumpers and alliance-coloured field lighting into the answer.
-  const yMax = Math.max(8, Math.round(H * 0.25));
-
-  const cls = new Uint8Array(W * yMax);
-  const rowB = new Int32Array(yMax);
-  const rowR = new Int32Array(yMax);
-  for (let y = 0; y < yMax; y++) {
-    for (let x = 0; x < W; x++) {
-      const i = (y * W + x) * 4;
-      const c = classifyPixel(frame.data[i], frame.data[i + 1], frame.data[i + 2]);
-      cls[y * W + x] = c;
-      if (c === 1) rowB[y]++;
-      else if (c === 2) rowR[y]++;
-    }
-  }
-
-  // The bar is the only band with a lot of BOTH colours on the same rows.
-  // Requiring both is what rejects stage lighting and a purple-lit crowd, which
-  // on the reference broadcast produced a full-width blue-only band at y=0..3.
-  const both = new Int32Array(yMax);
-  for (let y = 0; y < yMax; y++) both[y] = Math.min(rowB[y], rowR[y]);
-  const band = longestRun(runsAbove(both, W * 0.08, 4));
-  if (!band) return null;
-  const [by0, by1] = band;
   const bandH = by1 - by0 + 1;
+  const reject = (why: string) => {
+    diag.reject = why;
+    return null;
+  };
 
+  if (bandH > H * BAND_MAX_HEIGHT) return reject('band too tall');
+
+  // Column profiles from the prefix sums: O(W) per band instead of O(W*bandH).
+  // That is what makes evaluating ~100 overlapping candidate windows per frame
+  // affordable, which is in turn what makes the bar findable when it is fused
+  // with the crowd behind it.
   const colB = new Int32Array(W);
   const colR = new Int32Array(W);
-  for (let y = by0; y <= by1; y++) {
-    for (let x = 0; x < W; x++) {
-      const c = cls[y * W + x];
-      if (c === 1) colB[x]++;
-      else if (c === 2) colR[x]++;
+  const lo = by0 * W;
+  const hi = (by1 + 1) * W;
+  for (let x = 0; x < W; x++) {
+    colB[x] = prefB[hi + x] - prefB[lo + x];
+    colR[x] = prefR[hi + x] - prefR[lo + x];
+  }
+
+  // Edge contrast is a property of the band, not of any one run — compute it
+  // once. An opaque graphic has hard edges; stage lighting fades into its
+  // surroundings.
+  const meanOf = (a: number, b: number) => {
+    let s = 0;
+    let n = 0;
+    for (let y = Math.max(0, a); y <= Math.min(both.length - 1, b); y++) {
+      s += both[y];
+      n++;
+    }
+    return n ? s / n : 0;
+  };
+  const inside = meanOf(by0, by1);
+  const outside = meanOf(by0 - bandH, by0 - 1) + meanOf(by1 + 1, by1 + bandH);
+  const sharpness = inside / (outside + 1);
+  diag.sharpness = sharpness;
+  // Soft term, not a hard filter. A window carved out of a larger fused mass —
+  // which is exactly the case this detector has to survive — has no edge
+  // contrast by construction, so rejecting on it would throw away the right
+  // answer. The white-plate test is what actually discriminates; sharpness only
+  // breaks ties in favour of a band that really does stand alone.
+  const sharpTerm = Math.max(
+    MIN_SHARPNESS_TERM,
+    Math.min(1, sharpness / SHARPNESS_CLAMP)
+  );
+
+  // Every run of each colour, widest first — NOT just the widest.
+  //
+  // Taking the widest was the second half of the venue-footage failure. Inside
+  // the correct band, an arena lit blue on one side and red on the other puts a
+  // crowd-lit run far wider than the actual score plate in both colour
+  // profiles, so the "widest" pair bracketed most of the frame and the gap test
+  // rejected a band that was in fact exactly right. Which run is the plate is
+  // not knowable from width; it is knowable from the pair geometry, so enumerate
+  // pairs and let the same scoreboard tests choose.
+  const byWidth = (runs: [number, number][]) =>
+    runs.sort((a, b) => b[1] - b[0] - (a[1] - a[0])).slice(0, MAX_RUNS_PER_COLOUR);
+  const blueRuns = byWidth(runsAbove(colB, bandH * 0.25, 8));
+  const redRuns = byWidth(runsAbove(colR, bandH * 0.25, 8));
+  if (!blueRuns.length || !redRuns.length) return reject('no colour runs');
+
+  let bestPair: {
+    blueRun: [number, number];
+    redRun: [number, number];
+    blueFirst: boolean;
+    gapStart: number;
+    gapEnd: number;
+    gap: number;
+    score: number;
+    symmetry: number;
+    fill: number;
+    plate: { luma: number; flat: number };
+  } | null = null;
+  let lastReject = 'no viable run pair';
+
+  for (const blueRun of blueRuns) {
+    for (const redRun of redRuns) {
+      // Blue left of red, or mirrored — either way the facing edges bracket the
+      // timer. Overlapping runs cannot be the two halves of one bar.
+      const blueFirst = blueRun[1] < redRun[0];
+      const disjoint = blueFirst || redRun[1] < blueRun[0];
+      if (!disjoint) {
+        lastReject = 'runs overlap';
+        continue;
+      }
+      const gapStart = blueFirst ? blueRun[1] : redRun[1];
+      const gapEnd = blueFirst ? redRun[0] : blueRun[0];
+      const gap = gapEnd - gapStart;
+      if (gap < W * GAP_MIN || gap > W * GAP_MAX) {
+        lastReject = 'gap out of range';
+        continue;
+      }
+
+      // Cheapest tests first. The white-plate test is by far the most expensive
+      // — it reads pixels, where these only read the already-computed column
+      // profile — and this loop runs for every run pair of every candidate
+      // window, so ordering it last is the difference between the detector
+      // taking milliseconds and taking most of a second per frame.
+      const wB = blueRun[1] - blueRun[0] + 1;
+      const wR = redRun[1] - redRun[0] + 1;
+      const symmetry = 1 - Math.abs(wB - wR) / Math.max(wB, wR);
+      if (symmetry < MIN_SYMMETRY) {
+        lastReject = 'runs asymmetric';
+        continue;
+      }
+
+      let bHit = 0;
+      let rHit = 0;
+      for (let x = blueRun[0]; x <= blueRun[1]; x++) bHit += colB[x];
+      for (let x = redRun[0]; x <= redRun[1]; x++) rHit += colR[x];
+      const fill = Math.min(bHit / (wB * bandH), rHit / (wR * bandH));
+      if (fill < MIN_FILL) {
+        lastReject = 'runs too sparse';
+        continue;
+      }
+
+      // Only now: is there actually a white timer plate in that gap? This is
+      // the decisive test, but it is also the only one that touches pixels.
+      const plate = flatBrightness(frame, gapStart, gapEnd, by0, by1);
+      if (plate.luma < PLATE_MIN_LUMA || plate.flat < PLATE_MIN_FLAT_FRACTION) {
+        lastReject = 'no white plate in gap';
+        continue;
+      }
+
+      const score = symmetry * fill * sharpTerm;
+      if (!bestPair || score > bestPair.score) {
+        bestPair = { blueRun, redRun, blueFirst, gapStart, gapEnd, gap, score, symmetry, fill, plate };
+      }
     }
   }
 
-  // The alliance-name-plus-score block is the widest run of each colour; the
-  // small rank plates out at the ends of the bar are much narrower.
-  const blueRun = longestRun(runsAbove(colB, bandH * 0.25, 8));
-  const redRun = longestRun(runsAbove(colR, bandH * 0.25, 8));
-  if (!blueRun || !redRun) return null;
+  if (!bestPair) return reject(lastReject);
 
-  // Blue left of red, or mirrored — either way the facing edges bracket the timer.
-  const blueFirst = blueRun[1] < redRun[0];
-  const gapStart = blueFirst ? blueRun[1] : redRun[1];
-  const gapEnd = blueFirst ? redRun[0] : blueRun[0];
-  const gap = gapEnd - gapStart;
-  // A plausible timer plate is a few percent of the frame. Wider means the two
-  // runs are unrelated blobs, not the two halves of one scoreboard.
-  if (gap < W * 0.015 || gap > W * 0.14) return null;
+  const { blueRun, redRun, blueFirst, gapStart, gapEnd, gap, score } = bestPair;
+  diag.blueRun = blueRun;
+  diag.redRun = redRun;
+  diag.gap = gap;
+  diag.plateLuma = bestPair.plate.luma;
+  diag.plateFlat = bestPair.plate.flat;
+  diag.symmetry = bestPair.symmetry;
+  diag.fill = bestPair.fill;
+  diag.score = score;
 
   const boxW = gap * 0.95;
   const blueX = blueFirst
@@ -944,22 +1187,57 @@ export function detectScoreRegions(frame: ImageData): DetectedRegions | null {
   // Vertical extent: the score plate is solid colour on the main row and gives
   // way to the darker team-number sub-row beneath, so walk down the score box's
   // own columns until the colour stops.
+  //
+  // Searched over a generous margin ABOVE and BELOW the band, not just inside
+  // it. The band is now whichever search window happened to win, and window
+  // offsets are quantised by the stride — so clipping the plate's extent to the
+  // window made the reported height jump around by tens of pixels between
+  // otherwise identical frames, which is exactly the jitter that stops
+  // `detectScoreRegionsStable` from ever reaching consensus. Growing outward
+  // measures the plate itself, so the answer no longer depends on which window
+  // found it.
+  const yLimit = cls.length / W - 1;
   const plateRows = (xa: number, xb: number, want: number): [number, number] => {
     const x0 = Math.max(0, Math.round(xa));
     const x1 = Math.min(W - 1, Math.round(xb));
     const span = Math.max(1, x1 - x0 + 1);
-    const rows = new Int32Array(bandH);
-    for (let y = by0; y <= by1; y++) {
+    const sy0 = Math.max(0, by0 - bandH);
+    const sy1 = Math.min(yLimit, by1 + bandH);
+    const rows = new Int32Array(sy1 - sy0 + 1);
+    for (let y = sy0; y <= sy1; y++) {
       let n = 0;
       for (let x = x0; x <= x1; x++) if (cls[y * W + x] === want) n++;
-      rows[y - by0] = n;
+      rows[y - sy0] = n;
     }
-    const run = longestRun(runsAbove(rows, span * 0.4, 3));
-    return run ? [by0 + run[0], by0 + run[1]] : [by0, by1];
+    // Of the runs that actually overlap the band we scored, take the longest —
+    // overlap is what keeps this from wandering onto a different graphic in the
+    // margin we just opened up.
+    const runs = runsAbove(rows, span * 0.4, 3)
+      .map(([a, b]) => [sy0 + a, sy0 + b] as [number, number])
+      .filter(([a, b]) => b >= by0 && a <= by1);
+    const run = longestRun(runs);
+    return run ?? [by0, by1];
   };
 
-  const [byTop, byBot] = plateRows(blueX[0], blueX[1], 1);
-  const [ryTop, ryBot] = plateRows(redX[0], redX[1], 2);
+  const [byTop0, byBot0] = plateRows(blueX[0], blueX[1], 1);
+  const [ryTop0, ryBot0] = plateRows(redX[0], redX[1], 2);
+
+  // The two plates are halves of ONE horizontal bar, so they must occupy the
+  // same rows. Intersecting the two independent measurements is what makes the
+  // vertical extent reproducible: each side alone is ambiguous, because the
+  // alliance-name label above the score is the same colour as the score plate
+  // and merges with it at some thresholds but not others — measured on real
+  // footage, the blue side's reported height swung between 20 and 190 rows
+  // frame to frame while red sat still. Only the rows where BOTH sides are
+  // their own colour are the score row, and the labels do not survive that.
+  //
+  // A pair whose halves cannot agree on a row range is not a scoreboard at all,
+  // so an empty intersection rejects the whole candidate rather than guessing —
+  // and the band search simply moves on to the next candidate.
+  const byTop = Math.max(byTop0, ryTop0);
+  const byBot = Math.min(byBot0, ryBot0);
+  if (byBot - byTop + 1 < MIN_PLATE_ROWS) return reject('plate rows disagree');
+  const [ryTop, ryBot] = [byTop, byBot];
 
   // Inset to drop the plate's own border, which otherwise segments as a
   // full-height bar and is read as a leading `1`.
@@ -980,8 +1258,225 @@ export function detectScoreRegions(frame: ImageData): DetectedRegions | null {
   const [tx0, tx1] = inset(gapStart, gapEnd, 0.07);
 
   return {
-    blue: rectQuad(bx0 / W, byA / H, bx1 / W, byB / H),
-    red: rectQuad(rx0 / W, ryA / H, rx1 / W, ryB / H),
-    timer: rectQuad(tx0 / W, byA / H, tx1 / W, byB / H),
+    score,
+    regions: {
+      blue: rectQuad(bx0 / W, byA / H, bx1 / W, byB / H),
+      red: rectQuad(rx0 / W, ryA / H, rx1 / W, ryB / H),
+      timer: rectQuad(tx0 / W, byA / H, tx1 / W, byB / H),
+    },
+  };
+}
+
+/**
+ * Shared front half of the search: classify the strip, build the column prefix
+ * sums, and enumerate candidate bands.
+ *
+ * Candidates are the natural runs of both-colour rows *plus* a multi-scale
+ * sliding window over the whole strip. The sliding window is not redundant: a
+ * single row-profile threshold cannot separate the bar from what is behind it.
+ * On real Championship footage the crowd directly below the scoreboard is lit
+ * blue on the left and red on the right — a giant, low-contrast copy of the
+ * scoreboard's own colour layout — so the two fuse into one 300-row run and no
+ * choice of threshold carves the bar back out. Enumerating windows regardless
+ * of the profile, and letting the white-plate and geometry tests pick the
+ * winner, is what finds it.
+ *
+ * The prefix sums are what make that affordable: with them each candidate costs
+ * O(width) rather than O(width × height), so ~100 overlapping windows is a few
+ * hundred thousand operations rather than tens of millions.
+ */
+function bandCandidates(frame: ImageData): {
+  cls: Uint8Array;
+  both: Int32Array;
+  prefB: Int32Array;
+  prefR: Int32Array;
+  bands: [number, number][];
+} {
+  const W = frame.width;
+  const H = frame.height;
+  const yMax = Math.max(8, Math.round(H * SEARCH_DEPTH));
+
+  const cls = new Uint8Array(W * yMax);
+  const rowB = new Int32Array(yMax);
+  const rowR = new Int32Array(yMax);
+  // Row y of the prefix arrays holds the count over rows [0, y), so a band
+  // [y0, y1] is pref[(y1+1)*W + x] - pref[y0*W + x].
+  const prefB = new Int32Array(W * (yMax + 1));
+  const prefR = new Int32Array(W * (yMax + 1));
+
+  for (let y = 0; y < yMax; y++) {
+    const row = y * W;
+    const next = (y + 1) * W;
+    for (let x = 0; x < W; x++) {
+      const i = (row + x) * 4;
+      const c = classifyPixel(frame.data[i], frame.data[i + 1], frame.data[i + 2]);
+      cls[row + x] = c;
+      if (c === 1) rowB[y]++;
+      else if (c === 2) rowR[y]++;
+      prefB[next + x] = prefB[row + x] + (c === 1 ? 1 : 0);
+      prefR[next + x] = prefR[row + x] + (c === 2 ? 1 : 0);
+    }
+  }
+
+  // The bar is a band with a lot of BOTH colours on the same rows. Requiring
+  // both is what rejects a purple-lit crowd and a blue-only banner.
+  const both = new Int32Array(yMax);
+  for (let y = 0; y < yMax; y++) both[y] = Math.min(rowB[y], rowR[y]);
+
+  const maxH = Math.round(H * BAND_MAX_HEIGHT);
+  const bands: [number, number][] = [];
+  const seen = new Set<number>();
+  const push = (a: number, b: number) => {
+    if (a < 0 || b >= yMax || b - a + 1 < 3) return;
+    const key = a * 100000 + b;
+    if (seen.has(key)) return;
+    seen.add(key);
+    bands.push([a, b]);
+  };
+
+  for (const [a, b] of runsAbove(both, W * BAND_MIN_MASS, 3)) {
+    if (b - a + 1 <= maxH) push(a, b);
+  }
+  for (const frac of WINDOW_HEIGHTS) {
+    const h = Math.max(4, Math.round(H * frac));
+    if (h > yMax) continue;
+    const stride = Math.max(2, Math.round(h * WINDOW_STRIDE));
+    for (let y = 0; y + h - 1 < yMax; y += stride) push(y, y + h - 1);
+  }
+
+  return { cls, both, prefB, prefR, bands };
+}
+
+/**
+ * Every candidate band with its metrics and rejection reason — the tuning
+ * instrument for the constants above, and the first thing to reach for when
+ * the detector picks the wrong thing on new footage.
+ */
+export function analyzeBands(frame: ImageData): BandDiagnostic[] {
+  const { cls, both, prefB, prefR, bands } = bandCandidates(frame);
+  return bands.map(([by0, by1]) => {
+    const diag: BandDiagnostic = { by0, by1, bandH: by1 - by0 + 1, reject: null };
+    evaluateBand(frame, cls, both, prefB, prefR, by0, by1, diag);
+    return diag;
+  });
+}
+
+/**
+ * Find the two score plates in a frame, with no operator input.
+ *
+ * The geometry that makes this tractable is that the bar is *symmetric about the
+ * match timer*: a blue mass, a non-alliance-coloured timer plate, then a red
+ * mass. So rather than trying to tell a score plate from an alliance-name plate
+ * by colour — they are the same colour — we find the gap between the two masses
+ * and use it as the ruler. The timer plate and the two score plates are all
+ * about one 3-digit box wide, so the score box is the gap's width taken inward
+ * from each mass's facing edge.
+ *
+ * Every candidate band is scored and the best one wins. It used to take the
+ * *longest* band, which is a proxy for "most scoreboard-like" that holds only
+ * on a clean broadcast: in an arena lit blue on one side and red on the other,
+ * the ceiling lighting truss is a far longer both-colours band than the actual
+ * scoreboard, so the detector confidently measured the lighting rig and
+ * returned null when the geometry made no sense. Length was never the signal —
+ * the white timer plate bracketed by two same-width colour blocks is.
+ *
+ * Returns null when the frame does not look like a scoreboard at all, which the
+ * caller reports rather than silently leaving the quads where they were.
+ */
+export function detectScoreRegions(frame: ImageData): DetectedRegions | null {
+  const { cls, both, prefB, prefR, bands } = bandCandidates(frame);
+
+  let best: { regions: DetectedRegions; score: number } | null = null;
+  for (const [by0, by1] of bands) {
+    const diag: BandDiagnostic = { by0, by1, bandH: by1 - by0 + 1, reject: null };
+    const cand = evaluateBand(frame, cls, both, prefB, prefR, by0, by1, diag);
+    if (cand && (!best || cand.score > best.score)) best = cand;
+  }
+  return best ? best.regions : null;
+}
+
+/** How closely two detections must agree to count as the same, as a frame fraction. */
+const STABLE_TOLERANCE = 0.01;
+/** Fraction of supplied frames that must agree. */
+const STABLE_QUORUM = 0.6;
+
+/** Centre of a quad, in 0..1 frame fractions. */
+function quadCentre(q: Quad): { x: number; y: number } {
+  return {
+    x: q.reduce((s, p) => s + p.x, 0) / 4,
+    y: q.reduce((s, p) => s + p.y, 0) / 4,
+  };
+}
+
+/**
+ * Detect across several frames and return the consensus.
+ *
+ * A single frame is a coin flip on footage this noisy — a camera cut, a replay
+ * wipe or one flicker of stage lighting is enough to move or lose the answer.
+ * The scoreboard, by contrast, is pinned to one screen position for an entire
+ * broadcast, so agreement across frames spread over tens of seconds is very
+ * strong evidence and disagreement is very cheap to detect. This costs only
+ * colour maths, no OCR, so unattended callers should always prefer it over the
+ * single-frame version.
+ *
+ * Returns the median detection among the agreeing majority, or null if no
+ * majority agrees.
+ */
+export function detectScoreRegionsStable(frames: ImageData[]): DetectedRegions | null {
+  const found = frames
+    .map((f) => detectScoreRegions(f))
+    .filter((r): r is DetectedRegions => r !== null);
+  if (!found.length) return null;
+
+  const need = Math.max(2, Math.ceil(frames.length * STABLE_QUORUM));
+
+  // Cluster on horizontal position and width, NOT on vertical extent.
+  //
+  // Those answer different questions. Where a plate sits horizontally, and how
+  // wide it is, say *which object* the detector locked onto — the scoreboard
+  // and a mis-detected patch of lit crowd are hundreds of pixels and a
+  // multiple of width apart, so they never cluster together. The plate's
+  // vertical extent, by contrast, is a noisy measurement of the *same* object:
+  // it shifts by tens of pixels frame to frame as the digits change and the
+  // alliance-name label above merges or does not. Clustering on it rejected
+  // frames that had found exactly the right thing, and no consensus was ever
+  // reached. So agreement is judged on x, and the y extent is then taken as the
+  // median across the agreeing frames — which is precisely how you should treat
+  // repeated noisy measurements of one quantity.
+  const width = (q: Quad) => Math.max(...q.map((p) => p.x)) - Math.min(...q.map((p) => p.x));
+  let bestCluster: DetectedRegions[] = [];
+  for (const anchor of found) {
+    const ab = quadCentre(anchor.blue);
+    const ar = quadCentre(anchor.red);
+    const aw = width(anchor.blue);
+    const cluster = found.filter((r) => {
+      const b = quadCentre(r.blue);
+      const rc = quadCentre(r.red);
+      return (
+        Math.abs(b.x - ab.x) <= STABLE_TOLERANCE &&
+        Math.abs(rc.x - ar.x) <= STABLE_TOLERANCE &&
+        Math.abs(width(r.blue) - aw) <= STABLE_TOLERANCE
+      );
+    });
+    if (cluster.length > bestCluster.length) bestCluster = cluster;
+  }
+  if (bestCluster.length < need) return null;
+
+  // Median rather than mean: one outlier that squeaked into the cluster should
+  // not drag the answer, and the quads are axis-aligned so this is well-defined.
+  const median = (vals: number[]) => {
+    const s = [...vals].sort((a, b) => a - b);
+    return s[s.length >> 1];
+  };
+  const medQuad = (pick: (r: DetectedRegions) => Quad): Quad =>
+    [0, 1, 2, 3].map((i) => ({
+      x: median(bestCluster.map((r) => pick(r)[i].x)),
+      y: median(bestCluster.map((r) => pick(r)[i].y)),
+    })) as Quad;
+
+  return {
+    blue: medQuad((r) => r.blue),
+    red: medQuad((r) => r.red),
+    timer: medQuad((r) => r.timer),
   };
 }
