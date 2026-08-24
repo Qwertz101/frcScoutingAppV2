@@ -43,6 +43,10 @@ function wingetCandidates(exe) {
       out.push(join(packages, r, sub, 'bin', exe + '.exe'));
     }
   }
+  // Streamlink's winget package does not use the WinGet Packages layout at
+  // all -- it installs under AppData/Local/Programs like a conventional
+  // Windows installer, so it needs its own candidate path.
+  out.push(join(homedir(), 'AppData/Local/Programs/Streamlink/bin', exe + '.exe'));
   return out;
 }
 
@@ -130,7 +134,17 @@ export async function* frames(input, opts = {}) {
   const child = spawn(resolveBin('ffmpeg'), args, {
     stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
   });
-  if (stdin) stdin.pipe(child.stdin);
+  if (stdin) {
+    // The upstream source (yt-dlp, streamlink) is a separate process from
+    // ffmpeg, and a live consumer aborts by killing both -- there is no way to
+    // guarantee ffmpeg's stdin is still open by the time the last chunk from
+    // upstream arrives. Without these handlers that ordinary race is an
+    // unhandled 'error' event on a raw Socket, which kills the whole worker
+    // process rather than just ending this one attempt.
+    stdin.on('error', () => {});
+    child.stdin.on('error', () => {});
+    stdin.pipe(child.stdin);
+  }
 
   let stderr = '';
   child.stderr.on('data', (b) => {

@@ -115,6 +115,40 @@ export async function processMatch(input, t0, opts = {}) {
     height: meta.height,
   });
 
+  const result = await recognizeWindow(source, quads, { pool, t0 });
+  if (ownPool) await pool.terminate();
+
+  return {
+    log: {
+      matchKey: opts.matchKey ?? '',
+      eventKey: opts.eventKey ?? '',
+      samples: result.samples,
+      source: 'auto-worker - ' + (opts.sourceLabel ?? input),
+      createdAt: Date.now(),
+    },
+    quads,
+    rawReads: result.rawReads,
+    diagnostics: { ...result.diagnostics, t0 },
+  };
+}
+
+/**
+ * Recognise one match window from a stream of frames.
+ *
+ * The part `processMatch` (a VOD's seek-and-decode window) and live monitoring
+ * (a ring-buffered replay stitched to a real-time tail) have in common: once
+ * there is a sequence of frames to look at, reading a match out of it is
+ * identical either way. Only how the frames arrive differs, which is exactly
+ * why this takes a bare async iterable rather than a video path.
+ *
+ * `source` frames must carry `.at` in a single consistent time base for this
+ * call -- video-time for a VOD, wall-clock seconds-since-monitor-start for
+ * live. `t0` is in that same base, and is used only as the fallback anchor if
+ * the clock never locks.
+ */
+export async function recognizeWindow(source, quads, opts) {
+  const { pool, t0 } = opts;
+
   /* ---- pass 1: recognise, in parallel, in order ---- */
 
   const reads = pool.ordered(source, async (worker, frame) => {
@@ -240,8 +274,6 @@ export async function processMatch(input, t0, opts = {}) {
     if (finished) break;
   }
 
-  if (ownPool) await pool.terminate();
-
   // Deltas are rebuilt wholesale from the score series rather than accumulated
   // as we go: with upserts in play, an incrementally maintained delta stops
   // agreeing with the scores it is supposed to describe.
@@ -256,17 +288,9 @@ export async function processMatch(input, t0, opts = {}) {
   }
 
   return {
-    log: {
-      matchKey: opts.matchKey ?? '',
-      eventKey: opts.eventKey ?? '',
-      samples,
-      source: 'auto-worker - ' + (opts.sourceLabel ?? input),
-      createdAt: Date.now(),
-    },
-    quads,
+    samples,
     rawReads,
     diagnostics: {
-      t0,
       skipped,
       timerFallback: fallback,
       timerAccepted: clock.accepted,

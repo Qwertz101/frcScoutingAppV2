@@ -3,10 +3,11 @@
 Unattended scoreboard reading for match day. Runs on the workshop PC; the
 scouting lead supervises over AnyDesk.
 
-Status: **M6 complete** — a recording goes in, and scored logs come out in
-Supabase, with a dashboard the scouting lead watches over AnyDesk. Live streams
-(M7) and the TBA reconcile pass (M8) are not built yet, so the input is still a
-file or a VOD rather than a stream.
+Status: **M7 complete** — a Twitch or YouTube live stream can be watched
+directly: reconnect and backoff on drop, a ring buffer that covers a match's
+lead-in without ever seeking, and a hard rule that a match window spanning a
+reconnect gap is rejected outright rather than silently stitched. Only the TBA
+reconcile pass (M8) remains.
 
 **Writing is opt-in.** `main.mjs` is a dry run unless you pass `--write`,
 because `match_key` is a primary key and an upsert replaces whatever is there.
@@ -52,6 +53,13 @@ The dashboard comes up on <http://127.0.0.1:7654> alongside it, or on its own:
 
 ```bash
 node worker/src/dashboard.mjs 2026cagle
+```
+
+Watch a live Twitch or YouTube stream, forever, unattended:
+
+```bash
+node worker/src/live.mjs <url> --event 2026cagle          # dry run
+node worker/src/live.mjs <url> --event 2026cagle --write  # persist
 ```
 
 Find the matches in a recording:
@@ -202,6 +210,52 @@ A **Needs Review** panel lists flagged matches worst-first and clicks straight
 into the existing correction editor — the manual UI becomes the repair path
 rather than a second review tool being built beside it.
 
+## Live monitoring
+
+`scan.mjs`'s two-tier split exists to spend OCR calls only where something is
+probably happening, because a six-hour VOD costs nothing to seek through and
+everything to OCR wholesale. Live monitoring has the opposite shape: every
+frame arrives whether or not anything is on screen, so the coarse-then-fine
+split buys nothing. What it needs instead, and what a VOD never does, is a way
+to read the first few seconds of a match that were already playing by the time
+the clock corroborated its own lock -- a **ring buffer** (40s: PREROLL plus
+corroboration lag plus margin) holds recent frames so the window assembled once
+`MatchClock.greenFlagAt` fires can be backfilled from it rather than lost.
+
+**A match window that spans a reconnect gap is rejected outright, never
+stitched.** This is the one property that matters more than any other in this
+file, and it is tested directly (`worker/tools/check-live-gap.mjs`) against the
+real `assembleAndProcess`/`GapLog`/`RingBuffer` functions live monitoring uses
+at runtime, fed real decoded frames -- not a reimplementation of the gap logic
+that could drift from what actually runs.
+
+Reconnection lives in `sources.mjs`: `yt-dlp`/`streamlink` in pipe mode
+(nothing is ever written to disk), with exponential backoff (1s, 2s, 4s, 8s,
+16s, capped at 30s) and every gap reported through a callback rather than
+absorbed silently. Twitch goes through `streamlink` and YouTube through
+`yt-dlp -f 'bv*[height<=1080]'` -- video-only, because OCR never looks at
+audio and a large archived stream is frequently offered only as separate
+tracks with no combined format at all.
+
+### A real bug this session's own testing caught
+
+Frames were re-timestamped as `attemptStartedAt + f.at` -- wall-clock time the
+current downloader attempt began, plus the frame's position within that
+attempt. That looks like "the wall clock," and is not: `f.at` only tracks wall
+time 1:1 when the source is paced to real time, which a genuinely live,
+low-latency broadcast is. Testing against a real archived event VOD served
+through a nominally "live" URL exposed the gap -- `yt-dlp` downloads it as fast
+as bandwidth allows, five-plus times faster than playback, so the hybrid
+timeline drifted from true wall time by a growing, attempt-dependent amount.
+Gap bookkeeping (`GapLog`, keyed on a separately-computed pure wall clock) and
+the frame timeline handed to callers disagreed about what "now" meant, which
+is exactly the kind of mismatch a ring buffer and gap-overlap check cannot
+tolerate. Fixed by re-timestamping every frame to the wall clock at the moment
+it actually arrives -- the same value already used for gap bookkeeping, so
+there is now exactly one clock. Verified with a clean, uninterrupted run
+against the real IRI stream: the heartbeat log's `video t=` now advances
+1:1 with wall-clock time across the whole run, and zero gaps were logged.
+
 ## Design
 
 Two things differ from the browser tracker, and only two:
@@ -235,6 +289,9 @@ npm run worker:vod         # build the synthetic multi-match VOD (--hold variant
 npm run worker:check-scan  # score the scanner against it
 npm run worker:check-identify    # name each clip's match, using only the pixels
 npm run worker:check-thresholds  # can any partial read resolve to the WRONG match?
+npm run worker:check-live-gap      # does a gapped match window actually get rejected?
+npm run worker:check-reconnect     # does a broken source reconnect with growing backoff, never crash?
+npm run worker:check-live-monitor  # does the full live loop -- overlay, lock, window, ID, score -- complete end to end?
 ```
 
 Before the first write, add the M6 columns — `alter table` at the top of
@@ -276,6 +333,19 @@ was built at.
 
 Processing each match at the scanner's own timestamps reproduces all five finals
 exactly, at 720p, with no operator input anywhere in the chain.
+
+Live monitoring, against the real IRI 2026 offseason broadcast (a 1080p
+YouTube URL the event supplied, decoded live rather than downloaded and
+re-processed):
+
+| test | result |
+|---|---|
+| format probe | 1920x1080, correctly requests video-only 1080p |
+| TBA schedule | `2026iri`: 75 qualification matches found -- this event has a normal TBA key despite being offseason |
+| clean run, no external interruption | 60+ real seconds, zero gaps, zero reconnects, heartbeat's `video t=` tracks wall-clock 1:1 |
+| reconnect, deliberately broken source | 3 attempts, backoff growing 1s -> 2s -> 4s, zero crashes, zero unhandled errors |
+| gap mid-window, real Qual2 footage, real functions | REJECTED, no log produced; an unrelated earlier gap correctly does NOT reject an unrelated later window |
+| `monitorLive` end to end (overlay -> lock -> window -> score), fed real decoded frames | 160 samples, 300-240 -- identical to `processMatch`'s VOD-path result on the same clip |
 
 Identification, against the real 2026cagle schedule from TBA — the clips are
 named after the quals they are, but nothing in the pipeline is told the name,

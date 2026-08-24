@@ -58,6 +58,12 @@ const MIN_MARGIN = 2;
  *
  * Returns votes per side, so the matcher can use *where* a number appeared as
  * evidence and not merely that it appeared.
+ *
+ * Gathering the frames (a seek per sample point) and voting on them are split
+ * into two functions -- `voteTeams` below does the actual reading and is the
+ * part live monitoring also needs, over frames it already has buffered rather
+ * than frames worth seeking for. This wrapper is the VOD-specific half: it
+ * turns `t0` into seek points.
  */
 export async function readTeams(input, t0, opts = {}) {
   const meta = opts.meta ?? (await probe(input));
@@ -84,6 +90,18 @@ export async function readTeams(input, t0, opts = {}) {
   const quads = opts.quads ?? detectScoreRegionsStable(shots);
   if (!quads) return null;
 
+  return voteTeams(shots, quads, pool, opts);
+}
+
+/**
+ * Vote team numbers out of a set of already-in-hand frames.
+ *
+ * `opts.minVotes` defaults to the VOD threshold (5, over 5 sample frames x 3
+ * prep variants). Live monitoring has fewer buffered samples to draw on and
+ * passes a lower one -- see `live.mjs`.
+ */
+export async function voteTeams(shots, quads, pool, opts = {}) {
+  const minVotes = opts.minVotes ?? MIN_VOTES;
   const votes = { blue: new Map(), red: new Map() };
 
   for (const frame of shots) {
@@ -125,7 +143,7 @@ export async function readTeams(input, t0, opts = {}) {
   }
 
   const confident = (m) =>
-    [...m.entries()].filter(([, n]) => n >= MIN_VOTES).map(([v]) => v);
+    [...m.entries()].filter(([, n]) => n >= minVotes).map(([v]) => v);
 
   return {
     blue: confident(votes.blue),
