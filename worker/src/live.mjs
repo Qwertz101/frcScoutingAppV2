@@ -32,6 +32,7 @@ import {
   recognizeTimer,
   SCORE_RECT_W,
   SCORE_RECT_H,
+  FRC_BROADCAST,
 } from './core.mjs';
 import { liveFrames, probeLiveFormat } from './sources.mjs';
 import { recognizeWindow } from './process.mjs';
@@ -263,7 +264,7 @@ export async function monitorLive(url, opts = {}) {
       if (present && !quads) {
         const shots = ring.slice(frame.at - QUAD_SAMPLES + 1, frame.at);
         if (shots.length >= 3) {
-          const found = detectScoreRegionsStable(shots);
+          const found = detectScoreRegionsStable(shots, opts.layout ?? FRC_BROADCAST);
           if (found) {
             quads = found;
             log('scoreboard located');

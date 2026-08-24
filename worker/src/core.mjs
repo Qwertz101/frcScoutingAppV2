@@ -43,6 +43,9 @@ export const {
   SCORE_RECT_W,
   SCORE_RECT_H,
   analyzeBands,
+  LAYOUTS,
+  FRC_BROADCAST,
+  SUNSET_SHOWDOWN,
 } = pipeline;
 export const {
   bootOcr,

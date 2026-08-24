@@ -31,6 +31,7 @@ import {
   detectScoreRegionsStable,
   recognizeTimer,
   rectifyToGray,
+  FRC_BROADCAST,
   SCORE_RECT_W,
   SCORE_RECT_H,
 } from './core.mjs';
@@ -96,6 +97,7 @@ async function readTimer(worker, frame, timerQuad) {
  */
 export async function findOverlayRuns(input, opts = {}) {
   const meta = opts.meta ?? (await probe(input));
+  const layout = opts.layout ?? FRC_BROADCAST;
   const fps = opts.fps ?? SCAN_FPS;
   const onProgress = opts.onProgress;
 
@@ -112,7 +114,7 @@ export async function findOverlayRuns(input, opts = {}) {
     start: opts.start ?? 0,
     duration: opts.duration,
   })) {
-    const present = detectScoreRegions(f) !== null;
+    const present = detectScoreRegions(f, layout) !== null;
     n++;
     if (onProgress && n % 100 === 0) onProgress(f.at, meta.duration);
 
@@ -146,7 +148,7 @@ export async function findOverlayRuns(input, opts = {}) {
  * lot yields a consensus that fits none of them, and the failure is quiet: the
  * quads still look plausible, the clock simply never locks.
  */
-async function quadsForWindow(input, from, to, meta) {
+async function quadsForWindow(input, from, to, meta, layout = FRC_BROADCAST) {
   const span = Math.max(1, to - from);
   const shots = [];
   for (let i = 0; i < 7; i++) {
@@ -163,7 +165,7 @@ async function quadsForWindow(input, from, to, meta) {
     }
   }
   if (shots.length < 3) return null;
-  return detectScoreRegionsStable(shots);
+  return detectScoreRegionsStable(shots, layout);
 }
 
 const inRange = (v, [lo, hi]) => v !== null && v >= lo && v <= hi;
@@ -230,13 +232,14 @@ async function lockClock(input, from, quads, meta, pool) {
  */
 export async function scan(input, opts = {}) {
   const meta = opts.meta ?? (await probe(input));
+  const layout = opts.layout ?? FRC_BROADCAST;
   const pool = opts.pool ?? (await createPool(opts.workers));
   const ownPool = !opts.pool;
   const log = opts.log ?? (() => {});
 
   try {
     const began = Date.now();
-    const runs = await findOverlayRuns(input, { ...opts, meta });
+    const runs = await findOverlayRuns(input, { ...opts, meta, layout });
     log(
       'tier A: ' + runs.length + ' candidate run(s) in ' +
         ((Date.now() - began) / 1000).toFixed(1) + 's'
@@ -271,7 +274,7 @@ export async function scan(input, opts = {}) {
 
         for (let attempt = 0; attempt < 2; attempt++) {
           if (!quads || attempt === 1) {
-            quads = await quadsForWindow(input, cursor, until, meta);
+            quads = await quadsForWindow(input, cursor, until, meta, layout);
             if (!quads) break;
           }
           bracket = await bracketStart(input, cursor, until, quads, meta, pool);
@@ -316,7 +319,8 @@ export async function scan(input, opts = {}) {
             input,
             run.start,
             Math.min(run.start + MATCH_LEN, run.end),
-            meta
+            meta,
+            layout
           );
           out.push({ greenFlagAt: Number(run.start.toFixed(2)), method: 'run', run, quads });
           log('  match at ~' + run.start.toFixed(1) + 's  (run ' + run.start.toFixed(0) + '-' + run.end.toFixed(0) + 's, NO clock lock — flagged)');

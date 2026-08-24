@@ -22,6 +22,7 @@ import {
   rectifyToGray,
   PREP_VARIANTS,
   MATCH_LEN,
+  FRC_BROADCAST,
 } from './core.mjs';
 import { frames, probe } from './ffmpeg.mjs';
 
@@ -87,7 +88,7 @@ export async function readTeams(input, t0, opts = {}) {
   }
   if (shots.length < 2) return null;
 
-  const quads = opts.quads ?? detectScoreRegionsStable(shots);
+  const quads = opts.quads ?? detectScoreRegionsStable(shots, opts.layout ?? FRC_BROADCAST);
   if (!quads) return null;
 
   return voteTeams(shots, quads, pool, opts);

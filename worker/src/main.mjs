@@ -40,6 +40,7 @@ import { startDashboard } from './dashboard.mjs';
 import { probe } from './ffmpeg.mjs';
 import { createPool, defaultWorkers } from './ocr.mjs';
 import { isRemoteSource, resolveVodUrl } from './sources.mjs';
+import { resolveLayout } from './layouts.mjs';
 
 function flag(name, fallbackValue) {
   const i = process.argv.indexOf('--' + name);
@@ -62,6 +63,9 @@ const force = has('force');
 const workers = Number(flag('workers', String(defaultWorkers())));
 const scanStart = flag('start', null);
 const scanDuration = flag('duration', null);
+// Bound to the event, with --layout as an escape hatch for a broadcast whose
+// event key is not yet in the table.
+const layout = resolveLayout(eventKey, flag('layout', null));
 
 // The resolved googlevideo URL is a kilobyte-long signed query string -- fine
 // for ffmpeg, useless as a label. Every place this run identifies its source
@@ -119,6 +123,7 @@ try {
   const found = await scan(input, {
     pool,
     meta,
+    layout,
     start: scanStart != null ? Number(scanStart) : undefined,
     duration: scanDuration != null ? Number(scanDuration) : undefined,
     log: (m) => console.error(m),
@@ -134,6 +139,7 @@ try {
       pool,
       meta,
       quads: f.quads,
+      layout,
       eventKey,
       // The friendly label captured before URL resolution, not the resolved
       // googlevideo URL -- see the comment where sourceLabel is declared.
@@ -143,7 +149,9 @@ try {
     let ident = null;
     if (schedule) {
       log(tag + ' identifying…');
-      ident = await identify(input, f.greenFlagAt, schedule, { pool, meta, quads: f.quads });
+      ident = await identify(input, f.greenFlagAt, schedule, {
+        pool, meta, quads: f.quads, layout,
+      });
       if (ident.matchKey) out.log.matchKey = ident.matchKey;
     }
 

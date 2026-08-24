@@ -51,8 +51,22 @@ async function tba(path) {
   return res.json();
 }
 
-/** Strip the `frc` prefix TBA uses on team keys. */
-const teamNumber = (key) => Number(String(key).replace(/^frc/, ''));
+/**
+ * `frc604` -> 604, and `frc604B` -> 604.
+ *
+ * The suffix matters: offseason events field B-teams routinely and TBA keys
+ * them `frc604B`, which `Number()` turns into NaN. 2026sunshow alone has three
+ * (604B, 5507B, 6884B), and a NaN in the schedule is a team that can never be
+ * matched -- silently capping identification at 5 of 6 for every match those
+ * teams play, with no error anywhere to explain it.
+ *
+ * Dropping the suffix is right because it is what the OCR can see: the digit
+ * whitelist reads `604B` as `604` regardless. It does mean an event fielding
+ * both 604 and 604B (2026sunshow does) has one genuinely ambiguous team, which
+ * is exactly the case the set-match margin rule exists to survive -- the other
+ * five teams decide it.
+ */
+const teamNumber = (key) => Number(String(key).replace(/^frc/, '').replace(/\D.*$/, ''));
 
 /**
  * The qualification schedule for an event, in the shape identification wants.

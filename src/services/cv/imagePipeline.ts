@@ -1195,6 +1195,10 @@ export interface BandDiagnostic {
   fill?: number;
   sharpness?: number;
   score?: number;
+  /** Set when a profile asked to measure the numerals and could not. */
+  scoreBoxFallback?: boolean;
+  /** Set when a profile expected the clock below the score row and none was found. */
+  timerFallback?: boolean;
 }
 
 /** Near-white is "glyph ink" on a colour plate. */
@@ -1316,6 +1320,276 @@ function flatBrightness(
  * stop trusting the *longest* band and start evaluating every candidate on its
  * merits — which requires running the whole geometry per candidate, not once.
  */
+/**
+ * How one event's scoreboard is laid out.
+ *
+ * Four real broadcasts in, the detector's core assumptions have held up well --
+ * find the two colour masses, use the gap between them as a ruler -- but the
+ * *proportions* around that skeleton are an art-direction choice, and every
+ * event makes it differently. Rather than keep widening one set of constants
+ * until it fits everything and fits nothing well (which regressed a validated
+ * reference set once already), the parts that genuinely vary are named here and
+ * selected per event.
+ *
+ * What deliberately is NOT in here: which alliance is on the left. That is
+ * derived from pixel colour and already works -- Sunset Showdown puts red on
+ * the left and the detector handled it with no changes at all.
+ */
+export interface LayoutProfile {
+  name: string;
+  /**
+   * How wide the score box is.
+   *
+   * `gap` takes it from the timer plate's width, which is the original and is
+   * right whenever the timer plate and the score are drawn at similar widths
+   * (every FRC-season broadcast seen so far). `glyphs` measures the numerals
+   * themselves, for layouts where the timer is drawn much narrower than the
+   * score -- Sunset Showdown's timer is a circle roughly half the width of its
+   * score, and `gap` clipped a whole digit off both alliances.
+   */
+  scoreBox: { mode: 'gap'; ratio: number } | { mode: 'glyphs' };
+  /**
+   * Where the clock sits relative to the score row.
+   *
+   * `inline` means it shares the row, which is what a rectangular timer plate
+   * between two score plates does. `below` is for a timer drawn as a tall badge
+   * with the clock under a logo -- reusing the score's rows there reads the
+   * logo instead of the time.
+   */
+  timer: { mode: 'inline' } | { mode: 'below' };
+}
+
+/** The FRC-season broadcast layout. Default, and the behaviour before profiles existed. */
+export const FRC_BROADCAST: LayoutProfile = {
+  name: 'frc-broadcast',
+  scoreBox: { mode: 'gap', ratio: 0.95 },
+  timer: { mode: 'inline' },
+};
+
+/**
+ * Sunset Showdown: red on the left, a circular timer badge with the clock below
+ * the event logo, and a score drawn wider than that badge.
+ */
+export const SUNSET_SHOWDOWN: LayoutProfile = {
+  name: 'sunset-showdown',
+  scoreBox: { mode: 'glyphs' },
+  timer: { mode: 'below' },
+};
+
+export const LAYOUTS: Record<string, LayoutProfile> = {
+  [FRC_BROADCAST.name]: FRC_BROADCAST,
+  [SUNSET_SHOWDOWN.name]: SUNSET_SHOWDOWN,
+};
+
+/** A column counts as inked when this fraction of its rows are glyph-bright. */
+const GLYPH_COL_FLOOR = 0.06;
+/** Blank columns bridged inside one number, as a fraction of the row height. */
+const GLYPH_COL_GAP = 0.35;
+/**
+ * A column this inked over the score's own rows is not a digit -- it is solid.
+ *
+ * Measured on Sunset Showdown: the white timer badge overlaps the plate's
+ * colour run at the score's rows (the badge is a circle, at its widest exactly
+ * there), so a walk outward from the plate edge starts *inside the badge*.
+ * Badge columns run at ~1.0 ink; the digits beside them peak at 0.78, because
+ * the rows are padded past the glyph tops and bottoms. Solidity separates them
+ * cleanly where brightness alone does not -- the badge is brighter than the
+ * digits, so raising the ink floor would have kept the badge and dropped the
+ * score.
+ */
+const GLYPH_COL_SOLID = 0.88;
+/**
+ * Narrowest run of ink that could be a score, as a fraction of the row height.
+ *
+ * The badge does not end cleanly: past its solid core is a few columns of
+ * anti-aliased falloff, inked enough to look like a glyph but far too narrow to
+ * be one. Skipping the solid part alone left the walk starting on that seam and
+ * stopping 5px later. Requiring a run wide enough to actually hold digits is
+ * the structural version of the same idea, and does not depend on where exactly
+ * the badge stops being solid: measured here, the seam is 4-5px against a
+ * hundred-pixel score.
+ */
+const GLYPH_COL_MIN_WIDTH = 0.35;
+/** Dark enough to be clock digits printed on a white badge. */
+const TIMER_DARK_LUMA = 110;
+/** A row this fraction of the peak dark count is part of the clock. */
+const TIMER_ROW_FLOOR = 0.1;
+
+const lumaAt = (d: Uint8ClampedArray, i: number) =>
+  (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
+
+/**
+ * The columns the score numerals actually occupy inside one plate.
+ *
+ * Walks outward from the plate's inner edge (the one facing the timer, which is
+ * where every layout seen so far puts the score), collecting inked columns and
+ * bridging the small gaps between digits. It stops at the first wide gap, which
+ * is what separates the score from whatever else shares the plate -- a
+ * fraction, a bonus counter, an alliance name.
+ *
+ * `y0`/`y1` must be the DIGIT rows, not the whole candidate band. Measured over
+ * a full band this reads mostly non-digit rows, and on Sunset Showdown the
+ * anti-aliased halo where the white timer badge meets the plate cleared the
+ * ink threshold on its own -- the walk latched onto a 9px-wide seam of halo and
+ * stopped before ever reaching the score. That is why this runs after the row
+ * pass rather than before it.
+ */
+function glyphColumns(
+  frame: RgbaFrame,
+  runStart: number,
+  runEnd: number,
+  y0: number,
+  y1: number,
+  innerEdge: 'left' | 'right'
+): readonly [number, number] | null {
+  const W = frame.width;
+  const xa = Math.max(0, Math.round(runStart));
+  const xb = Math.min(W - 1, Math.round(runEnd));
+  const ya = Math.max(0, Math.round(y0));
+  const yb = Math.min(frame.height - 1, Math.round(y1));
+  const rows = yb - ya + 1;
+  if (xb - xa < 2 || rows < 2) return null;
+
+  const inked = new Uint8Array(xb - xa + 1);
+  const solid = new Uint8Array(xb - xa + 1);
+  for (let x = xa; x <= xb; x++) {
+    let n = 0;
+    for (let y = ya; y <= yb; y++) {
+      if (lumaAt(frame.data, (y * W + x) * 4) >= GLYPH_LUMA) n++;
+    }
+    inked[x - xa] = n >= rows * GLYPH_COL_FLOOR ? 1 : 0;
+    solid[x - xa] = n >= rows * GLYPH_COL_SOLID ? 1 : 0;
+  }
+
+  const maxGap = Math.max(3, Math.round(rows * GLYPH_COL_GAP));
+  const minWidth = Math.max(6, Math.round(rows * GLYPH_COL_MIN_WIDTH));
+  const step = innerEdge === 'right' ? -1 : 1;
+  const inRange = (v: number) => v >= xa && v <= xb;
+
+  // Walk outward taking one run of ink at a time and return the first that is
+  // wide enough to hold a score. Solid columns are skipped between runs, not
+  // merely at the start: on this layout they are the timer badge on the way out
+  // and the white team-number box further along, and neither is ever the score.
+  let x = innerEdge === 'right' ? xb : xa;
+  while (inRange(x)) {
+    while (inRange(x) && (!inked[x - xa] || solid[x - xa])) x += step;
+    if (!inRange(x)) break;
+
+    const a = x;
+    let b = x;
+    let gapRun = 0;
+    for (; inRange(x); x += step) {
+      if (solid[x - xa]) break;
+      if (inked[x - xa]) {
+        b = x;
+        gapRun = 0;
+      } else if (++gapRun > maxGap) {
+        break;
+      }
+    }
+    if (Math.abs(b - a) + 1 >= minWidth) {
+      return innerEdge === 'right' ? ([b, a] as const) : ([a, b] as const);
+    }
+  }
+  return null;
+}
+
+/** How bright a row must mostly be to still count as inside the timer badge. */
+const BADGE_BRIGHT_FRACTION = 0.3;
+
+/**
+ * How far the bright timer badge extends below `fromY`.
+ *
+ * The bound `darkRowBand` needs. Rows holding the clock are still mostly
+ * bright -- the digits are thin strokes on a light badge -- so the threshold is
+ * low enough not to stop at the text, while the dark bar under the scoreboard
+ * drops to essentially zero bright pixels and ends the walk cleanly.
+ */
+function brightExtentDown(
+  frame: RgbaFrame,
+  x0: number,
+  x1: number,
+  fromY: number,
+  maxY: number
+): number {
+  const W = frame.width;
+  const xa = Math.max(0, Math.round(x0));
+  const xb = Math.min(W - 1, Math.round(x1));
+  const cols = xb - xa + 1;
+  const start = Math.max(0, Math.round(fromY));
+  if (cols < 2) return start;
+
+  let last = start;
+  for (let y = start; y <= Math.min(frame.height - 1, Math.round(maxY)); y++) {
+    let bright = 0;
+    for (let x = xa; x <= xb; x++) {
+      if (lumaAt(frame.data, (y * W + x) * 4) >= PLATE_MIN_LUMA) bright++;
+    }
+    if (bright < cols * BADGE_BRIGHT_FRACTION) break;
+    last = y;
+  }
+  return last;
+}
+
+/**
+ * The rows of dark text below the score row -- a clock printed on a light
+ * badge. Returns the densest contiguous run, so a logo above it loses.
+ *
+ * Only meaningful when `sy1` is bounded to the badge itself: below it lie the
+ * event-name bar and the field, which are a much larger dark mass than the
+ * clock and win outright otherwise.
+ */
+function darkRowBand(
+  frame: RgbaFrame,
+  x0: number,
+  x1: number,
+  sy0: number,
+  sy1: number
+): readonly [number, number] | null {
+  const W = frame.width;
+  const xa = Math.max(0, Math.round(x0));
+  const xb = Math.min(W - 1, Math.round(x1));
+  const ya = Math.max(0, Math.round(sy0));
+  const yb = Math.min(frame.height - 1, Math.round(sy1));
+  const cols = xb - xa + 1;
+  if (cols < 2 || yb - ya < 2) return null;
+
+  const counts = new Int32Array(yb - ya + 1);
+  let peak = 0;
+  for (let y = ya; y <= yb; y++) {
+    let n = 0;
+    for (let x = xa; x <= xb; x++) {
+      if (lumaAt(frame.data, (y * W + x) * 4) <= TIMER_DARK_LUMA) n++;
+    }
+    counts[y - ya] = n;
+    if (n > peak) peak = n;
+  }
+  if (peak < cols * TIMER_ROW_FLOOR) return null;
+
+  const thr = Math.max(1, peak * 0.25);
+  let best: readonly [number, number] | null = null;
+  let bestMass = 0;
+  let start = -1;
+  let mass = 0;
+  for (let i = 0; i <= counts.length; i++) {
+    const on = i < counts.length && counts[i] >= thr;
+    if (on) {
+      if (start < 0) {
+        start = i;
+        mass = 0;
+      }
+      mass += counts[i];
+    } else if (start >= 0) {
+      if (mass > bestMass) {
+        bestMass = mass;
+        best = [ya + start, ya + i - 1] as const;
+      }
+      start = -1;
+    }
+  }
+  return best;
+}
+
 function evaluateBand(
   frame: RgbaFrame,
   cls: Uint8Array,
@@ -1324,7 +1598,8 @@ function evaluateBand(
   prefR: Int32Array,
   by0: number,
   by1: number,
-  diag: BandDiagnostic
+  diag: BandDiagnostic,
+  profile: LayoutProfile
 ): { regions: DetectedRegions; score: number } | null {
   const W = frame.width;
   const H = frame.height;
@@ -1472,13 +1747,27 @@ function evaluateBand(
   diag.fill = bestPair.fill;
   diag.score = score;
 
-  const boxW = gap * 0.95;
-  const blueX = blueFirst
-    ? ([blueRun[1] - boxW, blueRun[1]] as const)
-    : ([blueRun[0], blueRun[0] + boxW] as const);
-  const redX = blueFirst
-    ? ([redRun[0], redRun[0] + boxW] as const)
-    : ([redRun[1] - boxW, redRun[1]] as const);
+  // The score sits at each plate's inner edge -- the one facing the timer -- in
+  // every layout seen so far, including the one that mirrors the alliances.
+  const blueInner: 'left' | 'right' = blueFirst ? 'right' : 'left';
+  const redInner: 'left' | 'right' = blueFirst ? 'left' : 'right';
+
+  const byGap = () => {
+    const boxW = gap * (profile.scoreBox.mode === 'gap' ? profile.scoreBox.ratio : 0.95);
+    return [
+      blueFirst
+        ? ([blueRun[1] - boxW, blueRun[1]] as const)
+        : ([blueRun[0], blueRun[0] + boxW] as const),
+      blueFirst
+        ? ([redRun[0], redRun[0] + boxW] as const)
+        : ([redRun[1] - boxW, redRun[1]] as const),
+    ] as const;
+  };
+
+  // Seeded from the gap in every profile. When the profile asks for measured
+  // numerals that happens below, once the row pass has said which rows the
+  // digits are actually on -- the seed is what makes that row pass possible.
+  let [blueX, redX] = byGap();
 
   // Vertical extent: the score plate is solid colour on the main row and gives
   // way to the darker team-number sub-row beneath, so walk down the score box's
@@ -1544,6 +1833,29 @@ function evaluateBand(
   const byBot = gBot + pad;
   const [ryTop, ryBot] = [byTop, byBot];
 
+  // Now the digit rows are known, a profile can ask for the score box to be
+  // measured from the numerals rather than inherited from the timer's width.
+  // Sunset Showdown needs this: its timer is a circular badge roughly half the
+  // width of the score beside it, so a gap-sized box clipped the outermost
+  // digit off both alliances -- 613 read as 13, 297 as 29.
+  if (profile.scoreBox.mode === 'glyphs') {
+    // Padded rows, not the bare glyph rows: the solidity cut above is
+    // calibrated against them. On unpadded rows a full-height stroke such as a
+    // `1` is itself ~100% inked and would be mistaken for the badge.
+    const b = glyphColumns(frame, blueRun[0], blueRun[1], byTop, byBot, blueInner);
+    const r = glyphColumns(frame, redRun[0], redRun[1], byTop, byBot, redInner);
+    if (b && r) {
+      blueX = b;
+      redX = r;
+    } else {
+      // Falling back rather than rejecting: a gap-sized box is what every other
+      // layout uses and is strictly better than no detection at all. Recorded
+      // so a probe run shows the measurement failed rather than silently
+      // reporting a box that was never actually measured.
+      diag.scoreBoxFallback = true;
+    }
+  }
+
   // Inset to drop the plate's own border, which otherwise segments as a
   // full-height bar and is read as a leading `1`.
   const inset = (a: number, b: number, f: number) => {
@@ -1566,12 +1878,33 @@ function evaluateBand(
   // classifier deliberately ignores.
   const [tx0, tx1] = inset(gapStart, gapEnd, 0.07);
 
+  // A timer drawn as a tall badge puts the clock under a logo, so the score's
+  // own rows land on the logo. Find the clock as the densest run of dark text
+  // beneath the score row instead.
+  let tyA = byA;
+  let tyB = byB;
+  if (profile.timer.mode === 'below') {
+    // Bounded to the badge, not to a multiple of the row height: below the
+    // badge sit the event-name bar and the field, and searching into them
+    // found a dark mass hundreds of rows tall instead of the clock.
+    const badgeBottom = brightExtentDown(frame, tx0, tx1, byB, H - 1);
+    const found =
+      badgeBottom > byB + 4 ? darkRowBand(frame, tx0, tx1, byB, badgeBottom) : null;
+    if (found) {
+      const padT = Math.max(2, Math.round((found[1] - found[0] + 1) * GLYPH_PAD));
+      tyA = found[0] - padT;
+      tyB = found[1] + padT + 1;
+    } else {
+      diag.timerFallback = true;
+    }
+  }
+
   return {
     score,
     regions: {
       blue: rectQuad(bx0 / W, byA / H, bx1 / W, byB / H),
       red: rectQuad(rx0 / W, ryA / H, rx1 / W, ryB / H),
-      timer: rectQuad(tx0 / W, byA / H, tx1 / W, byB / H),
+      timer: rectQuad(tx0 / W, tyA / H, tx1 / W, tyB / H),
     },
   };
 }
@@ -1661,11 +1994,14 @@ function bandCandidates(frame: RgbaFrame): {
  * instrument for the constants above, and the first thing to reach for when
  * the detector picks the wrong thing on new footage.
  */
-export function analyzeBands(frame: RgbaFrame): BandDiagnostic[] {
+export function analyzeBands(
+  frame: RgbaFrame,
+  profile: LayoutProfile = FRC_BROADCAST
+): BandDiagnostic[] {
   const { cls, both, prefB, prefR, bands } = bandCandidates(frame);
   return bands.map(([by0, by1]) => {
     const diag: BandDiagnostic = { by0, by1, bandH: by1 - by0 + 1, reject: null };
-    evaluateBand(frame, cls, both, prefB, prefR, by0, by1, diag);
+    evaluateBand(frame, cls, both, prefB, prefR, by0, by1, diag, profile);
     return diag;
   });
 }
@@ -1692,13 +2028,16 @@ export function analyzeBands(frame: RgbaFrame): BandDiagnostic[] {
  * Returns null when the frame does not look like a scoreboard at all, which the
  * caller reports rather than silently leaving the quads where they were.
  */
-export function detectScoreRegions(frame: RgbaFrame): DetectedRegions | null {
+export function detectScoreRegions(
+  frame: RgbaFrame,
+  profile: LayoutProfile = FRC_BROADCAST
+): DetectedRegions | null {
   const { cls, both, prefB, prefR, bands } = bandCandidates(frame);
 
   let best: { regions: DetectedRegions; score: number } | null = null;
   for (const [by0, by1] of bands) {
     const diag: BandDiagnostic = { by0, by1, bandH: by1 - by0 + 1, reject: null };
-    const cand = evaluateBand(frame, cls, both, prefB, prefR, by0, by1, diag);
+    const cand = evaluateBand(frame, cls, both, prefB, prefR, by0, by1, diag, profile);
     if (cand && (!best || cand.score > best.score)) best = cand;
   }
   return best ? best.regions : null;
@@ -1731,9 +2070,12 @@ function quadCentre(q: Quad): { x: number; y: number } {
  * Returns the median detection among the agreeing majority, or null if no
  * majority agrees.
  */
-export function detectScoreRegionsStable(frames: RgbaFrame[]): DetectedRegions | null {
+export function detectScoreRegionsStable(
+  frames: RgbaFrame[],
+  profile: LayoutProfile = FRC_BROADCAST
+): DetectedRegions | null {
   const found = frames
-    .map((f) => detectScoreRegions(f))
+    .map((f) => detectScoreRegions(f, profile))
     .filter((r): r is DetectedRegions => r !== null);
   if (!found.length) return null;
 

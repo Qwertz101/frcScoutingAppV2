@@ -30,6 +30,7 @@ import {
   ScoreGate,
   readFrame,
   detectScoreRegionsStable,
+  FRC_BROADCAST,
 } from './core.mjs';
 import { frames, probe } from './ffmpeg.mjs';
 import { createPool, defaultWorkers } from './ocr.mjs';
@@ -63,7 +64,7 @@ const PREROLL = 20;
  * consecutive frames would agree about a replay wipe just as readily as about
  * a scoreboard.
  */
-export async function findQuads(input, t0, meta) {
+export async function findQuads(input, t0, meta, layout = FRC_BROADCAST) {
   const step = Math.max(4, Math.floor(MATCH_LEN / 7));
   const shots = [];
 
@@ -85,7 +86,7 @@ export async function findQuads(input, t0, meta) {
     }
   }
   if (shots.length < 3) return null;
-  return detectScoreRegionsStable(shots);
+  return detectScoreRegionsStable(shots, layout);
 }
 
 /* ------------------------------------------------------------------ *
@@ -101,7 +102,7 @@ export async function findQuads(input, t0, meta) {
  */
 export async function processMatch(input, t0, opts = {}) {
   const meta = opts.meta ?? (await probe(input));
-  const quads = opts.quads ?? (await findQuads(input, t0, meta));
+  const quads = opts.quads ?? (await findQuads(input, t0, meta, opts.layout ?? FRC_BROADCAST));
   if (!quads) throw new Error('could not locate the scoreboard');
 
   const pool = opts.pool ?? (await createPool(opts.workers ?? defaultWorkers()));
