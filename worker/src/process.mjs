@@ -33,6 +33,8 @@ import {
   FRC_BROADCAST,
 } from './core.mjs';
 import { frames, probe } from './ffmpeg.mjs';
+import { isRemoteSource, resolveVodUrl } from './sources.mjs';
+import { resolveLayout } from './layouts.mjs';
 import { createPool, defaultWorkers } from './ocr.mjs';
 import { scoreQuality } from './quality.mjs';
 
@@ -321,7 +323,7 @@ const invokedDirectly =
   process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('worker/src/process.mjs');
 
 if (invokedDirectly) {
-  const input = process.argv[2];
+  let input = process.argv[2];
   if (!input) {
     console.error(
       'usage: node worker/src/process.mjs <video> --t0 <seconds> [--match qm1] [--out log.json]'
@@ -330,6 +332,13 @@ if (invokedDirectly) {
   }
   const t0 = Number(flag('t0', '0'));
   const workers = Number(flag('workers', String(defaultWorkers())));
+  const eventKey = flag('event', '');
+  const layout = resolveLayout(eventKey, flag('layout', null));
+
+  // A YouTube page URL works here exactly as it does in main.mjs -- debugging
+  // one match of a real broadcast should not require staging a local file.
+  const label = input;
+  if (isRemoteSource(input)) input = await resolveVodUrl(input);
 
   const began = Date.now();
   const meta = await probe(input);
@@ -340,9 +349,10 @@ if (invokedDirectly) {
 
   const out = await processMatch(input, t0, {
     workers,
+    layout,
     matchKey: flag('match', ''),
-    eventKey: flag('event', ''),
-    sourceLabel: input.split(/[\\/]/).pop(),
+    eventKey,
+    sourceLabel: label.split(/[\\/]/).pop(),
   });
 
   const d = out.diagnostics;

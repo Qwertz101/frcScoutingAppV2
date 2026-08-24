@@ -1385,7 +1385,7 @@ export const FRC_BROADCAST: LayoutProfile = {
  * colour run by roughly a third of the gap at the score's rows, and the digits
  * then run a little over a gap's width beyond that.
  */
-const SUNSET_SCORE_INSET = 0.36;
+const SUNSET_SCORE_INSET = 0.16;
 const SUNSET_SCORE_RATIO = 1.15;
 
 export const SUNSET_SHOWDOWN: LayoutProfile = {
