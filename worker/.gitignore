@@ -1,2 +1,3 @@
 gen/
 .env
+.tessdata-cache/

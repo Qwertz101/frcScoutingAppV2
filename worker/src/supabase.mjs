@@ -163,6 +163,53 @@ export async function fetchCvLogs(eventKey) {
   return schema.ok ? rows : rows.map((r) => ({ ...r, quality: null, flagged: false, unmigrated: true }));
 }
 
+/**
+ * Every worker-written log for an event, WITH samples -- what the reconcile
+ * pass needs to compare a final score against TBA's, that `fetchCvLogs`
+ * deliberately omits (the dashboard lists many rows at once; shipping every
+ * match's ~163-row sample array to it for nothing it displays is waste).
+ *
+ * Filtered to worker rows server-side, not just guarded on write: reconcile
+ * has no business even reading a human's hand-corrected samples to compare
+ * against TBA, since `tbaAgreement` is advisory and the comparison is only
+ * meaningful against what the OCR itself produced.
+ */
+export async function fetchCvLogsForReconcile(eventKey) {
+  const schema = await checkSchema();
+  if (!schema.ok) return { ok: false, message: schema.message, rows: [] };
+  const rows = await rest(
+    '/cv_logs?select=match_key,samples,quality,source' +
+      '&event_key=eq.' + encodeURIComponent(eventKey) +
+      '&deleted_at=is.null' +
+      '&source=like.' + encodeURIComponent(WORKER_SOURCE_PREFIX + '%')
+  );
+  return { ok: true, rows: rows ?? [] };
+}
+
+/**
+ * Patch `quality.tbaAgreement` on one log, and nothing else.
+ *
+ * Not `upsertCvLog`: reconcile only ever amends a row that already exists
+ * (there is nothing to reconcile against for a match the worker never wrote),
+ * and folding this through the full upsert path would mean re-sending
+ * `samples` for no reason and re-running the human-row guard's write path for
+ * an operation that is not really a write in the same sense. A plain PATCH,
+ * still guarded the same way -- refuse anything not written by the worker.
+ */
+export async function patchTbaAgreement(matchKey, quality, opts = {}) {
+  const existing = await existingSource(matchKey);
+  if (!existing) return { written: false, reason: matchKey + ': no such row' };
+  if (!isWorkerRow(existing.source) && !opts.force) {
+    return { written: false, reason: matchKey + ': not a worker row, refusing to touch it' };
+  }
+  await rest('/cv_logs?match_key=eq.' + encodeURIComponent(matchKey), {
+    method: 'PATCH',
+    headers: { Prefer: 'return=minimal' },
+    body: JSON.stringify({ quality, updated_at: new Date().toISOString() }),
+  });
+  return { written: true };
+}
+
 const invokedDirectly =
   process.argv[1] && process.argv[1].replace(/\\/g, '/').endsWith('worker/src/supabase.mjs');
 

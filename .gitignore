@@ -23,6 +23,11 @@ dist-ssr
 *.sln
 *.sw?
 .env
+# Materialised by worker/src/tessdata.mjs from the committed
+# public/tesseract/eng.traineddata.gz -- the Node tesseract engine reads
+# this from cwd, hardcoded, regardless of any Node-side config. Regenerated
+# automatically; never commit.
+eng.traineddata
 
 # Tesseract OCR runtime files copied out of node_modules by
 # `npm run tesseract:sync` (which `build` and `postinstall` run for you).

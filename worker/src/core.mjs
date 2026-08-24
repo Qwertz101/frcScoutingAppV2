@@ -42,6 +42,7 @@ export const {
   segmentNumberGroups,
   SCORE_RECT_W,
   SCORE_RECT_H,
+  analyzeBands,
 } = pipeline;
 export const {
   bootOcr,
@@ -62,6 +63,19 @@ export const { AUTO_LEN, MATCH_LEN, TELEOP_LEN } = types;
  * `eng.traineddata.gz` the browser downloads. Pointing Node at a separately
  * fetched copy would be the easiest possible way to make the worker and the
  * app disagree about what a digit looks like.
+ */
+/**
+ * Node's tesseract engine reads its `.traineddata` from `./eng.traineddata`,
+ * relative to whichever directory `node` was invoked from -- a hardcoded
+ * default of the compiled engine itself, not something `cachePath`/`dataPath`
+ * successfully redirect (tried; the engine kept reporting the same relative
+ * path regardless, and the JS-level cache directory those options do control
+ * stayed empty, meaning tesseract.js's own fetch step was not the failure).
+ * `worker/tools/ensure-tessdata.mjs` materialises the file there before
+ * anything boots an OCR worker -- see its own comment for why it exists
+ * rather than relying on tesseract.js to fetch it on first run, which is what
+ * silently stopped working once already and looked exactly like unrelated
+ * debris sitting at the repo root.
  */
 export function nodeOcrConfig(logger) {
   return {

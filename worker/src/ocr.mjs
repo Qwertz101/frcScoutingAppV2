@@ -16,6 +16,7 @@
 
 import { availableParallelism } from 'node:os';
 import { bootOcr, nodeOcrConfig } from './core.mjs';
+import { ensureTessdata } from './tessdata.mjs';
 
 /**
  * Default pool size.
@@ -39,6 +40,7 @@ export function defaultWorkers() {
  * the core is reused verbatim instead of being reimplemented as a scheduler.
  */
 export async function createPool(size = defaultWorkers(), onProgress) {
+  ensureTessdata();
   const handles = await Promise.all(
     Array.from({ length: size }, (_, i) =>
       bootOcr(nodeOcrConfig(i === 0 ? onProgress : undefined))

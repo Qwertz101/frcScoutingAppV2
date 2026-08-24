@@ -3,11 +3,10 @@
 Unattended scoreboard reading for match day. Runs on the workshop PC; the
 scouting lead supervises over AnyDesk.
 
-Status: **M7 complete** — a Twitch or YouTube live stream can be watched
-directly: reconnect and backoff on drop, a ring buffer that covers a match's
-lead-in without ever seeking, and a hard rule that a match window spanning a
-reconnect gap is rejected outright rather than silently stitched. Only the TBA
-reconcile pass (M8) remains.
+Status: **All eight milestones complete.** A recording -- local file,
+finished YouTube VOD, or a live Twitch/YouTube stream -- goes in, and scored,
+identified logs come out in Supabase, cross-checked against TBA once TBA has
+posted results.
 
 **Writing is opt-in.** `main.mjs` is a dry run unless you pass `--write`,
 because `match_key` is a primary key and an upsert replaces whatever is there.
@@ -60,6 +59,13 @@ Watch a live Twitch or YouTube stream, forever, unattended:
 ```bash
 node worker/src/live.mjs <url> --event 2026cagle          # dry run
 node worker/src/live.mjs <url> --event 2026cagle --write  # persist
+```
+
+Back-fill TBA agreement once results are posted (a separate, later pass — see
+"Reconciling against TBA" below):
+
+```bash
+node worker/src/reconcile.mjs 2026cagle --write
 ```
 
 Find the matches in a recording:
@@ -210,6 +216,34 @@ A **Needs Review** panel lists flagged matches worst-first and clicks straight
 into the existing correction editor — the manual UI becomes the repair path
 rather than a second review tool being built beside it.
 
+## Reading a YouTube VOD directly
+
+A YouTube page URL works as `<video>` everywhere in this worker, not just for
+`live.mjs`. `sources.mjs`'s `resolveVodUrl` asks `yt-dlp` for the direct,
+signed CDN URL behind a *finished* recording (`yt-dlp -g`) and hands back a
+plain string; everything downstream never learns the input was ever a URL,
+because ffmpeg's `-ss`-before-`-i` seeking works on it exactly like a local
+file. Measured against a real 9.8-hour event recording: ~0.7s to probe its
+duration, ~3s to seek three hours in and pull a frame.
+
+This is a genuinely different code path from `live.mjs`, not a variant of it.
+A finished VOD can be seeked, so `scan.mjs`'s two-tier scanner -- built to make
+a six-hour *local* VOD affordable -- applies completely unchanged. A broadcast
+still in progress cannot be seeked, because there is nothing yet to seek into;
+that is what `live.mjs`'s forward-only, reconnecting pipe is for. Requesting
+`bv*[protocol=https]` rather than `bv*` alone is deliberate: without it,
+`yt-dlp` can resolve to an HLS manifest for a large archive, which ffmpeg can
+read but not seek nearly as cleanly.
+
+`main.mjs` resolves this automatically -- pass a YouTube URL as `<video>` and
+it works exactly like a local file, including `--start`/`--duration` to bound
+scanning to a known window rather than paying to fetch a whole multi-hour
+recording:
+
+```bash
+node worker/src/main.mjs <youtube-url> --event 2026cagle --start 3000 --duration 12000
+```
+
 ## Live monitoring
 
 `scan.mjs`'s two-tier split exists to spend OCR calls only where something is
@@ -255,6 +289,31 @@ it actually arrives -- the same value already used for gap bookkeeping, so
 there is now exactly one clock. Verified with a clean, uninterrupted run
 against the real IRI stream: the heartbeat log's `video t=` now advances
 1:1 with wall-clock time across the whole run, and zero gaps were logged.
+
+## Reconciling against TBA
+
+TBA posts official results minutes to hours after a match -- an FTA correcting
+a call, a playback review, sometimes just posting lag -- so nothing earlier in
+the pipeline can compare against them. `reconcile.mjs` is a deliberately
+separate, later pass: run it once quals wrap, or periodically during an event.
+
+```bash
+node worker/src/reconcile.mjs 2026cagle            # dry run
+node worker/src/reconcile.mjs 2026cagle --write    # persist
+```
+
+It re-fetches the event's schedule (now carrying `blueScore`/`redScore`, null
+until TBA has them), reads every *worker-written* log for the event with its
+samples, and patches `quality.tbaAgreement` -- and only that field. This is
+the one invariant that must never slip: a *correct* OCR read on this session's
+own reference match disagreed with TBA by 20+ points because the on-screen
+overlay was still settling when the recording ended, so `tbaAgreement` can
+never be allowed to touch `score` or `flagged`. If it started nudging quality
+down on disagreement, a slow reveal would silently flag good logs as bad.
+
+Guarded the same way every other write is: refuses to touch a row that is not
+`auto-worker`-prefixed, so a hand-corrected log is never patched either, unless
+`--force`.
 
 ## Design
 
@@ -383,12 +442,62 @@ score 1–4).
 ### Not built
 
 The plan's `teams+time` and `sequence` fallbacks are deliberately not
-implemented. Both need a wall-clock mapping from video time, which does not
-exist until live capture (M7), so neither could be tested — and `sequence` in
-particular is the one link in the chain that guesses. Given that four teams is
-enough to be certain and abstaining costs only a dashboard row, they buy little
-and risk the thing this module exists to prevent. Unidentified matches surface
-for a human to assign.
+implemented. `sequence` in particular is the one link in the chain that
+guesses, at the exact spot where guessing destroys data (`match_key` is the
+primary key). Given four teams is already enough to be certain and abstaining
+costs only a dashboard row, it was not worth the risk for what it would buy.
+Unidentified matches surface for a human to assign.
+
+`teams+time` is now buildable -- live monitoring gives a real wall clock, and
+TBA's `actual_time`/`predicted_time` are already carried through the
+schedule -- but still was not added. Measured directly against real IRI 2026
+footage: `actual_time` is not the green flag. Seeking to the video position
+implied by qm68's `actual_time` landed on the *post-match* scoreboard (clock at
+0:00, final score already posted); the real green flag, found by reading the
+on-screen clock directly, was **166 seconds earlier** -- close to
+`MATCH_LEN` (163s) plus a few seconds of settle, meaning `actual_time` marks
+roughly when the result was recorded, not when the match started. A number off
+by "about one match length, give or take" is not a tolerance any sane window
+absorbs; using it to arbitrate an ambiguous set-match result would trade one
+kind of guess for another, not remove the guessing.
 
 ~30s of wall time per match against a ~7 minute match cadence is roughly 14x
 headroom, on 8 OCR workers.
+
+## Known limitation: a second broadcast layout the detector misreads
+
+Validated against a real event beyond Cagle/Glendale/Einstein for the first
+time this session: the 2026 IRI offseason broadcast (Saturday quals,
+`https://www.youtube.com/live/ikCPFWdH8jI`), read directly as a YouTube VOD via
+`resolveVodUrl` -- see "Reading a YouTube VOD directly" above. That path itself
+works: format resolution, seeking, decoding, scanning, all measured against the
+real 9.8-hour recording with no issues.
+
+**Identification still works on IRI.** Team-number reading and set-matching
+against the real TBA schedule correctly identified qm54 and qm58, and
+correctly abstained (never wrong) on qm62 -- the same zero-wrong-key guarantee
+holds on footage this pipeline was never tuned against.
+
+**Score reading does not.** Every IRI match tried read a flat 0-0. Traced with
+`analyzeBands` (the diagnostic `detectScoreRegions` already exports for exactly
+this): IRI's overlay stacks the "BLUE"/"RED" alliance-name label *directly
+above* the score number, rather than beside it as the Cagle/Glendale reference
+footage does. The winning candidate band locks onto the label text alone --
+sharp, symmetric, and confidently wrong -- and the glyph search radius around
+it never reaches down to the real digits sitting further below.
+
+A fix was attempted (widening the outward search margin to at least one full
+window's height) and it worked on the exact IRI frame tested -- but it also
+moved the found band on Cagle reference clips (Qual6, Qual9) onto a *different*
+wrong row, dropping `check-identify`'s reference-set score from 3/4 correct to
+1/4. Reverted rather than shipped: trading a well-validated reference set's
+accuracy for an untested one is not a fix, and the zero-wrong-key
+identification guarantee is worth more than forcing score-reading onto a
+layout this session ran out of budget to handle without regressing the other.
+
+Fixing it properly needs the same treatment M5's `plateExtent` got for the two
+team-number layouts it found (inline vs. stacked-above) -- a discriminator that
+picks the right layout rather than a single global constant that has to serve
+both. Left for a future session, with the failure mode now understood and
+reproducible: `worker/tools/iri-saturday-batch.mjs` calibrates against the real
+broadcast and will show the same 0-0 read until it is fixed.

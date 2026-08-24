@@ -1,18 +1,30 @@
 /**
- * Live stream -> RGBA frames, with reconnects.
+ * Turning a Twitch/YouTube page URL into pixels, two different ways for two
+ * different situations.
  *
  * `worker/src/ffmpeg.mjs` already decodes a piped stdin (`frames('-', {
- * stdin, width, height, ... })`) -- that machinery does not care whether the
- * bytes come from a local file or a live process, and nothing here duplicates
- * it. What this file adds is everything specific to *live*: finding the actual
- * media URL behind a Twitch or YouTube page, and staying attached to a source
- * that can drop out for reasons that have nothing to do with this program --
- * a venue wifi hiccup, a streamer's encoder restarting, an ad break that
- * briefly serves a different manifest.
+ * stdin, width, height, ... })`) and seeks any URL ffmpeg can open directly
+ * (`frames(url, { start, duration, ... })`) -- that machinery does not care
+ * where the bytes come from, and nothing here duplicates it. What this file
+ * adds is everything specific to finding those bytes on a real platform:
  *
- * **Nothing is written to disk.** `yt-dlp`/`streamlink` are run in pipe mode
- * (`-o -`), so the compressed stream passes straight through this process's
- * memory into ffmpeg's stdin and is discarded as soon as it is decoded.
+ * **`liveFrames`** is for a broadcast still in progress: pipe mode
+ * (`yt-dlp`/`streamlink -o -`), reconnect with backoff when it drops, report
+ * every gap rather than absorb it. No seeking is possible -- there is nothing
+ * yet to seek into.
+ *
+ * **`resolveVodUrl`** is for a finished recording: ask `yt-dlp` for the direct,
+ * signed CDN URL behind the page (`yt-dlp -g`) and hand that back as a plain
+ * string. A finished YouTube VOD is byte-range servable, so ffmpeg can `-ss`
+ * seek into it exactly like a local file -- measured at ~3s to seek three
+ * hours into a real 9.8-hour event recording and pull a frame, against a
+ * ~0.7s to probe its duration. That is what lets `scan.mjs`'s two-tier
+ * VOD scanner run directly against a YouTube URL: nothing downstream of this
+ * function needs to know the input was ever a URL at all.
+ *
+ * **Nothing is written to disk either way.** Live pipes bytes straight through
+ * to ffmpeg's stdin; VOD resolution never downloads anything up front, only a
+ * signed URL that ffmpeg then makes its own byte-range requests against.
  */
 
 import { spawn, execFile } from 'node:child_process';
@@ -27,6 +39,44 @@ export function detectPlatform(url) {
   if (/twitch\.tv/i.test(url)) return 'twitch';
   if (/youtube\.com|youtu\.be/i.test(url)) return 'youtube';
   throw new Error('unrecognised source: ' + url + ' (expected a twitch.tv or youtube.com URL)');
+}
+
+/** Is this a Twitch/YouTube page URL rather than a local file path? */
+export function isRemoteSource(input) {
+  return /^https?:\/\//i.test(input) && (/twitch\.tv/i.test(input) || /youtube\.com|youtu\.be/i.test(input));
+}
+
+/**
+ * Resolve a finished YouTube VOD to a direct, seekable URL.
+ *
+ * `protocol=https` is the deliberate choice, not `bv*[height<=1080]` alone:
+ * that alone can resolve to an HLS (`m3u8`) manifest for a large archive, and
+ * while ffmpeg can read HLS, seeking into it is nowhere near as clean or fast
+ * as a plain byte-range-servable file. Excluding it up front is what got the
+ * ~3-second three-hour seek; letting yt-dlp pick freely did not.
+ *
+ * The signed URL expires (~6 hours, measured) -- fine for one scan-and-process
+ * run over an event's matches, not something to cache across runs.
+ *
+ * Twitch VODs are not handled here: Twitch does not expose a comparably simple
+ * direct-URL resolution the way YouTube's `-g` does, and there was no Twitch
+ * VOD to validate against this session. `liveFrames` still covers a Twitch
+ * broadcast in progress.
+ */
+export async function resolveVodUrl(url, opts = {}) {
+  const platform = detectPlatform(url);
+  if (platform !== 'youtube') {
+    throw new Error(platform + ' VOD resolution is not implemented -- only a live pipe is available for it');
+  }
+  const maxHeight = opts.maxHeight ?? 1080;
+  const { stdout } = await execFileAsync(
+    resolveBin('yt-dlp'),
+    ['-g', '-f', 'bv*[protocol=https][height<=' + maxHeight + ']', '--no-warnings', url],
+    { maxBuffer: 1 << 20 }
+  );
+  const direct = stdout.trim().split('\n')[0];
+  if (!direct) throw new Error('yt-dlp returned no direct URL for ' + url);
+  return direct;
 }
 
 /**

@@ -79,6 +79,12 @@ export async function fetchQualSchedule(eventKey) {
       // ourselves.
       actualTime: m.actual_time ?? null,
       predictedTime: m.predicted_time ?? null,
+      // Present once TBA has posted results, null before. `/matches/simple`
+      // already carries this -- the reconcile pass (worker/src/reconcile.mjs)
+      // re-fetches this same endpoint later, once scores exist, rather than
+      // needing the heavier `/matches` + `score_breakdown`.
+      blueScore: m.alliances?.blue?.score ?? null,
+      redScore: m.alliances?.red?.score ?? null,
     }))
     .sort((a, b) => a.matchNumber - b.matchNumber);
 }
