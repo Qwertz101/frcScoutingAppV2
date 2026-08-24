@@ -614,10 +614,79 @@
   border-color: var(--blue-600);
 }
 
+/*
+ * Written by the capture worker and trusted by it. Green rather than the
+ * reviewed blue, because "nobody has looked at this" is worth knowing even when
+ * nothing is wrong with it.
+ */
+.cv-chip.auto-clean {
+  background: #16a34a;
+  color: #fff;
+  border-color: #16a34a;
+}
+
+/* Written automatically, but the worker flagged it. This is the one to click. */
+.cv-chip.auto-flagged {
+  background: #f59e0b;
+  color: #1c1917;
+  border-color: #d97706;
+}
+
 .cv-chip.active {
   background: var(--cyan-500);
   color: #000;
   border-color: var(--cyan-500);
+}
+
+.cv-review-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.cv-review-row {
+  display: grid;
+  grid-template-columns: 46px 42px 1fr;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  background: #fffbeb;
+  border: 1.5px solid #fcd34d;
+}
+
+.cv-review-row:hover {
+  border-color: #d97706;
+}
+
+.cv-review-row.active {
+  background: #fef3c7;
+  border-color: #b45309;
+}
+
+.cv-review-match {
+  font-size: 11.5px;
+  font-weight: 800;
+  color: #78350f;
+}
+
+.cv-review-score {
+  font-size: 11.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #92400e;
+}
+
+.cv-review-why {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #92400e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cv-chip-legend {

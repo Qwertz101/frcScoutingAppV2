@@ -433,6 +433,21 @@ export class ScoreGate {
   /** Samples the OCR refused to believe. Surfaced so the operator sees drift. */
   rejections = 0;
 
+  /** Every read offered, believed or not. The denominator for a read rate. */
+  offered = 0;
+
+  /**
+   * Times the anchor was dragged to a candidate rather than to an accepted read.
+   *
+   * A resync is legitimate recovery — a real score outran MAX_JUMP while the
+   * anchor sat stale — but it is also the one path that can move the trusted
+   * score on the strength of reads the gate already refused once. A handful in
+   * a match is normal; a lot of them means the gate spent the match unsure
+   * which of two stories it believed, and the log deserves a human look even
+   * though every individual step was defensible.
+   */
+  resyncs = 0;
+
   constructor(initial = 0) {
     this.prev = initial;
   }
@@ -442,6 +457,7 @@ export class ScoreGate {
   }
 
   feed(read: RawRead): GateResult {
+    this.offered++;
     const result = gate(read, this.prev);
 
     if (result.accepted) {
@@ -466,6 +482,7 @@ export class ScoreGate {
         this.prev = read.value;
         this.candidate = null;
         this.candidateHits = 0;
+        this.resyncs++;
         return { value: read.value, accepted: true, reason: result.reason };
       }
     }

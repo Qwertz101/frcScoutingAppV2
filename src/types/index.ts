@@ -198,6 +198,43 @@ export interface CvScoreSample {
   dr: number;
 }
 
+/**
+ * One ungated per-second observation, exactly as the OCR reported it.
+ *
+ * Kept alongside the gated samples because it is what makes a log
+ * re-processable without the video, which the capture pipeline never stores.
+ * Gate thresholds, clock logic and resync rules are the parts most likely to
+ * need fixing later, and every one of them can be re-run from these.
+ */
+export interface CvRawRead {
+  sec: number;
+  at: number;
+  blueRaw: number | null;
+  redRaw: number | null;
+  blueConf: number;
+  redConf: number;
+  timerText: string;
+  timerRemaining: number | null;
+}
+
+/** The capture worker's assessment of a log it produced. */
+export interface CvQuality {
+  /** 0..1, a product of per-signal terms so one collapse takes the total. */
+  score: number;
+  flagged: boolean;
+  /** Why, in words. A flag nobody can act on is not worth raising. */
+  reasons: string[];
+  signals: Record<string, number | boolean | string | null>;
+  terms?: Record<string, number>;
+  /** Filled in later by the reconcile pass. Advisory only, never punitive. */
+  tbaAgreement?: {
+    ours: { blue: number; red: number };
+    tba: { blue: number; red: number };
+    delta: { blue: number; red: number };
+    within: boolean;
+  } | null;
+}
+
 /** Stream 2 output: the per-second scoreboard log for one match. */
 export interface CvMatchLog {
   matchKey: string;
@@ -208,6 +245,10 @@ export interface CvMatchLog {
   createdAt: number;
   updatedAt?: number;
   deletedAt?: number | null;
+  /** Present on logs the capture worker produced; absent on hand-made ones. */
+  quality?: CvQuality;
+  flagged?: boolean;
+  rawReads?: CvRawRead[];
 }
 
 /**

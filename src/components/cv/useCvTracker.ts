@@ -107,6 +107,18 @@ export function useCvTracker() {
   const [matches, setMatches] = useState<TrackerMatch[]>([]);
   const [activeMatch, setActiveMatch] = useState<string>('');
   const [uploaded, setUploaded] = useState<Set<string>>(new Set());
+  /**
+   * Logs the capture worker wrote, split by whether it trusts them.
+   *
+   * Three states rather than two, because "a log exists" stopped being the
+   * useful question once the worker started writing them unattended. A log the
+   * worker flagged needs a person; a log a person already touched does not.
+   */
+  const [autoFlagged, setAutoFlagged] = useState<Set<string>>(new Set());
+  const [autoClean, setAutoClean] = useState<Set<string>>(new Set());
+  const [reviewQueue, setReviewQueue] = useState<
+    { matchKey: string; label: string; score: number | null; reasons: string[] }[]
+  >([]);
 
   const [sourceKind, setSourceKind] = useState<SourceKind>('none');
   const [sourceLabel, setSourceLabel] = useState('no source');
@@ -195,7 +207,32 @@ export function useCvTracker() {
       .sort((a, b) => a.number - b.number);
 
     setMatches(quals);
-    setUploaded(new Set(getCvLogs().map((l) => l.matchKey)));
+
+    const logs = getCvLogs();
+    setUploaded(new Set(logs.map((l) => l.matchKey)));
+
+    // `source` is what distinguishes a worker log from a hand-made one; the
+    // worker prefixes every log it writes, and the writer refuses to overwrite
+    // anything that is not so prefixed.
+    const isAuto = (l: CvMatchLog) => (l.source ?? '').startsWith('auto-worker');
+    setAutoFlagged(new Set(logs.filter((l) => isAuto(l) && l.flagged).map((l) => l.matchKey)));
+    setAutoClean(new Set(logs.filter((l) => isAuto(l) && !l.flagged).map((l) => l.matchKey)));
+
+    const label = (k: string) => quals.find((q) => q.key === k)?.label ?? k;
+    setReviewQueue(
+      logs
+        .filter((l) => l.flagged)
+        // Worst first: a review queue whose top row is nearly fine is a list,
+        // not a queue.
+        .sort((a, b) => (a.quality?.score ?? 1) - (b.quality?.score ?? 1))
+        .map((l) => ({
+          matchKey: l.matchKey,
+          label: label(l.matchKey),
+          score: l.quality?.score ?? null,
+          reasons: l.quality?.reasons ?? [],
+        }))
+    );
+
     setActiveMatch((cur) => cur || quals[0]?.key || '');
   }, []);
 
@@ -739,6 +776,10 @@ export function useCvTracker() {
     activeMatch,
     setActiveMatch,
     uploaded,
+    autoFlagged,
+    autoClean,
+    reviewQueue,
+    refreshMatches,
     sourceKind,
     sourceLabel,
     urlInput,

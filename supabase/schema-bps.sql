@@ -51,6 +51,26 @@ create table if not exists public.cv_logs (
   deleted_at  timestamptz
 );
 
+-- Added for the automated capture worker (M6).
+--
+-- quality     the worker's own assessment: a 0..1 score, the signals behind it
+--             and, importantly, the reasons in words. A number nobody can act
+--             on is decoration; the reasons are what make a flag reviewable.
+-- flagged     denormalised out of quality so the review queue is an index scan
+--             rather than a jsonb predicate over every row in the event.
+-- raw_reads   the UNGATED per-second observations, ~163 rows of small numbers.
+--             This is what replaces keeping the video: the likely class of
+--             future bug is in the gate, the clock or the resync rules, and all
+--             of those can be re-run from these without the footage existing.
+alter table public.cv_logs add column if not exists quality    jsonb;
+alter table public.cv_logs add column if not exists flagged    boolean not null default false;
+alter table public.cv_logs add column if not exists raw_reads  jsonb;
+
+-- The review queue: flagged logs for an event, worst first.
+create index if not exists cv_logs_flagged_idx
+  on public.cv_logs (event_key, flagged)
+  where flagged;
+
 create index if not exists cv_logs_event_key_idx on public.cv_logs (event_key);
 create index if not exists cv_logs_updated_at_idx on public.cv_logs (updated_at desc);
 

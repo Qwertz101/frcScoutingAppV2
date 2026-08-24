@@ -3,11 +3,13 @@
 Unattended scoreboard reading for match day. Runs on the workshop PC; the
 scouting lead supervises over AnyDesk.
 
-Status: **M5 complete** — a multi-match recording can be scanned for match
-starts, each match processed end to end, and the match it belongs to identified
-from the team numbers on screen. The Supabase writer and dashboard (M6) are not
-built yet, so nothing is written anywhere: the worker prints logs and that is
-all.
+Status: **M6 complete** — a recording goes in, and scored logs come out in
+Supabase, with a dashboard the scouting lead watches over AnyDesk. Live streams
+(M7) and the TBA reconcile pass (M8) are not built yet, so the input is still a
+file or a VOD rather than a stream.
+
+**Writing is opt-in.** `main.mjs` is a dry run unless you pass `--write`,
+because `match_key` is a primary key and an upsert replaces whatever is there.
 
 ## No video is ever stored
 
@@ -38,6 +40,19 @@ directory, then `PATH`. The winget lookup matters because winget edits the user
 PATH and an already-running shell never sees it.
 
 ## Use
+
+Everything, unattended:
+
+```bash
+node worker/src/main.mjs <video> --event 2026cagle          # dry run
+node worker/src/main.mjs <video> --event 2026cagle --write  # persist
+```
+
+The dashboard comes up on <http://127.0.0.1:7654> alongside it, or on its own:
+
+```bash
+node worker/src/dashboard.mjs 2026cagle
+```
 
 Find the matches in a recording:
 
@@ -127,6 +142,66 @@ enough at the default Sauvola k that all three of its numbers merge into single
 blobs. All three `PREP_VARIANTS` are tried and the results voted, exactly as the
 score reader does.
 
+## Writing, and not destroying anything
+
+`cv_logs.match_key` is the PRIMARY KEY and the writer upserts on it. A write to
+a key that already holds a person's corrections does not merge with them, it
+**replaces** them. This is not hypothetical: the database already contains
+hand-made logs for `2026cagle_qm2`, `qm3`, `qm6` and `qm9` — the exact matches
+whose clips are used for testing here — so a careless reprocess would have
+erased them.
+
+So every write reads `source` first and refuses unless the existing row was
+written by the worker (`auto-worker…`) or `--force` is passed. Refusing is a
+normal outcome, reported on the dashboard, not an error that stops the event.
+
+`checkSchema()` exists for a related reason. The M6 columns have to be added by
+hand in the Supabase SQL editor — the publishable key cannot run DDL — and the
+first version of the guard selected `flagged` in the same query, which meant
+that on an unmigrated database **the guard threw before it could refuse
+anything**. Protection has to work on the schema that exists, not the intended
+one.
+
+## Quality
+
+Signals combine as a weighted **product**, not an average: a log that is
+excellent on five measures and catastrophic on the sixth is not "mostly fine",
+and averaging buries exactly the thing worth seeing.
+
+Every signal either raises a flag with a reason in words or does not belong. An
+early version printed "score never settled" while reporting a perfect 1.00,
+which is a reason nobody can act on; not settling now costs a term, so the
+number and the explanation agree.
+
+**Identification is reported beside the score, not multiplied into it** — a
+deliberate deviation from the plan. Folding it in produced a log whose
+scoreboard was read *perfectly* (Einstein1's verified 641–420) scoring 0.00,
+purely because the footage came from a different event than the schedule it was
+matched against. On a dashboard that reads as "the OCR failed", which is the
+opposite of true and sends the reviewer to the wrong place. Both still force the
+flag; only the diagnosis stays honest.
+
+## Dashboard
+
+`node:http` on **127.0.0.1 and nothing else**. There is no authentication and
+there should not be: AnyDesk is the auth boundary and the watcher has already
+authenticated to the machine. Binding this to `0.0.0.0` at a venue would put an
+unauthenticated write endpoint on event wifi.
+
+A web page rather than a TUI, because a redrawing terminal over remote desktop
+on venue wifi is painful to read while a page that repaints every two seconds
+survives a bad link. Two write endpoints, both things only a human can decide:
+assigning a match key the worker refused to guess, and asking for a reprocess.
+
+## In the app
+
+The match chips gained a third and fourth state, because "a log exists" stopped
+being the useful question once logs started arriving unattended: green for
+written-and-trusted, amber for written-and-flagged, blue for reviewed by hand.
+A **Needs Review** panel lists flagged matches worst-first and clicks straight
+into the existing correction editor — the manual UI becomes the repair path
+rather than a second review tool being built beside it.
+
 ## Design
 
 Two things differ from the browser tracker, and only two:
@@ -161,6 +236,10 @@ npm run worker:check-scan  # score the scanner against it
 npm run worker:check-identify    # name each clip's match, using only the pixels
 npm run worker:check-thresholds  # can any partial read resolve to the WRONG match?
 ```
+
+Before the first write, add the M6 columns — `alter table` at the top of
+`supabase/schema-bps.sql`, run by hand in the Supabase SQL editor. Until then
+the worker stays a dry run and says so.
 
 `worker:check` runs in CI. It type-checks `src/services/cv` against
 `lib: ["ES2020"]` with no DOM library, so a stray `document` or `ImageData`

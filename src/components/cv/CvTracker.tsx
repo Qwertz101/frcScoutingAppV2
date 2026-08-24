@@ -466,10 +466,23 @@ export function CvTracker({ onBack }: CvTrackerProps) {
                     className={`cv-chip${
                       m.key === t.activeMatch
                         ? ' active'
-                        : t.uploaded.has(m.key)
-                          ? ' uploaded'
-                          : ''
+                        : t.autoFlagged.has(m.key)
+                          ? ' auto-flagged'
+                          : t.autoClean.has(m.key)
+                            ? ' auto-clean'
+                            : t.uploaded.has(m.key)
+                              ? ' uploaded'
+                              : ''
                     }`}
+                    title={
+                      t.autoFlagged.has(m.key)
+                        ? 'Written automatically, flagged for review'
+                        : t.autoClean.has(m.key)
+                          ? 'Written automatically'
+                          : t.uploaded.has(m.key)
+                            ? 'Reviewed by hand'
+                            : undefined
+                    }
                     onClick={() => t.setActiveMatch(m.key)}
                   >
                     {m.label}
@@ -487,7 +500,13 @@ export function CvTracker({ onBack }: CvTrackerProps) {
                   <i className="cv-dot" style={{ background: '#00baff' }} /> Active
                 </span>
                 <span>
-                  <i className="cv-dot" style={{ background: '#1179ee' }} /> Uploaded
+                  <i className="cv-dot" style={{ background: '#1179ee' }} /> Reviewed
+                </span>
+                <span>
+                  <i className="cv-dot" style={{ background: '#22c55e' }} /> Auto
+                </span>
+                <span>
+                  <i className="cv-dot" style={{ background: '#f59e0b' }} /> Needs review
                 </span>
                 <span>
                   <i className="cv-dot" style={{ background: '#fff', border: '1.5px solid #d9d9d9' }} />{' '}
@@ -495,6 +514,40 @@ export function CvTracker({ onBack }: CvTrackerProps) {
                 </span>
               </div>
             </div>
+
+            {t.reviewQueue.length > 0 && (
+              <div className="cv-card">
+                <div className="cv-card-head">
+                  <span className="cv-card-title">Needs Review</span>
+                  <span className="cv-card-note" style={{ color: '#f59e0b' }}>
+                    {t.reviewQueue.length} flagged
+                  </span>
+                </div>
+                {/*
+                  Deliberately clicks into the existing editor rather than being a
+                  second review tool: selecting the match is all this does, and the
+                  correction UI below is the one the operator already knows.
+                */}
+                <div className="cv-review-queue">
+                  {t.reviewQueue.map((r) => (
+                    <button
+                      key={r.matchKey}
+                      className={`cv-review-row${r.matchKey === t.activeMatch ? ' active' : ''}`}
+                      onClick={() => t.setActiveMatch(r.matchKey)}
+                    >
+                      <span className="cv-review-match">{r.label}</span>
+                      <span className="cv-review-score">
+                        {r.score === null ? '—' : r.score.toFixed(2)}
+                      </span>
+                      <span className="cv-review-why">
+                        {r.reasons[0] ?? 'flagged by the capture worker'}
+                        {r.reasons.length > 1 ? ` (+${r.reasons.length - 1} more)` : ''}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="cv-card">
               <div className="cv-card-head">

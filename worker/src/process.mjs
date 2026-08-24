@@ -33,6 +33,7 @@ import {
 } from './core.mjs';
 import { frames, probe } from './ffmpeg.mjs';
 import { createPool, defaultWorkers } from './ocr.mjs';
+import { scoreQuality } from './quality.mjs';
 
 /** Consecutive unchanged post-buzzer seconds before the score is called final. */
 const SETTLE_SECONDS = 6;
@@ -272,6 +273,10 @@ export async function processMatch(input, t0, opts = {}) {
       timerOffered: clock.offered,
       blueRejections: blueGate.rejections,
       redRejections: redGate.rejections,
+      blueOffered: blueGate.offered,
+      redOffered: redGate.offered,
+      blueResyncs: blueGate.resyncs,
+      redResyncs: redGate.resyncs,
       coverage: samples.length / (MATCH_LEN + 1),
       finished,
     },
@@ -325,9 +330,13 @@ if (invokedDirectly) {
       '  |  ' + ((Date.now() - began) / 1000).toFixed(1) + 's wall'
   );
 
+  const q = scoreQuality(out.log, d);
+  console.error('quality ' + q.score.toFixed(2) + (q.flagged ? '  FLAGGED' : ''));
+  for (const r of q.reasons) console.error('  - ' + r);
+
   const dest = flag('out', null);
   const payload = JSON.stringify(
-    { ...out.log, quality: d, rawReads: out.rawReads },
+    { ...out.log, quality: q, flagged: q.flagged, diagnostics: d, rawReads: out.rawReads },
     null,
     2
   );

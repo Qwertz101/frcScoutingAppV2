@@ -1,4 +1,4 @@
-import { CvMatchLog, TimelineScoutingData } from '../types';
+import { CvMatchLog, CvQuality, CvRawRead, TimelineScoutingData } from '../types';
 import { uuidv4 } from '../utils/uuid';
 import supabase from './supabaseClient';
 import { DataService } from './dataService';
@@ -320,11 +320,19 @@ export function parseCvJson(text: string, fallbackEventKey = ''): CvMatchLog {
     };
   });
 
+  // Built field by field rather than spread, so a malformed import cannot
+  // smuggle in arbitrary keys. That means anything new has to be added here
+  // explicitly -- and a worker-written log round-tripped through export and
+  // re-import would otherwise arrive with its quality and raw reads silently
+  // dropped, which looks exactly like the worker never recorded them.
   return {
     matchKey: String(obj.matchKey),
     eventKey: String(obj.eventKey || fallbackEventKey),
     source: String(obj.source || 'imported JSON'),
     samples,
     createdAt: Number(obj.createdAt) || Date.now(),
+    ...(obj.quality ? { quality: obj.quality as CvQuality } : {}),
+    ...(typeof obj.flagged === 'boolean' ? { flagged: obj.flagged } : {}),
+    ...(Array.isArray(obj.rawReads) ? { rawReads: obj.rawReads as CvRawRead[] } : {}),
   };
 }
