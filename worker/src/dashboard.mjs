@@ -27,7 +27,10 @@
  */
 
 import { createServer } from 'node:http';
+import { readFile, stat } from 'node:fs/promises';
+import { join, extname, normalize, sep } from 'node:path';
 import { fetchCvLogs, isWorkerRow, checkSchema } from './supabase.mjs';
+import { REPO_ROOT } from './core.mjs';
 
 export const DASHBOARD_PORT = 7654;
 const HOST = '127.0.0.1';
@@ -303,12 +306,22 @@ function corsHeaders(req) {
   if (!origin) return {};
   const loopback = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
   if (!loopback && !EXTRA_ALLOWED_ORIGINS.includes(origin)) return {};
-  return {
+  const headers = {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     Vary: 'Origin',
   };
+  // Chrome's Private Network Access: a page on the public internet reaching a
+  // machine-local address is a separate permission from CORS, and is refused
+  // outright unless the target opts in here. The deployed app is exactly that
+  // case -- https://qwertz101.github.io asking for 127.0.0.1 -- and without
+  // this it fails as ERR_BLOCKED_BY_CLIENT before CORS is even consulted.
+  // Granted only to origins that already passed the allow-list above.
+  if (req.headers['access-control-request-private-network'] === 'true') {
+    headers['Access-Control-Allow-Private-Network'] = 'true';
+  }
+  return headers;
 }
 
 function send(res, status, body, type = 'application/json', req = null) {
@@ -318,6 +331,81 @@ function send(res, status, body, type = 'application/json', req = null) {
     ...(req ? corsHeaders(req) : {}),
   });
   res.end(typeof body === 'string' ? body : JSON.stringify(body));
+}
+
+/**
+ * Serve the built app from the worker itself, so the CV tab is same-origin.
+ *
+ * The deployed copy at `https://qwertz101.github.io` **cannot** talk to this
+ * worker, and no header fixes it: a page on the public internet reaching a
+ * machine-local address is blocked by the browser before CORS is consulted
+ * (verified -- `ERR_BLOCKED_BY_CLIENT`, with the same request succeeding from
+ * an `http://localhost` origin and `curl` reaching the worker fine throughout).
+ * Chrome's Private Network Access opt-in did not lift it either.
+ *
+ * Rather than fight that, remove the cross-origin hop: serve `dist/` from this
+ * same server, so the app the operator opens is on `http://127.0.0.1:7654` and
+ * every worker call is same-origin. No CORS, no mixed content, no private
+ * network transition.
+ *
+ * Mounted at the app's Vite `base` (`/frcScoutingAppV2/`) because the built
+ * `index.html` references its assets by absolute path; serving it anywhere else
+ * would 404 every asset. `/app` redirects there so nobody has to remember it.
+ */
+const APP_BASE = '/frcScoutingAppV2/';
+const DIST = join(REPO_ROOT, 'dist');
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.ico': 'image/x-icon',
+  '.wasm': 'application/wasm',
+  '.traineddata': 'application/octet-stream',
+  '.gz': 'application/gzip',
+};
+
+async function serveApp(req, res, pathname) {
+  let rel = pathname.slice(APP_BASE.length);
+  if (rel === '' || rel.endsWith('/')) rel += 'index.html';
+
+  // Refuse anything that climbs out of dist/. `normalize` resolves the `..`
+  // segments first, so this checks where the path actually lands rather than
+  // whether it looked suspicious.
+  const target = normalize(join(DIST, rel));
+  if (!target.startsWith(DIST + sep)) return send(res, 403, { error: 'forbidden' });
+
+  try {
+    const info = await stat(target);
+    if (!info.isFile()) throw new Error('not a file');
+    const body = await readFile(target);
+    res.writeHead(200, {
+      'Content-Type': MIME[extname(target).toLowerCase()] ?? 'application/octet-stream',
+      'Content-Length': body.length,
+      // The build fingerprints its assets, so the only thing that must never be
+      // cached is the entry document that names them.
+      'Cache-Control': rel.endsWith('index.html') ? 'no-store' : 'public, max-age=3600',
+    });
+    res.end(body);
+  } catch {
+    // A single-page app owns its own routing: an unknown path is a route, not
+    // a missing file. Assets are the exception -- a 404 there is a real bug and
+    // should look like one rather than silently returning HTML.
+    if (extname(rel)) return send(res, 404, { error: 'not found: ' + rel });
+    try {
+      const html = await readFile(join(DIST, 'index.html'));
+      res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
+      res.end(html);
+    } catch {
+      send(res, 404, {
+        error: 'the app has not been built yet — run "npm run build" in the repo root',
+      });
+    }
+  }
 }
 
 function readBody(req) {
@@ -365,6 +453,14 @@ export function startDashboard(opts = {}) {
 
       if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
         return send(res, 200, PAGE, 'text/html; charset=utf-8', req);
+      }
+      // The scouting app, served from here so it is same-origin with the API.
+      if (req.method === 'GET' && (url.pathname === '/app' || url.pathname === '/app/')) {
+        res.writeHead(302, { Location: APP_BASE });
+        return res.end();
+      }
+      if (req.method === 'GET' && url.pathname.startsWith(APP_BASE)) {
+        return serveApp(req, res, url.pathname);
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
         return send(res, 200, await getState(), 'application/json', req);

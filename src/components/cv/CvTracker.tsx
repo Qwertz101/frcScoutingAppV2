@@ -494,8 +494,11 @@ export function CvTracker({ onBack }: CvTrackerProps) {
 
         {!t.error && t.sourceKind === 'none' && !t.worker && (
           <div className="cv-notice info">
-            A stream link needs the capture worker running on this machine — start it with{' '}
-            <code>npm run worker:serve</code>. Without it you can still{' '}
+            A stream link needs the capture worker. Start it with{' '}
+            <code>npm run worker:serve</code>, then open{' '}
+            <a href={`${WORKER_DASHBOARD_URL}/app`}>{WORKER_DASHBOARD_URL}/app</a> — a browser
+            will not let the published site reach a worker on this machine, so the page has to
+            be served by the worker itself. Without it you can still{' '}
             <strong>Upload File</strong>, paste a direct video URL served with permissive CORS, or
             use <strong>Share Screen</strong> and pick the tab playing the stream.
           </div>

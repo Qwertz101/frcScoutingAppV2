@@ -13,8 +13,30 @@
  * on working as they always have.
  */
 
-/** Where the worker listens. Matches DASHBOARD_PORT in worker/src/dashboard.mjs. */
-export const WORKER_BASE = 'http://127.0.0.1:7654';
+/** The port the worker listens on. Matches DASHBOARD_PORT in worker/src/dashboard.mjs. */
+const WORKER_PORT = '7654';
+
+/**
+ * Where to reach the worker.
+ *
+ * Empty (i.e. relative) when this page is *already* served by the worker, which
+ * is the arrangement that actually works end to end. The deployed copy at
+ * `https://qwertz101.github.io` cannot reach a machine-local address at all --
+ * the browser blocks it before CORS is consulted, and neither an origin
+ * allow-list nor Chrome's Private Network Access opt-in lifts it. Serving the
+ * app from the worker (`http://127.0.0.1:7654/app`) removes the cross-origin
+ * hop entirely rather than trying to negotiate it.
+ *
+ * The absolute fallback still covers `npm run dev`, where the app is on Vite's
+ * port and the worker is on its own; both are loopback, so that hop is allowed.
+ */
+export const WORKER_BASE =
+  typeof window !== 'undefined' && window.location.port === WORKER_PORT
+    ? ''
+    : `http://127.0.0.1:${WORKER_PORT}`;
+
+/** Where the operator can open the worker's own dashboard. */
+export const WORKER_DASHBOARD_URL = `http://127.0.0.1:${WORKER_PORT}`;
 
 export type JobMode = 'vod' | 'live';
 export type JobStatus = 'running' | 'cancelling' | 'done' | 'cancelled' | 'error';
@@ -92,8 +114,12 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     res = await fetch(WORKER_BASE + path, init);
   } catch {
     throw new Error(
-      'The capture worker is not running. Start it on this machine with ' +
-        '"npm run worker:serve", then try again.'
+      WORKER_BASE
+        ? 'Cannot reach the capture worker. Start it with "npm run worker:serve" — ' +
+          'and note that a browser will not let this page reach a local worker unless ' +
+          'the page itself is local. Open http://127.0.0.1:7654/app instead of the ' +
+          'published site.'
+        : 'The capture worker stopped responding. Check the terminal it is running in.'
     );
   }
   const body: unknown = await res.json().catch(() => ({}));
@@ -140,5 +166,3 @@ export function reprocessMatch(matchKey: string, greenFlagAt?: number) {
   });
 }
 
-/** The dashboard page, for the "open the full worker view" link. */
-export const WORKER_DASHBOARD_URL = WORKER_BASE;
