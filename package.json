@@ -28,7 +28,8 @@
     "tesseract:sync": "node scripts/copy-tesseract.mjs",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist",
-    "postinstall": "npm run tesseract:sync"
+    "postinstall": "npm run tesseract:sync",
+    "worker:serve": "node worker/src/server.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",

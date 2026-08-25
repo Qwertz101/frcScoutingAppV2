@@ -41,6 +41,13 @@ PATH and an already-running shell never sees it.
 
 ## Use
 
+The match-day way — run it in the background and drive it from the app's CV tab
+(see "Starting a capture from the app" below):
+
+```bash
+npm run worker:serve -- --event 2026cagle --write
+```
+
 Everything, unattended:
 
 ```bash
@@ -96,6 +103,19 @@ countdown would take longer than the event did.
 **Tier A** is colour only, no OCR. At 640 wide, sampled every two seconds,
 `detectScoreRegions` costs ~3ms a frame. It says only *the overlay is on
 screen*, which is enough to reduce six hours to a handful of candidate runs.
+
+Tier A asks two questions, not one. `detectScoreRegions` answers "is there
+something shaped like a scoreboard here", and a gym wall can legitimately say
+yes: the championship banners above the bleachers at Sunset Showdown are red and
+blue blocks separated by a pale gap, and they pass every shape test because they
+genuinely are that shape. `isOverlayPresent` then checks whether those plates
+are actually *filled* with alliance colour, which a washed-out banner across the
+arena is not. Costs a little more per frame and saves a great deal: without it a
+field-reset shot between matches produced a candidate run, and the pipeline spent
+20 minutes bracketing and OCR-ing it before the quality score rejected it at
+0.00. The downstream guards did work — nothing wrong was written, and the match
+was never identified — but not paying for it at all is better. Verified against
+the five-clip scan set: still 5/5, 0 spurious.
 
 **Tier B** OCRs the timer and nothing else — both score plates are skipped,
 removing two thirds of the cost per sample. A coarse pass every five seconds
@@ -207,6 +227,41 @@ on venue wifi is painful to read while a page that repaints every two seconds
 survives a bad link. Two write endpoints, both things only a human can decide:
 assigning a match key the worker refused to guess, and asking for a reprocess.
 
+## Starting a capture from the app
+
+For match day, run the worker as a background service instead of a one-shot
+command:
+
+```bash
+npm run worker:serve -- --event 2026cagle          # dry run
+npm run worker:serve -- --event 2026cagle --write  # actually persist
+```
+
+Then paste a stream or VOD link into the **Footage Source** box in the app's CV
+tab and press **Read Recording** (a finished VOD) or **Watch Live** (a broadcast
+in progress). That is the whole operator workflow — no terminal at the venue.
+The same form exists on the worker's own dashboard page for when the app is not
+open.
+
+Recording-versus-live is asked rather than guessed. A YouTube `/watch?v=` URL
+looks identical either way, and the two take genuinely different paths: the
+seekable two-tier scan versus the forward-only monitor. Guessing wrong is
+recoverable but wastes a run.
+
+`server.mjs` runs **one job at a time** on purpose. OCR already saturates the
+machine's cores, so a second concurrent run would not go faster — it would go
+slower and make the dashboard unreadable. A second submission is refused with a
+message rather than queued, because at an event the right response to "it's
+already running" is nearly always to wait.
+
+**A job cannot escalate what the process was launched to do.** `--write` is set
+when the server starts; a job may decline to write, but a web form cannot turn
+writing on. The checkbox in the app greys out accordingly.
+
+CORS is reflected only for `localhost`/`127.0.0.1` origins. Combined with the
+loopback bind that means a page on the open internet can fire a request at the
+worker but cannot read the answer, and cannot forge an origin to change that.
+
 ## In the app
 
 The match chips gained a third and fourth state, because "a log exists" stopped
@@ -215,6 +270,13 @@ written-and-trusted, amber for written-and-flagged, blue for reviewed by hand.
 A **Needs Review** panel lists flagged matches worst-first and clicks straight
 into the existing correction editor — the manual UI becomes the repair path
 rather than a second review tool being built beside it.
+
+The CV tab's link box used to try to load a URL into the `<video>` element and
+explained, when handed a YouTube link, that the browser cannot read one
+pixel-by-pixel. It now hands stream links to the worker instead, and shows that
+run's progress, results and log inline. Direct video URLs still load into the
+player as before, and Upload File / Share Screen are untouched — they do not
+need the worker, and keep working on any machine.
 
 ## Reading a YouTube VOD directly
 
@@ -243,6 +305,20 @@ recording:
 ```bash
 node worker/src/main.mjs <youtube-url> --event 2026cagle --start 3000 --duration 12000
 ```
+
+### Bound the window — remote scanning is roughly realtime
+
+Seeking a remote VOD works, but every seek is an HTTP range request, and that
+dominates. Measured on the Sunset Showdown recording (9.1h, 1080p) over a
+15-minute window: Tier A took 375s and the whole scan-and-read pass took 23
+minutes — about 1.5x the wall time of the footage itself. A local file is far
+faster because seeking is free.
+
+Practically: **do not point this at a nine-hour recording and walk away.** Use
+`--start`/`--duration` to bound it to the block of matches you actually want,
+or run it against a downloaded file if you are reading a whole event. The live
+monitor does not have this problem — it consumes frames as they arrive and
+never seeks.
 
 ## Live monitoring
 

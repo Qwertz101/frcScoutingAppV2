@@ -10,9 +10,17 @@
  * has already authenticated to the machine. Binding this to 0.0.0.0 at a venue
  * would put an unauthenticated write endpoint on the event wifi.
  *
- * Exactly two write endpoints exist, both of them things only a human can
- * decide: assigning a match key the worker refused to guess, and asking for a
- * reprocess.
+ * The write endpoints are all things only a human can decide: starting a
+ * capture from a link, cancelling one, assigning a match key the worker refused
+ * to guess, and asking for a reprocess.
+ *
+ * **CORS is open to loopback origins only.** The app's dev server is
+ * `http://localhost:5173` and a built app is served from somewhere else again,
+ * so the browser treats this as cross-origin and will not let the CV tab read a
+ * response without permission. Reflecting only `localhost`/`127.0.0.1` origins
+ * keeps that from becoming a hole: combined with the loopback bind, a page on
+ * the open internet can still fire a request here but cannot read the answer,
+ * and cannot forge an origin header to change that.
  */
 
 import { createServer } from 'node:http';
@@ -55,10 +63,30 @@ const PAGE = `<!doctype html>
   button { cursor:pointer; }
   button:hover { border-color:#4b5566; }
   .empty { color:var(--dim); padding:24px 0; }
+  form.job { background:var(--card); border:1px solid var(--line); border-radius:10px;
+             padding:12px 14px; margin-bottom:18px; display:flex; gap:8px; flex-wrap:wrap;
+             align-items:center; }
+  form.job input[type=text] { flex:1; min-width:260px; }
+  form.job label { color:var(--dim); font-size:12px; display:flex; gap:5px; align-items:center; }
+  .jobline { color:var(--dim); font-size:12px; margin:-10px 0 16px; }
+  pre.log { background:#0d0f14; border:1px solid var(--line); border-radius:10px;
+            padding:12px 14px; margin-top:18px; max-height:280px; overflow:auto;
+            font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--dim);
+            white-space:pre-wrap; }
 </style>
 <h1>Capture worker</h1>
 <div class="sub" id="sub">loading…</div>
 <div id="banner"></div>
+<form class="job" id="job">
+  <input type="text" id="url" placeholder="YouTube VOD or livestream link" autocomplete="off">
+  <input type="text" id="event" placeholder="event key" size="12" autocomplete="off">
+  <label><input type="radio" name="mode" value="vod" checked> recording</label>
+  <label><input type="radio" name="mode" value="live"> live</label>
+  <label><input type="checkbox" id="write"> save to database</label>
+  <button type="submit" id="go">Start</button>
+  <button type="button" id="cancel" style="display:none">Cancel</button>
+</form>
+<div class="jobline" id="jobline"></div>
 <div class="cards" id="cards"></div>
 <div class="wrap"><table>
   <thead><tr>
@@ -66,6 +94,7 @@ const PAGE = `<!doctype html>
   </tr></thead>
   <tbody id="rows"></tbody>
 </table></div>
+<pre class="log" id="log"></pre>
 <script>
 const $ = (id) => document.getElementById(id);
 
@@ -81,7 +110,94 @@ function qualityPill(row) {
 
 const isWorker = (r) => typeof r.source === 'string' && r.source.startsWith('auto-worker');
 
+/** True while the operator is mid-edit, so a poll never yanks the text away. */
+let touched = false;
+for (const id of ['url', 'event']) $(id).addEventListener('input', () => (touched = true));
+
+let seededEvent = false;
+
+function renderJob(s) {
+  const j = s.job;
+  const running = j && (j.status === 'running' || j.status === 'cancelling');
+
+  $('go').disabled = Boolean(running);
+  $('go').textContent = running ? 'Running…' : 'Start';
+  $('cancel').style.display = running ? '' : 'none';
+  // The server decides whether writing is permitted at all; the checkbox can
+  // only decline it. Showing it enabled when the server was started without
+  // --write would promise something we cannot deliver.
+  $('write').disabled = !s.allowWrite;
+  $('write').parentElement.title = s.allowWrite
+    ? 'Uncheck for a dry run'
+    : 'This worker was started without --write, so every job is a dry run';
+
+  if (!seededEvent && !touched && s.eventKey) {
+    $('event').value = s.eventKey;
+    seededEvent = true;
+  }
+  if (running && !touched) $('url').value = j.url;
+
+  if (!j) {
+    $('jobline').textContent = 'Idle — paste a link above, or use the CV tab in the app.';
+    return;
+  }
+  const secs = ((j.finishedAt ?? Date.now()) - j.startedAt) / 1000;
+  const bits = [
+    j.status + ' · ' + j.mode,
+    j.matches + ' match(es)',
+    secs > 90 ? (secs / 60).toFixed(1) + ' min' : secs.toFixed(0) + 's',
+  ];
+  const span = j.progress ? j.progress.to - j.progress.from : 0;
+  if (span > 0) {
+    bits.push(
+      'scanned ' +
+        Math.min(100, Math.round(((j.progress.at - j.progress.from) / span) * 100)) + '%'
+    );
+  }
+  if (!j.write) bits.push('dry run');
+  if (j.error) bits.push('error: ' + j.error);
+  $('jobline').textContent = bits.join(' · ') + (j.lastLine ? ' — ' + j.lastLine : '');
+}
+
+$('job').onsubmit = async (e) => {
+  e.preventDefault();
+  const body = {
+    url: $('url').value.trim(),
+    eventKey: $('event').value.trim(),
+    mode: document.querySelector('input[name=mode]:checked').value,
+    write: $('write').checked,
+  };
+  if (!body.url) return;
+  $('go').disabled = true;
+  const r = await fetch('/api/job', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    $('jobline').textContent = 'could not start: ' + (j.error || r.status);
+    $('go').disabled = false;
+  }
+  touched = false;
+  tick();
+};
+
+$('cancel').onclick = async () => {
+  await fetch('/api/job/cancel', { method: 'POST' });
+  tick();
+};
+
 function render(s) {
+  renderJob(s);
+  const logEl = $('log');
+  // Only follow the tail if the reader is already at it — otherwise scrolling
+  // back to read something gets undone twice a second.
+  const pinned = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
+  logEl.textContent = (s.logLines ?? []).join('\n');
+  logEl.style.display = (s.logLines ?? []).length ? '' : 'none';
+  if (pinned) logEl.scrollTop = logEl.scrollHeight;
+
   $('sub').textContent =
     (s.eventKey || 'all events') + ' · ' + s.rows.length + ' logs · updated ' +
     new Date(s.at).toLocaleTimeString();
@@ -125,19 +241,32 @@ function render(s) {
       '<td>' + qualityPill(r) + '</td>' +
       '<td class="reasons">' + (r.source || '') + '</td>' +
       '<td class="reasons">' + reasons + '</td>' +
-      '<td><button data-reprocess="' + key + '">Reprocess</button></td>' +
+      '<td><button data-reprocess="' + key + '" data-t0="' +
+        (r.greenFlagAt ?? '') + '">Reprocess</button></td>' +
       '</tr>';
   }).join('');
 
   for (const b of document.querySelectorAll('[data-reprocess]')) {
     b.onclick = async () => {
       b.disabled = true;
-      b.textContent = 'queued';
-      await fetch('/api/reprocess', {
+      b.textContent = 'reading…';
+      const r = await fetch('/api/reprocess', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ matchKey: b.dataset.reprocess }),
+        body: JSON.stringify({
+          matchKey: b.dataset.reprocess,
+          greenFlagAt: b.dataset.t0 === '' ? undefined : Number(b.dataset.t0),
+        }),
       });
+      // A refusal here is nearly always a real answer — "that was a live
+      // capture, its frames are gone" — so it belongs on screen, not swallowed.
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        $('jobline').textContent = 'reprocess failed: ' + (j.error || r.status);
+        b.disabled = false;
+        b.textContent = 'Reprocess';
+      }
+      tick();
     };
   }
 }
@@ -153,8 +282,24 @@ tick();
 setInterval(tick, 2000);
 </script>`;
 
-function send(res, status, body, type = 'application/json') {
-  res.writeHead(status, { 'Content-Type': type, 'Cache-Control': 'no-store' });
+/** Only a loopback page may read our responses. See the header. */
+function corsHeaders(req) {
+  const origin = req.headers.origin;
+  if (!origin || !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) return {};
+  return {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    Vary: 'Origin',
+  };
+}
+
+function send(res, status, body, type = 'application/json', req = null) {
+  res.writeHead(status, {
+    'Content-Type': type,
+    'Cache-Control': 'no-store',
+    ...(req ? corsHeaders(req) : {}),
+  });
   res.end(typeof body === 'string' ? body : JSON.stringify(body));
 }
 
@@ -199,28 +344,45 @@ export function startDashboard(opts = {}) {
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://' + HOST);
     try {
+      if (req.method === 'OPTIONS') return send(res, 204, '', 'text/plain', req);
+
       if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-        return send(res, 200, PAGE, 'text/html; charset=utf-8');
+        return send(res, 200, PAGE, 'text/html; charset=utf-8', req);
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
-        return send(res, 200, await getState());
+        return send(res, 200, await getState(), 'application/json', req);
+      }
+      // A cheap "is the worker there?" that the app can poll without dragging
+      // the whole state payload across on every tick.
+      if (req.method === 'GET' && url.pathname === '/api/ping') {
+        return send(res, 200, { ok: true, jobs: Boolean(opts.onSubmitJob) }, 'application/json', req);
+      }
+      if (req.method === 'POST' && url.pathname === '/api/job') {
+        const body = await readBody(req);
+        if (!opts.onSubmitJob) return send(res, 501, { error: 'this dashboard cannot start captures — run worker/src/server.mjs instead' }, 'application/json', req);
+        if (!body.url) return send(res, 400, { error: 'need a url' }, 'application/json', req);
+        return send(res, 200, (await opts.onSubmitJob(body)) ?? { ok: true }, 'application/json', req);
+      }
+      if (req.method === 'POST' && url.pathname === '/api/job/cancel') {
+        if (!opts.onCancelJob) return send(res, 501, { error: 'cancel not wired up' }, 'application/json', req);
+        return send(res, 200, (await opts.onCancelJob()) ?? { ok: true }, 'application/json', req);
       }
       if (req.method === 'POST' && url.pathname === '/api/assign') {
         const body = await readBody(req);
         if (!body.clipId || !body.matchKey) {
-          return send(res, 400, { error: 'need clipId and matchKey' });
+          return send(res, 400, { error: 'need clipId and matchKey' }, 'application/json', req);
         }
-        if (!opts.onAssign) return send(res, 501, { error: 'assign not wired up' });
-        return send(res, 200, (await opts.onAssign(body)) ?? { ok: true });
+        if (!opts.onAssign) return send(res, 501, { error: 'assign not wired up' }, 'application/json', req);
+        return send(res, 200, (await opts.onAssign(body)) ?? { ok: true }, 'application/json', req);
       }
       if (req.method === 'POST' && url.pathname === '/api/reprocess') {
         const body = await readBody(req);
-        if (!opts.onReprocess) return send(res, 501, { error: 'reprocess not wired up' });
-        return send(res, 200, (await opts.onReprocess(body)) ?? { ok: true });
+        if (!opts.onReprocess) return send(res, 501, { error: 'reprocess not wired up' }, 'application/json', req);
+        return send(res, 200, (await opts.onReprocess(body)) ?? { ok: true }, 'application/json', req);
       }
-      send(res, 404, { error: 'not found' });
+      send(res, 404, { error: 'not found' }, 'application/json', req);
     } catch (e) {
-      send(res, 500, { error: String(e.message ?? e) });
+      send(res, 500, { error: String(e.message ?? e) }, 'application/json', req);
     }
   });
 

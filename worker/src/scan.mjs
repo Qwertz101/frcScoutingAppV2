@@ -29,6 +29,7 @@ import {
   MatchClock,
   detectScoreRegions,
   detectScoreRegionsStable,
+  isOverlayPresent,
   recognizeTimer,
   rectifyToGray,
   FRC_BROADCAST,
@@ -114,7 +115,26 @@ export async function findOverlayRuns(input, opts = {}) {
     start: opts.start ?? 0,
     duration: opts.duration,
   })) {
-    const present = detectScoreRegions(f, layout) !== null;
+    // Tier A is the long pass — hours of frames on a full event recording — so
+    // it is the one place where "stop" has to mean stop promptly rather than at
+    // the end. Breaking out closes the frame iterator, which kills ffmpeg.
+    if (opts.signal?.aborted) break;
+
+    // Geometry, then colour. `detectScoreRegions` asks "is there something
+    // shaped like a scoreboard here", which a gym wall can answer yes to: the
+    // championship banners above the bleachers at Sunset Showdown are red and
+    // blue blocks with a pale gap between them, and they pass every shape test
+    // because they genuinely are that shape. `isOverlayPresent` then asks
+    // whether the plates are actually *filled* with alliance colour, which a
+    // banner half a frame away and washed out by arena lighting is not.
+    //
+    // Worth the extra work per frame because of what it saves downstream: a
+    // false run costs a full Tier B bracket plus a whole match's OCR before the
+    // quality score rejects it, measured at 20 minutes against a remote VOD.
+    // The guards further down did catch it — nothing wrong was written — but
+    // catching it here means not paying for it at all.
+    const regions = detectScoreRegions(f, layout);
+    const present = regions !== null && isOverlayPresent(f, regions.blue, regions.red);
     n++;
     if (onProgress && n % 100 === 0) onProgress(f.at, meta.duration);
 
@@ -263,6 +283,8 @@ export async function scan(input, opts = {}) {
       let quads = null;
 
       while (cursor < run.end - MIN_RUN / 2) {
+        if (opts.signal?.aborted) return out;
+
         // Search one match-length at a time. Letting the coarse pass run to the
         // end of the run instead would OCR the whole tail on every iteration,
         // and again on every retry — which is most of the scan's cost for

@@ -4,7 +4,8 @@ import { AUTO_LEN, CvScoreSample, MATCH_LEN } from '../../types';
 import { downloadCvLog, parseCvJson } from '../../services/bpsStore';
 import { GrayPlane, Quad } from '../../services/cv/imagePipeline';
 import { grayToImageData } from '../../services/cv/browserCanvas';
-import { useCvTracker } from './useCvTracker';
+import { isStreamLink, useCvTracker } from './useCvTracker';
+import { WORKER_DASHBOARD_URL } from '../../services/cv/captureWorker';
 import '../../styles/cvtracker.css';
 
 const BoltMark = () => (
@@ -214,6 +215,121 @@ function ScorePlot({ samples }: { samples: CvScoreSample[] }) {
   );
 }
 
+/**
+ * What the capture worker is doing right now.
+ *
+ * Deliberately shows the worker's own log lines rather than a summarised
+ * status. A capture takes minutes and most of that is one long scan; a
+ * spinner would be indistinguishable from a hang, and the thing an operator
+ * actually wants to know — "has it found any matches yet" — is right there in
+ * the log.
+ */
+function CaptureWorkerPanel({ t }: { t: ReturnType<typeof useCvTracker> }) {
+  const w = t.worker;
+  const logRef = useRef<HTMLPreElement | null>(null);
+
+  useEffect(() => {
+    const el = logRef.current;
+    if (!el) return;
+    // Follow the tail only when already at it, so scrolling back to read
+    // something is not undone by the next poll.
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 60) el.scrollTop = el.scrollHeight;
+  }, [w?.logLines.length]);
+
+  if (!w) return null;
+
+  const job = w.job;
+  const running = job?.status === 'running' || job?.status === 'cancelling';
+  const span = job?.progress ? job.progress.to - job.progress.from : 0;
+  const pct =
+    job?.progress && span > 0
+      ? Math.min(100, Math.round(((job.progress.at - job.progress.from) / span) * 100))
+      : null;
+
+  return (
+    <div className="cv-card cv-worker">
+      <div className="cv-card-head">
+        <span className="cv-card-title">Capture Worker</span>
+        <span className="cv-card-note">
+          <a href={WORKER_DASHBOARD_URL} target="_blank" rel="noreferrer">
+            full dashboard ↗
+          </a>
+        </span>
+      </div>
+
+      <div className="cv-worker-row">
+        <span className={`cv-pill${running ? ' recording' : ''}`}>
+          {job ? job.status : 'idle'}
+        </span>
+        <span className="cv-worker-label">{job ? job.url : 'waiting for a link'}</span>
+        {job && (
+          <span className="cv-worker-meta">
+            {job.mode === 'live' ? 'live' : 'recording'} · {job.matches} match
+            {job.matches === 1 ? '' : 'es'}
+            {pct !== null && running ? ` · scanned ${pct}%` : ''}
+            {job.write ? '' : ' · dry run'}
+          </span>
+        )}
+        <div className="cv-controls-spacer" />
+        {/* Writing can only be declined here, never granted: the worker
+            decides whether it is allowed to write at all when it starts. */}
+        <label className="cv-worker-check" title={
+          w.allowWrite
+            ? 'Uncheck to read the footage without saving anything'
+            : 'This worker was started without --write, so every capture is a dry run'
+        }>
+          <input
+            type="checkbox"
+            checked={w.allowWrite && t.workerWrite}
+            disabled={!w.allowWrite || running}
+            onChange={(e) => t.setWorkerWrite(e.target.checked)}
+          />
+          Save to database
+        </label>
+        {running && (
+          <button className="cv-btn-outline" disabled={t.workerBusy} onClick={t.cancelWorker}>
+            Cancel
+          </button>
+        )}
+      </div>
+
+      {job?.error && <div className="cv-notice warn">{job.error}</div>}
+
+      {w.unmigrated && (
+        <div className="cv-notice warn">
+          The database is missing the capture-worker columns, so quality and flags cannot be
+          saved. Run the <code>alter table</code> statements at the top of{' '}
+          <code>supabase/schema-bps.sql</code>.
+        </div>
+      )}
+
+      {w.rows.length > 0 && (
+        <div className="cv-worker-results">
+          {w.rows.map((r, i) => (
+            <div key={(r.match_key || 'row') + i} className="cv-worker-result">
+              <span className="cv-worker-match">{r.match_key || 'unidentified'}</span>
+              <span className="cv-worker-score">
+                {r.final ? `${r.final.blue}–${r.final.red}` : '—'}
+              </span>
+              <span className={`cv-worker-q${r.flagged ? ' flagged' : ''}`}>
+                {r.quality ? r.quality.score.toFixed(2) : '—'}
+                {r.flagged ? ' flagged' : ''}
+              </span>
+              <span className="cv-worker-write">{r.write ?? ''}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {w.logLines.length > 0 && (
+        <pre className="cv-worker-log" ref={logRef}>
+          {w.logLines.join('\n')}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 interface CvTrackerProps {
   onBack: () => void;
 }
@@ -222,6 +338,8 @@ export function CvTracker({ onBack }: CvTrackerProps) {
   const t = useCvTracker();
   const [importMsg, setImportMsg] = useState<string | null>(null);
 
+  const jobRunning =
+    t.worker?.job?.status === 'running' || t.worker?.job?.status === 'cancelling';
   const activeLabel = t.matches.find((m) => m.key === t.activeMatch)?.label ?? '—';
   const done = t.uploaded.size;
   const total = t.matches.length;
@@ -270,13 +388,31 @@ export function CvTracker({ onBack }: CvTrackerProps) {
             <span className="cv-source-label">Footage Source</span>
             <input
               className="cv-input"
-              placeholder="Paste YouTube / Twitch / recorded match URL, then press Enter"
+              placeholder="Paste a YouTube VOD or livestream link — the capture worker reads it"
               value={t.urlInput}
               onChange={(e) => t.setUrlInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') t.loadUrl();
               }}
             />
+            {/* Recording vs live is asked, not guessed: a YouTube /watch?v= URL
+                looks identical either way, and the two take genuinely different
+                paths through the worker (seekable two-tier scan vs. forward-only
+                monitor). Getting it wrong is recoverable but wastes a run. */}
+            <button
+              className="cv-btn-grad"
+              disabled={!isStreamLink(t.urlInput) || t.workerBusy || jobRunning}
+              onClick={() => t.submitToWorker('vod')}
+            >
+              Read Recording
+            </button>
+            <button
+              className="cv-btn-outline"
+              disabled={!isStreamLink(t.urlInput) || t.workerBusy || jobRunning}
+              onClick={() => t.submitToWorker('live')}
+            >
+              Watch Live
+            </button>
             <label className="cv-btn-outline cv-file-btn">
               Upload File
               <input
@@ -313,12 +449,15 @@ export function CvTracker({ onBack }: CvTrackerProps) {
 
         {t.error && <div className="cv-notice warn">{t.error}</div>}
         {importMsg && <div className="cv-notice info">{importMsg}</div>}
-        {!t.error && t.sourceKind === 'none' && (
+
+        <CaptureWorkerPanel t={t} />
+
+        {!t.error && t.sourceKind === 'none' && !t.worker && (
           <div className="cv-notice info">
-            YouTube and Twitch embeds cannot be read pixel-by-pixel — the browser blocks canvas
-            access to cross-origin video. Upload a downloaded match file, paste a direct video URL
-            served with permissive CORS, or use <strong>Share Screen</strong> and pick the tab
-            playing the stream.
+            A stream link needs the capture worker running on this machine — start it with{' '}
+            <code>npm run worker:serve</code>. Without it you can still{' '}
+            <strong>Upload File</strong>, paste a direct video URL served with permissive CORS, or
+            use <strong>Share Screen</strong> and pick the tab playing the stream.
           </div>
         )}
 

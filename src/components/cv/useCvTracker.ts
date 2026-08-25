@@ -13,8 +13,18 @@ import {
 import { OcrHandle, ScoreGate, getOcr, readFrame } from '../../services/cv/scoreboardOcr';
 import { captureFrame } from '../../services/cv/browserCanvas';
 import { MatchClock, MatchPhase } from '../../services/cv/matchClock';
+import {
+  JobMode,
+  WorkerState,
+  cancelJob as cancelWorkerJob,
+  getWorkerState,
+  submitJob,
+} from '../../services/cv/captureWorker';
 
 export type SourceKind = 'none' | 'file' | 'url' | 'screen';
+
+/** Does this link belong to the capture worker rather than the <video> element? */
+export const isStreamLink = (url: string) => /youtube\.com|youtu\.be|twitch\.tv/i.test(url);
 
 /**
  * Quad positions survive a reload.
@@ -124,6 +134,38 @@ export function useCvTracker() {
   const [sourceLabel, setSourceLabel] = useState('no source');
   const [urlInput, setUrlInput] = useState('');
   const [speed, setSpeed] = useState(3);
+
+  /**
+   * What the capture worker on this machine is doing, or null if it is not
+   * running.
+   *
+   * Null is the normal state on any machine that is not the workshop PC, so it
+   * is shown as "not running" with instructions rather than as an error — the
+   * manual Upload/Share Screen paths do not need the worker and must keep
+   * working without it.
+   */
+  const [worker, setWorker] = useState<WorkerState | null>(null);
+  const [workerBusy, setWorkerBusy] = useState(false);
+  /** Whether a submitted job should save to the database. Dry run by default. */
+  const [workerWrite, setWorkerWrite] = useState(false);
+
+  const refreshWorker = useCallback(async () => {
+    try {
+      setWorker(await getWorkerState());
+    } catch {
+      // Unreachable is a state, not a failure: see the note on `worker` above.
+      setWorker(null);
+    }
+  }, []);
+
+  // Two seconds matches the worker's own dashboard. A scan of a multi-hour
+  // recording reports progress roughly that often, so polling faster would show
+  // the same numbers again and slower would feel stalled.
+  useEffect(() => {
+    void refreshWorker();
+    const id = setInterval(() => void refreshWorker(), 2000);
+    return () => clearInterval(id);
+  }, [refreshWorker]);
 
   const stored = useRef(loadQuads());
   const [blueQuad, setBlueQuad] = useState<Quad>(stored.current.blue);
@@ -328,19 +370,54 @@ export function useCvTracker() {
   };
 
   /**
-   * Direct video URLs only. A YouTube or Twitch page is an embed, not a video
-   * file, and even a real cross-origin file taints the canvas — so we say so
-   * rather than silently producing nothing.
+   * Send a stream or VOD link to the capture worker.
+   *
+   * This is the whole point of the link box now. The browser genuinely cannot
+   * read a YouTube or Twitch page pixel-by-pixel, so rather than explain that
+   * and leave the operator to go find a terminal, the link goes to the worker
+   * process on this machine, which has ffmpeg and yt-dlp and no such limit.
+   */
+  const submitToWorker = async (mode: JobMode) => {
+    const url = urlInput.trim();
+    if (!url) return;
+    setError(null);
+    setWorkerBusy(true);
+    try {
+      await submitJob({ url, eventKey, mode, write: workerWrite });
+      // Poll immediately rather than waiting for the next tick, so the panel
+      // shows "running" the instant the button is released.
+      await refreshWorker();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setWorkerBusy(false);
+    }
+  };
+
+  const cancelWorker = async () => {
+    setWorkerBusy(true);
+    try {
+      await cancelWorkerJob();
+      await refreshWorker();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setWorkerBusy(false);
+    }
+  };
+
+  /**
+   * Direct video URLs only. A YouTube or Twitch page goes to the worker above;
+   * anything else is loaded into the <video> element, where a cross-origin file
+   * still has to be served with permissive CORS or the canvas is tainted.
    */
   const loadUrl = () => {
     const url = urlInput.trim();
     if (!url) return;
     setError(null);
 
-    if (/youtube\.com|youtu\.be|twitch\.tv/i.test(url)) {
-      setError(
-        'YouTube and Twitch pages cannot be read pixel-by-pixel — the browser blocks it, and no amount of permission changes that. Use Share Screen with the stream playing in another tab, or upload a downloaded file.'
-      );
+    if (isStreamLink(url)) {
+      void submitToWorker('vod');
       return;
     }
 
@@ -786,6 +863,13 @@ export function useCvTracker() {
     setUrlInput,
     speed,
     setSpeed,
+    worker,
+    workerBusy,
+    workerWrite,
+    setWorkerWrite,
+    submitToWorker,
+    cancelWorker,
+    refreshWorker,
     blueQuad,
     setBlueQuad,
     redQuad,
