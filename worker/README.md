@@ -577,3 +577,34 @@ picks the right layout rather than a single global constant that has to serve
 both. Left for a future session, with the failure mode now understood and
 reproducible: `worker/tools/iri-saturday-batch.mjs` calibrates against the real
 broadcast and will show the same 0-0 read until it is fixed.
+
+## Known limitation: Sunset Showdown's clock and team numbers
+
+The `sunset-showdown` layout profile handles that broadcast's geometry — red on
+the left, the wider score box inset past the circular timer badge — and score
+reading works well enough to produce a plausible final. Two things do not work,
+both verified end to end through the job server against the real Saturday VOD.
+
+A real match at `t0=5224` (found by the scanner's own clock bracket, so the
+scoreboard is genuinely there) read **39–74 with 96% second-coverage and no
+monotonicity violations**, and was still scored 0.00 and flagged, for two
+reasons:
+
+**The clock is never read.** `timerAcceptRate` is 0 and the run falls back to a
+fixed offset. Rendering the crop the detector hands tesseract shows why: it is
+the event's logo badge — a Golden Gate skyline in heavy black line art — with
+the clock text drawn *over* it at low contrast. After binarisation the artwork
+becomes one dark mass and the digits vanish into it. This is not a threshold to
+tune; the clock and the logo occupy the same pixels, so isolating one from the
+other needs its own approach.
+
+**Team numbers are never read**, so nothing is identified. Sunset prints them in
+boxes *outside* the alliance plates (left box = red, right box = blue, confirmed
+against TBA's real alliances), where `voteTeams` does not look — it expects them
+inline on the plate, as season broadcasts draw them.
+
+The consequence is the safe one and worth stating plainly: every Sunset match
+comes out unidentified and flagged, and nothing is written. The pipeline does
+not invent a match key it cannot read, which is the guarantee that matters most,
+but this layout is **not** ready to run unattended. Use it with someone watching,
+or stick to season-style broadcasts, until both gaps are closed.
