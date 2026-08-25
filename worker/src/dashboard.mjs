@@ -194,7 +194,10 @@ function render(s) {
   // Only follow the tail if the reader is already at it — otherwise scrolling
   // back to read something gets undone twice a second.
   const pinned = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 40;
-  logEl.textContent = (s.logLines ?? []).join('\n');
+  // Double-escaped on purpose: this whole page is a template literal, so a
+  // single backslash-n would be a real newline in the emitted HTML and would
+  // split this string across two lines, which is a syntax error in the browser.
+  logEl.textContent = (s.logLines ?? []).join('\\n');
   logEl.style.display = (s.logLines ?? []).length ? '' : 'none';
   if (pinned) logEl.scrollTop = logEl.scrollHeight;
 
