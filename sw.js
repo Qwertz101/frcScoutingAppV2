@@ -1,5 +1,5 @@
 // Bump this value when you want clients to evict old cached assets and load a fresh build
-const CACHE_NAME = 'frc-scout-v4';
+const CACHE_NAME = 'frc-scout-v5';
 // Use relative paths so the service worker works under a sub-path (e.g. GitHub Pages)
 const urlsToCache = [
   './',
@@ -31,6 +31,14 @@ self.addEventListener('activate', event => {
 // stale/incorrect cached asset paths that don't match the deployed base path.
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
+
+  // Only ever handle this app's own assets. Anything cross-origin is left
+  // entirely alone: the CV tab talks to the capture worker on
+  // 127.0.0.1:7654, and routing that through here failed it outright
+  // (net::ERR_FAILED) while also trying to put a foreign response into an
+  // asset cache. A service worker exists to make the app's own files load
+  // offline, not to sit in front of someone else's API.
+  if (new URL(event.request.url).origin !== self.location.origin) return;
 
   event.respondWith(
     fetch(event.request)
