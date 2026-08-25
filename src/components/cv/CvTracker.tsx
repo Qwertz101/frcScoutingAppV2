@@ -464,14 +464,24 @@ export function CvTracker({ onBack }: CvTrackerProps) {
                 onChange={(e) => t.setWindowDuration(e.target.value)}
                 disabled={jobRunning}
               />
+              <label className="cv-window-check" title="Fetches the footage to a temporary file, reads it locally, and deletes it when the job finishes. Much faster than seeking a remote VOD; turn it off if disk space is tight.">
+                <input
+                  type="checkbox"
+                  checked={t.workerDownload}
+                  disabled={jobRunning}
+                  onChange={(e) => t.setWorkerDownload(e.target.checked)}
+                />
+                Download first (faster)
+              </label>
               <span className="cv-window-hint">
                 {/* A multi-hour VOD is cheap to scan from a local file but every
                     seek against a remote YouTube URL is a network round trip —
                     measured at roughly 1.5x the wall time of the footage
                     itself. Leaving both blank scans the whole recording, which
                     is fine for a short clip and a bad idea for a full event. */}
-                Blank scans the whole recording. A remote VOD reads at roughly
-                real time, so bound this to the block of matches you actually want.
+                Blank scans the whole recording. Downloading first is much faster
+                than streaming and the file is deleted afterwards — but bound the
+                window anyway for a full event, or it fetches the lot.
               </span>
             </div>
           )}

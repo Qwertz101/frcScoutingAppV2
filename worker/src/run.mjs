@@ -24,7 +24,7 @@ import { fetchQualSchedule } from './tba.mjs';
 import { upsertCvLog, checkSchema } from './supabase.mjs';
 import { probe } from './ffmpeg.mjs';
 import { createPool, defaultWorkers } from './ocr.mjs';
-import { isRemoteSource, resolveVodUrl } from './sources.mjs';
+import { isRemoteSource, resolveVodUrl, downloadVod } from './sources.mjs';
 import { resolveLayout } from './layouts.mjs';
 import { FRC_BROADCAST } from './core.mjs';
 
@@ -50,10 +50,36 @@ export async function runVod(source, opts = {}) {
   // to a human uses `sourceLabel`, never the resolved input.
   const sourceLabel = source;
   let input = source;
+  let cleanupDownload = null;
+  // Seconds between the start of `input` and the start of the original
+  // recording. Non-zero only when a bounded window was downloaded, where the
+  // local file begins partway into the VOD; every greenFlagAt reported outward
+  // adds it back so a later reprocess seeks the right place in the real source.
+  let sourceOffset = 0;
+  // Whether the scan still needs to bound itself. A downloaded window is
+  // already exactly the window, so bounding it again would cut into it.
+  let scanStart = opts.start != null ? Number(opts.start) : undefined;
+  let scanDuration = opts.duration != null ? Number(opts.duration) : undefined;
+
   if (isRemoteSource(input)) {
-    log('resolving direct URL for ' + input + ' …');
-    input = await resolveVodUrl(input);
-    log('resolved');
+    if (opts.download) {
+      const dl = await downloadVod(input, {
+        start: scanStart,
+        duration: scanDuration,
+        signal: opts.signal,
+        log,
+        onProgress: opts.onProgress,
+      });
+      input = dl.path;
+      cleanupDownload = dl.cleanup;
+      sourceOffset = dl.offset;
+      scanStart = undefined;
+      scanDuration = undefined;
+    } else {
+      log('resolving direct URL for ' + input + ' …');
+      input = await resolveVodUrl(input);
+      log('resolved');
+    }
   }
 
   const schema = await checkSchema().catch(() => ({ ok: false, message: 'Supabase unreachable' }));
@@ -79,16 +105,16 @@ export async function runVod(source, opts = {}) {
       pool,
       meta,
       layout,
-      start: opts.start != null ? Number(opts.start) : undefined,
-      duration: opts.duration != null ? Number(opts.duration) : undefined,
+      start: scanStart,
+      duration: scanDuration,
       signal: opts.signal,
       // Reported against the window actually being scanned, not the whole
       // recording. `--start 3600 --duration 900` on a nine-hour VOD is 100% of
       // the work asked for and 3% of the file; showing the latter makes a
       // nearly-finished scan look barely begun.
       onProgress: (at, total) => {
-        const from = opts.start != null ? Number(opts.start) : 0;
-        const to = opts.duration != null ? from + Number(opts.duration) : total;
+        const from = scanStart ?? 0;
+        const to = scanDuration != null ? from + scanDuration : total;
         opts.onProgress?.({ phase: 'scan', at, from, to, total });
       },
       log,
@@ -138,7 +164,10 @@ export async function runVod(source, opts = {}) {
         // Kept so the dashboard's Reprocess button has something to reprocess
         // *from*: without the green flag there is no way to re-read one match
         // without rescanning the whole recording.
-        greenFlagAt: f.greenFlagAt,
+        // In the ORIGINAL recording's timeline, not the local file's -- a
+        // downloaded window starts partway in, and a reprocess later works
+        // from the URL.
+        greenFlagAt: sourceOffset + f.greenFlagAt,
         updated_at: new Date().toISOString(),
       };
 
@@ -168,6 +197,13 @@ export async function runVod(source, opts = {}) {
     }
   } finally {
     if (ownPool) await pool.terminate();
+    // Non-negotiable: the temp file must not outlive the job that made it.
+    // See downloadVod on why storing footage at all is a deliberate, bounded
+    // exception rather than a change of policy.
+    if (cleanupDownload) {
+      await cleanupDownload();
+      log('temporary download deleted');
+    }
   }
 
   const seconds = (Date.now() - began) / 1000;

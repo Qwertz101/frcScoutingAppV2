@@ -11,11 +11,17 @@ posted results.
 **Writing is opt-in.** `main.mjs` is a dry run unless you pass `--write`,
 because `match_key` is a primary key and an upsert replaces whatever is there.
 
-## No video is ever stored
+## No video is ever kept
 
-This pipeline decodes streams in flight and persists **only derived numbers**.
-There is no clip archive, no download step, and no cache of footage. "Clip"
-in this codebase means *a time window*, never a file.
+This pipeline persists **only derived numbers**. There is no clip archive and no
+cache of footage. "Clip" in this codebase means *a time window*, never a file.
+
+One bounded exception, added deliberately: `--download` fetches a VOD (or one
+window of it) to a temp file because local seeking is several times faster than
+remote seeking -- see "Download first, or bound the window". That file is
+deleted in the job's `finally` before the job returns. A file that cannot
+outlive the run that made it is not an archive, and the deletion is not
+optional.
 
 Please do not add clip archiving as a convenience later. Nothing here needs it:
 the raw per-second OCR observations are persisted alongside the gated samples,
@@ -305,6 +311,39 @@ recording:
 ```bash
 node worker/src/main.mjs <youtube-url> --event 2026cagle --start 3000 --duration 12000
 ```
+
+### Download first, or bound the window
+
+Two ways to keep a VOD read affordable, and they compose.
+
+**`--download` (the app's "Download first" checkbox, on by default) fetches the
+footage to a temp file and reads it locally**, then deletes it in the job's
+`finally`. Measured on the same Sunset Showdown window (8 minutes of a 9.1h
+1080p recording):
+
+| | streaming | download first |
+|---|---|---|
+| total | 23.3 min | **6.2 min** |
+| tier A | 247s | **41s** |
+| fetch | — | 246s (0.13 GB) |
+
+Roughly 6x faster on the parts that seek, because local seeking is nearly free
+while every remote seek is an HTTP range request. The cost moves into one
+sequential download, which is the shape networks are actually good at.
+
+This is the one place the "no video is ever stored" rule above bends, and it
+bends deliberately: a file scoped to a single job and deleted before that job
+returns is not an archive. Please keep it that way -- the `finally` that deletes
+it is not optional.
+
+Two details that matter. A bounded window downloads only that window
+(`--download-sections`), so the temp file stays small. And the section cut lands
+on a keyframe rather than the exact second requested, so the local file's `t=0`
+is a few seconds off the requested start; `greenFlagAt` is reported back in the
+*original* recording's timeline so a later reprocess still seeks the right
+place. That slop is harmless because `t0` only ever has to be roughly right --
+`MatchClock` derives the true start from the on-screen timer. Verified: a match
+found at 5224s streaming came back as 5228s downloaded.
 
 ### Bound the window — remote scanning is roughly realtime
 

@@ -25,6 +25,7 @@ export interface WorkerJob {
   mode: JobMode;
   eventKey: string;
   write: boolean;
+  download: boolean;
   layout: string | null;
   status: JobStatus;
   startedAt: number;
@@ -68,6 +69,13 @@ export interface SubmitJobRequest {
   write?: boolean;
   start?: number;
   duration?: number;
+  /**
+   * Fetch the footage to a temp file first, then read it locally.
+   *
+   * Much faster than reading a remote VOD, where every seek is a network round
+   * trip. The file is deleted as soon as the job finishes.
+   */
+  download?: boolean;
 }
 
 /**

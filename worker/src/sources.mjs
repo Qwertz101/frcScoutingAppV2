@@ -29,6 +29,9 @@
 
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { mkdtemp, rm, readdir, stat } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
 import { resolveBin } from './ffmpeg.mjs';
 import { frames } from './ffmpeg.mjs';
 
@@ -77,6 +80,112 @@ export async function resolveVodUrl(url, opts = {}) {
   const direct = stdout.trim().split('\n')[0];
   if (!direct) throw new Error('yt-dlp returned no direct URL for ' + url);
   return direct;
+}
+
+/**
+ * Fetch a VOD (or one window of it) to a temp file, and hand back a cleanup.
+ *
+ * **This is the one place the "no video is ever stored" rule bends, and it
+ * bends deliberately and temporarily.** The rule exists so this project never
+ * accumulates a footage archive; a file that lives inside a single job's
+ * `try/finally` and is deleted before that job returns is not an archive. What
+ * it buys is real: seeking a remote VOD costs an HTTP range request every time,
+ * which dominates everything else and puts a scan at roughly 1.5x the wall time
+ * of the footage. Local seeking is close to free, so the same scan runs many
+ * times faster -- the cost moves to one big sequential download, which is the
+ * shape networks are good at.
+ *
+ * `start`/`duration` (seconds) are passed to yt-dlp as a download section, so a
+ * bounded window fetches only that window rather than the whole recording. The
+ * cut lands on a keyframe rather than exactly on the requested second, so the
+ * returned `offset` is the *requested* start and the file may actually begin a
+ * few seconds earlier. That imprecision is fine here and is the reason
+ * `--force-keyframes-at-cuts` (which would re-encode, and cost more than the
+ * seeking this exists to avoid) is not used: `t0` only ever has to be roughly
+ * right, because `MatchClock` derives the true match start from the on-screen
+ * timer rather than trusting the number it was handed.
+ *
+ * Returns `{ path, offset, bytes, cleanup }`. **Always call `cleanup`.**
+ */
+export async function downloadVod(url, opts = {}) {
+  const platform = detectPlatform(url);
+  if (platform !== 'youtube') {
+    throw new Error(platform + ' downloads are not implemented -- only YouTube VODs can be fetched locally');
+  }
+
+  const maxHeight = opts.maxHeight ?? 1080;
+  const log = opts.log ?? (() => {});
+  const dir = await mkdtemp(join(tmpdir(), 'frc-capture-'));
+  const cleanup = async () => {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  };
+
+  try {
+    const args = ['-f', YT_FORMAT(maxHeight), '--no-warnings', '-o', join(dir, 'vod.%(ext)s')];
+
+    let offset = 0;
+    if (opts.start != null || opts.duration != null) {
+      const from = Number(opts.start ?? 0);
+      // yt-dlp wants an end, not a length. No duration means "to the end",
+      // which its section syntax spells as an open range.
+      const to = opts.duration != null ? from + Number(opts.duration) : null;
+      args.push('--download-sections', '*' + from + '-' + (to ?? 'inf'));
+      offset = from;
+      // A partial download is done by ffmpeg, and yt-dlp will only look for it
+      // on PATH -- which is exactly where winget's per-user install is not.
+      // `resolveBin` already knows how to find it (see ffmpeg.mjs), so hand
+      // over the answer rather than requiring a PATH edit and a new shell.
+      // yt-dlp wants the directory holding the binary, not the binary itself.
+      args.push('--ffmpeg-location', dirname(resolveBin('ffmpeg')));
+    }
+    args.push(url);
+
+    log('downloading' + (offset ? ' from ' + (offset / 60).toFixed(0) + ' min' : '') + '…');
+
+    await new Promise((resolve, reject) => {
+      const child = spawn(resolveBin('yt-dlp'), args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      let lastPct = -1;
+      let stderr = '';
+
+      // yt-dlp reports progress on stdout. Surfaced at whole-percent steps so
+      // an hour-long fetch shows movement without flooding the log.
+      child.stdout.on('data', (b) => {
+        const m = /\[download\]\s+(\d+(?:\.\d+)?)%/.exec(b.toString());
+        if (!m) return;
+        const pct = Math.floor(Number(m[1]) / 10) * 10;
+        if (pct > lastPct) {
+          lastPct = pct;
+          log('  downloaded ' + pct + '%');
+          opts.onProgress?.({ phase: 'download', at: Number(m[1]), from: 0, to: 100, total: 100 });
+        }
+      });
+      child.stderr.on('data', (b) => {
+        stderr += b.toString();
+        if (stderr.length > 4096) stderr = stderr.slice(-4096);
+      });
+
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error('yt-dlp exited ' + code + (stderr.trim() ? ': ' + stderr.trim() : '')));
+      });
+
+      opts.signal?.addEventListener('abort', () => child.kill('SIGKILL'), { once: true });
+    });
+
+    if (opts.signal?.aborted) throw new Error('cancelled during download');
+
+    const found = (await readdir(dir)).find((f) => f.startsWith('vod.'));
+    if (!found) throw new Error('yt-dlp produced no file for ' + url);
+    const path = join(dir, found);
+    const { size } = await stat(path);
+    log('downloaded ' + (size / 1e9).toFixed(2) + ' GB');
+
+    return { path, offset, bytes: size, cleanup };
+  } catch (e) {
+    await cleanup();
+    throw e;
+  }
 }
 
 /**

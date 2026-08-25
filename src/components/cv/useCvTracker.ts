@@ -161,6 +161,15 @@ export function useCvTracker() {
    */
   const [windowStart, setWindowStart] = useState('');
   const [windowDuration, setWindowDuration] = useState('');
+  /**
+   * Fetch the footage locally before reading it.
+   *
+   * On by default because it is the faster path in nearly every case and the
+   * temp file is deleted when the job ends. Turn it off to stream instead —
+   * worth doing when disk is tight, since a bounded window still lands as a
+   * real file for the length of the run.
+   */
+  const [workerDownload, setWorkerDownload] = useState(true);
 
   const refreshWorker = useCallback(async () => {
     try {
@@ -405,6 +414,9 @@ export function useCvTracker() {
         write: workerWrite,
         start: startMin != null ? startMin * 60 : undefined,
         duration: durationMin != null ? durationMin * 60 : undefined,
+        // Only meaningful for a finished recording. A live broadcast is
+        // consumed as it arrives and there is nothing to fetch ahead of.
+        download: mode === 'vod' ? workerDownload : undefined,
       });
       // Poll immediately rather than waiting for the next tick, so the panel
       // shows "running" the instant the button is released.
@@ -893,6 +905,8 @@ export function useCvTracker() {
     setWindowStart,
     windowDuration,
     setWindowDuration,
+    workerDownload,
+    setWorkerDownload,
     submitToWorker,
     cancelWorker,
     refreshWorker,
