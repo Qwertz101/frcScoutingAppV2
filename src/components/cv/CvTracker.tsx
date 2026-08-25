@@ -428,10 +428,6 @@ export function CvTracker({ onBack }: CvTrackerProps) {
             <button className="cv-btn-outline" onClick={t.shareScreen}>
               Share Screen
             </button>
-            {/* No playback-speed control any more: recorded footage is seeked
-                to each target second rather than played at it, so it is read as
-                fast as OCR allows and a slow pass costs wall time instead of
-                bending the timeline. */}
             <label className="cv-btn-outline cv-file-btn">
               Import JSON
               <input
@@ -445,6 +441,40 @@ export function CvTracker({ onBack }: CvTrackerProps) {
               />
             </label>
           </div>
+
+          {isStreamLink(t.urlInput) && (
+            <div className="cv-window">
+              <span className="cv-window-label">Limit to (optional)</span>
+              <input
+                className="cv-input cv-window-input"
+                type="number"
+                min={0}
+                placeholder="start, min"
+                value={t.windowStart}
+                onChange={(e) => t.setWindowStart(e.target.value)}
+                disabled={jobRunning}
+              />
+              <span className="cv-window-sep">for</span>
+              <input
+                className="cv-input cv-window-input"
+                type="number"
+                min={0}
+                placeholder="length, min"
+                value={t.windowDuration}
+                onChange={(e) => t.setWindowDuration(e.target.value)}
+                disabled={jobRunning}
+              />
+              <span className="cv-window-hint">
+                {/* A multi-hour VOD is cheap to scan from a local file but every
+                    seek against a remote YouTube URL is a network round trip —
+                    measured at roughly 1.5x the wall time of the footage
+                    itself. Leaving both blank scans the whole recording, which
+                    is fine for a short clip and a bad idea for a full event. */}
+                Blank scans the whole recording. A remote VOD reads at roughly
+                real time, so bound this to the block of matches you actually want.
+              </span>
+            </div>
+          )}
         </div>
 
         {t.error && <div className="cv-notice warn">{t.error}</div>}

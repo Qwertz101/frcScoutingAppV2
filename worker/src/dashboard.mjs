@@ -14,13 +14,16 @@
  * capture from a link, cancelling one, assigning a match key the worker refused
  * to guess, and asking for a reprocess.
  *
- * **CORS is open to loopback origins only.** The app's dev server is
- * `http://localhost:5173` and a built app is served from somewhere else again,
- * so the browser treats this as cross-origin and will not let the CV tab read a
- * response without permission. Reflecting only `localhost`/`127.0.0.1` origins
- * keeps that from becoming a hole: combined with the loopback bind, a page on
- * the open internet can still fire a request here but cannot read the answer,
- * and cannot forge an origin header to change that.
+ * **CORS is open to a short, explicit allow-list.** The app's dev server is
+ * `http://localhost:5173`, and the deployed app the team actually uses day to
+ * day is `https://qwertz101.github.io` (GitHub Pages) -- both are cross-origin
+ * from this worker's point of view, so the browser will not let the CV tab
+ * read a response without permission. Reflecting only those origins (plus
+ * loopback in general, for other local dev setups) keeps that from becoming a
+ * hole: combined with the loopback bind, a page on the open internet can still
+ * fire a request here but cannot read the answer, and cannot forge an origin
+ * header to change that -- only a browser tab actually pointed at one of these
+ * addresses gets the response.
  */
 
 import { createServer } from 'node:http';
@@ -286,9 +289,20 @@ setInterval(tick, 2000);
 </script>`;
 
 /** Only a loopback page may read our responses. See the header. */
+/**
+ * Origins allowed to read this server's responses, beyond loopback dev
+ * addresses. The deployed app is the one the scouting lead actually opens on
+ * match day, so it has to be here explicitly -- CORS matches an origin, not a
+ * path, so `/frcScoutingAppV2/` (the GitHub Pages base path) is irrelevant to
+ * this check.
+ */
+const EXTRA_ALLOWED_ORIGINS = ['https://qwertz101.github.io'];
+
 function corsHeaders(req) {
   const origin = req.headers.origin;
-  if (!origin || !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) return {};
+  if (!origin) return {};
+  const loopback = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin);
+  if (!loopback && !EXTRA_ALLOWED_ORIGINS.includes(origin)) return {};
   return {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',

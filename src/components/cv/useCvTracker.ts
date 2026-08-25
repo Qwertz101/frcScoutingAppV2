@@ -148,6 +148,19 @@ export function useCvTracker() {
   const [workerBusy, setWorkerBusy] = useState(false);
   /** Whether a submitted job should save to the database. Dry run by default. */
   const [workerWrite, setWorkerWrite] = useState(false);
+  /**
+   * Optional window bounds, in minutes into the recording. Both blank means
+   * scan the whole thing.
+   *
+   * A multi-hour VOD is affordable to scan when the source is a local file,
+   * but every seek against a remote YouTube URL is a network round trip, and
+   * that dominates: measured at roughly 1.5x the wall time of the footage
+   * itself. Bounding the window is what keeps "read this VOD" from meaning
+   * "wait most of a day" -- there is no dial for reading faster, only for
+   * reading less.
+   */
+  const [windowStart, setWindowStart] = useState('');
+  const [windowDuration, setWindowDuration] = useState('');
 
   const refreshWorker = useCallback(async () => {
     try {
@@ -383,7 +396,16 @@ export function useCvTracker() {
     setError(null);
     setWorkerBusy(true);
     try {
-      await submitJob({ url, eventKey, mode, write: workerWrite });
+      const startMin = windowStart.trim() ? Number(windowStart) : undefined;
+      const durationMin = windowDuration.trim() ? Number(windowDuration) : undefined;
+      await submitJob({
+        url,
+        eventKey,
+        mode,
+        write: workerWrite,
+        start: startMin != null ? startMin * 60 : undefined,
+        duration: durationMin != null ? durationMin * 60 : undefined,
+      });
       // Poll immediately rather than waiting for the next tick, so the panel
       // shows "running" the instant the button is released.
       await refreshWorker();
@@ -867,6 +889,10 @@ export function useCvTracker() {
     workerBusy,
     workerWrite,
     setWorkerWrite,
+    windowStart,
+    setWindowStart,
+    windowDuration,
+    setWindowDuration,
     submitToWorker,
     cancelWorker,
     refreshWorker,
