@@ -218,9 +218,34 @@ export async function downloadVod(url, opts = {}) {
       });
 
       child.on('error', reject);
-      child.on('close', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error('yt-dlp exited ' + code + (stderr.trim() ? ': ' + stderr.trim() : '')));
+      child.on('close', async (code, signal) => {
+        if (code === 0) return resolve();
+
+        // Observed on real HLS-sourced footage on Windows: ffmpeg's own
+        // completion trailer (`Lsize=`, `muxing overhead:`) printed
+        // successfully -- the copy had genuinely finished -- immediately
+        // followed by `close` reporting `code: null` rather than `0`,
+        // apparently from yt-dlp tearing down parallel fragment downloaders
+        // after the primary muxer was already done. The exit code alone is
+        // not trustworthy for this shape of failure, so fall back to the one
+        // thing that actually proves the job worked: a non-empty file landed
+        // on disk. A genuine failure (bad URL, network drop mid-copy, killed
+        // early) still leaves no usable file and is still rejected.
+        try {
+          const files = await readdir(dir);
+          const found = files.find((f) => f.startsWith('vod.'));
+          if (found) {
+            const { size } = await stat(join(dir, found));
+            if (size > 0) return resolve();
+          }
+        } catch {
+          // fall through to the rejection below
+        }
+
+        reject(new Error(
+          'yt-dlp exited ' + code + (signal ? ' (signal ' + signal + ')' : '') +
+            (stderr.trim() ? ': ' + stderr.trim() : '')
+        ));
       });
 
       opts.signal?.addEventListener('abort', () => child.kill('SIGKILL'), { once: true });
