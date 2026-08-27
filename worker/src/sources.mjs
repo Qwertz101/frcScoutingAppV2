@@ -140,15 +140,31 @@ export async function downloadVod(url, opts = {}) {
     }
     args.push(url);
 
-    log('downloading' + (offset ? ' from ' + (offset / 60).toFixed(0) + ' min' : '') + '…');
+    // How long the requested window actually is, for turning ffmpeg's
+    // position into a percentage. Open-ended ("to the end") has no known
+    // length up front, so percentage is not available for it -- only a
+    // heartbeat (see below).
+    const sectionLen = opts.duration != null ? Number(opts.duration) : null;
+
+    log(
+      'downloading' + (offset ? ' from ' + (offset / 60).toFixed(0) + ' min' : '') +
+        (sectionLen ? ' for ' + (sectionLen / 60).toFixed(0) + ' min' : ' to the end of the recording') +
+        '…'
+    );
 
     await new Promise((resolve, reject) => {
       const child = spawn(resolveBin('yt-dlp'), args, { stdio: ['ignore', 'pipe', 'pipe'] });
       let lastPct = -1;
       let stderr = '';
+      let lastHeartbeat = 0;
+      let lastSize = '';
 
-      // yt-dlp reports progress on stdout. Surfaced at whole-percent steps so
-      // an hour-long fetch shows movement without flooding the log.
+      // A download with no --download-sections (the whole recording, no
+      // window given at all) goes through yt-dlp's own downloader, which
+      // reports a real percentage here. **A download WITH sections is copied
+      // by ffmpeg instead** -- confirmed by capturing real output -- and
+      // yt-dlp only ever prints one summary line for that, at the very end.
+      // Kept as the one true source of "finished successfully" either way.
       child.stdout.on('data', (b) => {
         const m = /\[download\]\s+(\d+(?:\.\d+)?)%/.exec(b.toString());
         if (!m) return;
@@ -159,9 +175,46 @@ export async function downloadVod(url, opts = {}) {
           opts.onProgress?.({ phase: 'download', at: Number(m[1]), from: 0, to: 100, total: 100 });
         }
       });
+
+      // ffmpeg's own progress, for the sectioned case. One line, rewritten in
+      // place with \r, like: "frame=179 ... size=1792KiB time=-00:00:01.98
+      // ... elapsed=0:00:03.10". `time` counts from the *requested* start and
+      // is negative until ffmpeg reaches it -- the cut needs a keyframe before
+      // that point, so it has to decode some lead-in first. Only once it
+      // turns positive does it mean "seconds into the section actually kept".
       child.stderr.on('data', (b) => {
-        stderr += b.toString();
+        const text = b.toString();
+        stderr += text;
         if (stderr.length > 4096) stderr = stderr.slice(-4096);
+
+        const timeM = /time=(-?\d+):(\d+):(\d+\.\d+)/.exec(text);
+        const sizeM = /size=\s*([\d.]+)\s*(KiB|MiB|GiB)/.exec(text);
+        if (sizeM) lastSize = sizeM[1] + ' ' + sizeM[2];
+
+        if (timeM && sectionLen) {
+          const sign = timeM[1].startsWith('-') ? -1 : 1;
+          const secs = sign * (Math.abs(Number(timeM[1])) * 3600 + Number(timeM[2]) * 60 + Number(timeM[3]));
+          if (secs >= 0) {
+            const pct = Math.min(100, Math.floor((secs / sectionLen) * 100));
+            const step = Math.floor(pct / 10) * 10;
+            if (step > lastPct) {
+              lastPct = step;
+              log('  downloaded ' + step + '%');
+              opts.onProgress?.({ phase: 'download', at: pct, from: 0, to: 100, total: 100 });
+            }
+          }
+          return;
+        }
+
+        // No known section length (an open-ended fetch to the end of the
+        // recording) or ffmpeg is still in the negative lead-in: there is no
+        // percentage to report, so at least confirm it is alive. Every ~15s
+        // rather than on every rewritten line, which would be most of them.
+        const now = Date.now();
+        if (lastSize && now - lastHeartbeat > 15000) {
+          lastHeartbeat = now;
+          log('  still downloading… ' + lastSize + ' so far');
+        }
       });
 
       child.on('error', reject);

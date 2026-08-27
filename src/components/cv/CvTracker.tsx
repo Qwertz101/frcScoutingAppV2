@@ -266,7 +266,9 @@ function CaptureWorkerPanel({ t }: { t: ReturnType<typeof useCvTracker> }) {
           <span className="cv-worker-meta">
             {job.mode === 'live' ? 'live' : 'recording'} · {job.matches} match
             {job.matches === 1 ? '' : 'es'}
-            {pct !== null && running ? ` · scanned ${pct}%` : ''}
+            {pct !== null && running
+              ? ` · ${job?.progress?.phase === 'download' ? 'downloaded' : 'scanned'} ${pct}%`
+              : ''}
             {job.write ? '' : ' · dry run'}
           </span>
         )}

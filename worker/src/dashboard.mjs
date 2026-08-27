@@ -155,8 +155,9 @@ function renderJob(s) {
   ];
   const span = j.progress ? j.progress.to - j.progress.from : 0;
   if (span > 0) {
+    const verb = j.progress.phase === 'download' ? 'downloaded' : 'scanned';
     bits.push(
-      'scanned ' +
+      verb + ' ' +
         Math.min(100, Math.round(((j.progress.at - j.progress.from) / span) * 100)) + '%'
     );
   }
