@@ -22,17 +22,23 @@
  * VOD scanner run directly against a YouTube URL: nothing downstream of this
  * function needs to know the input was ever a URL at all.
  *
- * **Nothing is written to disk either way.** Live pipes bytes straight through
- * to ffmpeg's stdin; VOD resolution never downloads anything up front, only a
- * signed URL that ffmpeg then makes its own byte-range requests against.
+ * **Neither of those writes anything to disk.** Live pipes bytes straight
+ * through to ffmpeg's stdin; VOD resolution never downloads anything up front,
+ * only a signed URL that ffmpeg then makes its own byte-range requests against.
+ *
+ * **`downloadVod`** is the exception, and an opt-in one: it fetches a window to
+ * a file because local seeking is several times faster than remote seeking.
+ * That file is deleted when the job ends unless `keep` is set, which exists so
+ * that iterating on the same footage does not re-fetch gigabytes each time.
  */
 
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, rm, readdir, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readdir, stat } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resolveBin } from './ffmpeg.mjs';
+import { REPO_ROOT } from './core.mjs';
 import { frames } from './ffmpeg.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -83,6 +89,50 @@ export async function resolveVodUrl(url, opts = {}) {
 }
 
 /**
+ * Where kept downloads live.
+ *
+ * Inside the repo rather than under a temp or AppData path, deliberately: this
+ * is the one thing in the pipeline a person may need to go find, inspect, or
+ * delete by hand, so it should be somewhere they can actually navigate to.
+ * Gitignored.
+ */
+export const DOWNLOAD_DIR = join(REPO_ROOT, 'worker', 'downloads');
+
+/**
+ * A stable, human-legible filename for one (video, window, quality) request.
+ *
+ * Includes the window because a different window is a different file -- reusing
+ * minutes 51-122 for a request for minutes 10-30 would silently read the wrong
+ * footage, which is far worse than downloading again. The YouTube id keeps it
+ * recognisable in a file listing; the rest disambiguates.
+ */
+function cacheStem(url, start, duration, maxHeight) {
+  const id = /(?:v=|\/live\/|youtu\.be\/|\/watch\/)([A-Za-z0-9_-]{6,})/.exec(url)?.[1] ?? 'vod';
+  const from = Math.round(Number(start ?? 0));
+  const len = duration != null ? Math.round(Number(duration)) : 'end';
+  return `${id}_t${from}_d${len}_${maxHeight}p`;
+}
+
+/** A finished download for `stem`, or null. Ignores interrupted `.part` files. */
+async function findDownload(dir, stem) {
+  let files;
+  try {
+    files = await readdir(dir);
+  } catch {
+    return null;
+  }
+  const found = files.find((f) => f.startsWith(stem + '.') && !f.endsWith('.part'));
+  if (!found) return null;
+  if (files.some((f) => f.startsWith(stem + '.') && f.endsWith('.part'))) return null;
+  try {
+    const { size } = await stat(join(dir, found));
+    return size > 0 ? { path: join(dir, found), size } : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch a VOD (or one window of it) to a temp file, and hand back a cleanup.
  *
  * **This is the one place the "no video is ever stored" rule bends, and it
@@ -105,7 +155,12 @@ export async function resolveVodUrl(url, opts = {}) {
  * right, because `MatchClock` derives the true match start from the on-screen
  * timer rather than trusting the number it was handed.
  *
- * Returns `{ path, offset, bytes, cleanup }`. **Always call `cleanup`.**
+ * `keep` opts out of the delete and reuses the file next time -- see
+ * `DOWNLOAD_DIR`. That is a real, if narrow, exception to the rule above, and
+ * it is opt-in and visible for exactly that reason.
+ *
+ * Returns `{ path, offset, bytes, cleanup, reused }`. **Always call `cleanup`**
+ * -- it is a no-op when the file is being kept.
  */
 export async function downloadVod(url, opts = {}) {
   const platform = detectPlatform(url);
@@ -115,13 +170,40 @@ export async function downloadVod(url, opts = {}) {
 
   const maxHeight = opts.maxHeight ?? 1080;
   const log = opts.log ?? (() => {});
-  const dir = await mkdtemp(join(tmpdir(), 'frc-capture-'));
-  const cleanup = async () => {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
-  };
+  const keep = Boolean(opts.keep);
+
+  // A kept download goes somewhere stable and findable rather than into a
+  // randomly-named temp directory: the point is to reuse it across runs, and a
+  // path nobody can predict is a path nobody can clear out either.
+  const dir = keep ? DOWNLOAD_DIR : await mkdtemp(join(tmpdir(), 'frc-capture-'));
+  if (keep) await mkdir(dir, { recursive: true });
+
+  const stem = keep ? cacheStem(url, opts.start, opts.duration, maxHeight) : 'vod';
+  const cleanup = keep
+    ? async () => {}
+    : async () => {
+        await rm(dir, { recursive: true, force: true }).catch(() => {});
+      };
+
+  // Reuse only a download that actually finished. yt-dlp writes to `.part` and
+  // renames on success, so a leftover `.part` beside the file means the last
+  // attempt died partway and whatever is there must not be trusted.
+  if (keep) {
+    const existing = await findDownload(dir, stem);
+    if (existing) {
+      log('reusing existing download: ' + existing.path + ' (' + (existing.size / 1e9).toFixed(2) + ' GB)');
+      return {
+        path: existing.path,
+        offset: Number(opts.start ?? 0),
+        bytes: existing.size,
+        cleanup,
+        reused: true,
+      };
+    }
+  }
 
   try {
-    const args = ['-f', YT_FORMAT(maxHeight), '--no-warnings', '-o', join(dir, 'vod.%(ext)s')];
+    const args = ['-f', YT_FORMAT(maxHeight), '--no-warnings', '-o', join(dir, stem + '.%(ext)s')];
 
     let offset = 0;
     if (opts.start != null || opts.duration != null) {
@@ -233,7 +315,7 @@ export async function downloadVod(url, opts = {}) {
         // early) still leaves no usable file and is still rejected.
         try {
           const files = await readdir(dir);
-          const found = files.find((f) => f.startsWith('vod.'));
+          const found = files.find((f) => f.startsWith(stem + '.') && !f.endsWith('.part'));
           if (found) {
             const { size } = await stat(join(dir, found));
             if (size > 0) return resolve();
@@ -253,13 +335,14 @@ export async function downloadVod(url, opts = {}) {
 
     if (opts.signal?.aborted) throw new Error('cancelled during download');
 
-    const found = (await readdir(dir)).find((f) => f.startsWith('vod.'));
-    if (!found) throw new Error('yt-dlp produced no file for ' + url);
-    const path = join(dir, found);
-    const { size } = await stat(path);
-    log('downloaded ' + (size / 1e9).toFixed(2) + ' GB');
+    const done = await findDownload(dir, stem);
+    if (!done) throw new Error('yt-dlp produced no file for ' + url);
+    log(
+      'downloaded ' + (done.size / 1e9).toFixed(2) + ' GB' +
+        (keep ? ' -> kept at ' + done.path : '')
+    );
 
-    return { path, offset, bytes: size, cleanup };
+    return { path: done.path, offset, bytes: done.size, cleanup, reused: false };
   } catch (e) {
     await cleanup();
     throw e;

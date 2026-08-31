@@ -16,12 +16,17 @@ because `match_key` is a primary key and an upsert replaces whatever is there.
 This pipeline persists **only derived numbers**. There is no clip archive and no
 cache of footage. "Clip" in this codebase means *a time window*, never a file.
 
-One bounded exception, added deliberately: `--download` fetches a VOD (or one
-window of it) to a temp file because local seeking is several times faster than
-remote seeking -- see "Download first, or bound the window". That file is
-deleted in the job's `finally` before the job returns. A file that cannot
-outlive the run that made it is not an archive, and the deletion is not
-optional.
+Two bounded exceptions, both deliberate and both opt-in. `--download` fetches a
+VOD (or one window of it) to a temp file because local seeking is several times
+faster than remote seeking -- see "Download first, or bound the window". That
+file is deleted in the job's `finally` before the job returns.
+
+`--keep-download` additionally keeps that file in `worker/downloads/` so
+repeated runs over the same footage do not re-fetch it. This is the one place
+footage genuinely persists between runs, which is why it is off by default,
+named plainly, confined to a single gitignored folder, and safe to delete by
+hand. It exists for iterating on one broadcast, not for building a library --
+please do not grow it into one.
 
 Please do not add clip archiving as a convenience later. Nothing here needs it:
 the raw per-second OCR observations are persisted alongside the gated samples,
@@ -344,6 +349,22 @@ is a few seconds off the requested start; `greenFlagAt` is reported back in the
 place. That slop is harmless because `t0` only ever has to be roughly right --
 `MatchClock` derives the true start from the on-screen timer. Verified: a match
 found at 5224s streaming came back as 5228s downloaded.
+
+### Keeping a download between runs
+
+`--download` deletes the fetched file when the job ends. `--keep-download`
+(the "Keep it for next time" checkbox) instead leaves it in **`worker/downloads/`**
+and reuses it on the next run of the same window -- measured at 50s down to
+3.1s on a one-minute window, and the saving scales with the file.
+
+Worth it while iterating on the same footage; not worth it for a one-pass read,
+since these are gigabytes. The folder is gitignored and safe to delete by hand
+at any time -- that is the intended way to reclaim the space.
+
+The cache key is `<videoId>_t<start>_d<length>_<height>p`, so a *different*
+window is a different file rather than a wrong reuse. Only a finished download
+is reused: yt-dlp writes `.part` and renames on success, so a leftover `.part`
+means the previous attempt died and the file is re-fetched rather than trusted.
 
 ### Bound the window — remote scanning is roughly realtime
 

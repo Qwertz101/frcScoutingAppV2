@@ -66,11 +66,15 @@ export async function runVod(source, opts = {}) {
       const dl = await downloadVod(input, {
         start: scanStart,
         duration: scanDuration,
+        keep: Boolean(opts.keepDownload),
         signal: opts.signal,
         log,
         onProgress: opts.onProgress,
       });
       input = dl.path;
+      // A kept download's cleanup is a no-op, so this stays unconditional --
+      // the decision lives in one place (downloadVod) rather than being
+      // re-derived here.
       cleanupDownload = dl.cleanup;
       sourceOffset = dl.offset;
       scanStart = undefined;
@@ -202,7 +206,7 @@ export async function runVod(source, opts = {}) {
     // exception rather than a change of policy.
     if (cleanupDownload) {
       await cleanupDownload();
-      log('temporary download deleted');
+      if (!opts.keepDownload) log('temporary download deleted');
     }
   }
 

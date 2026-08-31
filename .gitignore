@@ -47,3 +47,6 @@ worker/tools/pipeline.mjs
 worker/tools/ocr.mjs
 worker/tools/out/
 worker/tools/serve.log
+
+# Kept VOD downloads (--keep-download). Large; never committed.
+worker/downloads/

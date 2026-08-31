@@ -104,6 +104,7 @@ const PAGE = `<!doctype html>
     <label>for</label>
     <input type="number" id="dur" min="0" placeholder="length, min">
     <label><input type="checkbox" id="download" checked> download first (much faster)</label>
+    <label title="Keeps the fetched file in worker/downloads so the next run on the same window reuses it instead of re-fetching. Delete that folder to reclaim the space."><input type="checkbox" id="keep"> keep the download</label>
   </div>
   <div class="hint" id="cost"></div>
 </form>
@@ -154,7 +155,7 @@ function renderJob(s) {
     ? 'Uncheck for a dry run'
     : 'This worker was started without --write, so every job is a dry run';
 
-  for (const id of ['start', 'dur', 'download']) $(id).disabled = Boolean(running);
+  for (const id of ['start', 'dur', 'download', 'keep']) $(id).disabled = Boolean(running);
 
   if (!seededEvent && !touched && s.eventKey) {
     $('event').value = s.eventKey;
@@ -222,6 +223,7 @@ $('job').onsubmit = async (e) => {
     mode: document.querySelector('input[name=mode]:checked').value,
     write: $('write').checked,
     download: $('download').checked,
+    keepDownload: $('keep').checked,
     start: startMin ? Number(startMin) * 60 : undefined,
     duration: durMin ? Number(durMin) * 60 : undefined,
   };

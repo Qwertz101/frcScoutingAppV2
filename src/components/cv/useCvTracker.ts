@@ -170,6 +170,14 @@ export function useCvTracker() {
    * real file for the length of the run.
    */
   const [workerDownload, setWorkerDownload] = useState(true);
+  /**
+   * Keep the fetched footage instead of deleting it when the job ends.
+   *
+   * Off by default: the files are gigabytes and the common case is one pass
+   * over a window. Worth turning on while iterating on the same footage, where
+   * re-fetching the same 2 GB for every attempt is pure waste.
+   */
+  const [workerKeepDownload, setWorkerKeepDownload] = useState(false);
 
   const refreshWorker = useCallback(async () => {
     try {
@@ -417,6 +425,7 @@ export function useCvTracker() {
         // Only meaningful for a finished recording. A live broadcast is
         // consumed as it arrives and there is nothing to fetch ahead of.
         download: mode === 'vod' ? workerDownload : undefined,
+        keepDownload: mode === 'vod' ? workerKeepDownload : undefined,
       });
       // Poll immediately rather than waiting for the next tick, so the panel
       // shows "running" the instant the button is released.
@@ -907,6 +916,8 @@ export function useCvTracker() {
     setWindowDuration,
     workerDownload,
     setWorkerDownload,
+    workerKeepDownload,
+    setWorkerKeepDownload,
     submitToWorker,
     cancelWorker,
     refreshWorker,

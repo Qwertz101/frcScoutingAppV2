@@ -48,6 +48,7 @@ export interface WorkerJob {
   eventKey: string;
   write: boolean;
   download: boolean;
+  keepDownload: boolean;
   layout: string | null;
   status: JobStatus;
   startedAt: number;
@@ -98,6 +99,11 @@ export interface SubmitJobRequest {
    * trip. The file is deleted as soon as the job finishes.
    */
   download?: boolean;
+  /**
+   * Keep the fetched file in `worker/downloads` instead of deleting it, so a
+   * later run on the same window reuses it rather than re-fetching gigabytes.
+   */
+  keepDownload?: boolean;
 }
 
 /**

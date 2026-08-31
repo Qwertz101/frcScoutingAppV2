@@ -127,6 +127,7 @@ async function startJob(body) {
     eventKey,
     write,
     download: Boolean(body.download),
+    keepDownload: Boolean(body.keepDownload),
     layout: layout?.name ?? null,
     status: 'running',
     startedAt: Date.now(),
@@ -169,6 +170,7 @@ async function startJob(body) {
           signal: controller.signal,
           start: body.start, duration: body.duration,
           download: Boolean(body.download),
+          keepDownload: Boolean(body.keepDownload),
           log,
           onSchema: (s) => {
             state.unmigrated = !s.ok;

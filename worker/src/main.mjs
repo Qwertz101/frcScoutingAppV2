@@ -44,7 +44,7 @@ const input = process.argv[2];
 if (!input || input.startsWith('--')) {
   console.error(
     'usage: node worker/src/main.mjs <video-or-youtube-url> --event <eventKey> ' +
-      '[--start sec] [--duration sec] [--download] [--write] [--force] [--no-dashboard]'
+      '[--start sec] [--duration sec] [--download] [--keep-download] [--write] [--force] [--no-dashboard]'
   );
   process.exit(1);
 }
@@ -88,6 +88,7 @@ const res = await runVod(input, {
   start: flag('start', null),
   duration: flag('duration', null),
   download: has('download'),
+  keepDownload: has('keep-download'),
   layout,
   log,
   onSchema: (s) => {

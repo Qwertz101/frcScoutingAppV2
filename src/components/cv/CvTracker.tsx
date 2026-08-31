@@ -475,6 +475,18 @@ export function CvTracker({ onBack }: CvTrackerProps) {
                 />
                 Download first (faster)
               </label>
+              <label
+                className="cv-window-check"
+                title="Keeps the fetched file in worker/downloads so the next run on the same window reuses it instead of re-fetching. Delete that folder to reclaim the space."
+              >
+                <input
+                  type="checkbox"
+                  checked={t.workerKeepDownload}
+                  disabled={jobRunning || !t.workerDownload}
+                  onChange={(e) => t.setWorkerKeepDownload(e.target.checked)}
+                />
+                Keep it for next time
+              </label>
               <span className="cv-window-hint">
                 {/* A multi-hour VOD is cheap to scan from a local file but every
                     seek against a remote YouTube URL is a network round trip —
