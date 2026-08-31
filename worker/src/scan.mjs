@@ -111,6 +111,7 @@ export async function findOverlayRuns(input, opts = {}) {
   const layout = opts.layout ?? FRC_BROADCAST;
   const fps = opts.fps ?? SCAN_FPS;
   const onProgress = opts.onProgress;
+  const fixedQuads = opts.fixedQuads ?? null;
 
   const runs = [];
   let open = null;
@@ -143,8 +144,16 @@ export async function findOverlayRuns(input, opts = {}) {
     // quality score rejects it, measured at 20 minutes against a remote VOD.
     // The guards further down did catch it — nothing wrong was written — but
     // catching it here means not paying for it at all.
-    const regions = detectScoreRegions(f, layout);
-    const present = regions !== null && isOverlayPresent(f, regions.blue, regions.red);
+    // With a taught layout the plates are already known, so this reduces to
+    // "are those two boxes filled with alliance colour" -- no geometry search
+    // at all, and none of the ways that search can pick the wrong thing.
+    let present;
+    if (fixedQuads) {
+      present = isOverlayPresent(f, fixedQuads.blue, fixedQuads.red);
+    } else {
+      const regions = detectScoreRegions(f, layout);
+      present = regions !== null && isOverlayPresent(f, regions.blue, regions.red);
+    }
     n++;
     if (onProgress && n % 100 === 0) onProgress(f.at, meta.duration);
 
@@ -178,7 +187,12 @@ export async function findOverlayRuns(input, opts = {}) {
  * lot yields a consensus that fits none of them, and the failure is quiet: the
  * quads still look plausible, the clock simply never locks.
  */
-async function quadsForWindow(input, from, to, meta, layout = FRC_BROADCAST) {
+async function quadsForWindow(input, from, to, meta, layout = FRC_BROADCAST, fixedQuads = null) {
+  // A calibrated layout already answers this, and answers it the same way for
+  // every window -- so skip the seven seeks entirely. That is most of Tier B's
+  // cost on a remote VOD, and it removes the case where consensus fails on a
+  // window that happens to span a replay.
+  if (fixedQuads) return fixedQuads;
   const span = Math.max(1, to - from);
   const shots = [];
   for (let i = 0; i < 7; i++) {
@@ -275,6 +289,8 @@ export async function scan(input, opts = {}) {
   const pool = opts.pool ?? (await createPool(opts.workers));
   const ownPool = !opts.pool;
   const log = opts.log ?? (() => {});
+  // Supplied when the event has a human-taught layout; see calibrated.mjs.
+  const fixedQuads = opts.fixedQuads ?? null;
 
   try {
     const began = Date.now();
@@ -315,7 +331,7 @@ export async function scan(input, opts = {}) {
 
         for (let attempt = 0; attempt < 2; attempt++) {
           if (!quads || attempt === 1) {
-            quads = await quadsForWindow(input, cursor, until, meta, layout);
+            quads = await quadsForWindow(input, cursor, until, meta, layout, fixedQuads);
             if (!quads) break;
           }
           bracket = await bracketStart(input, cursor, until, quads, meta, pool);
@@ -370,7 +386,8 @@ export async function scan(input, opts = {}) {
             run.start,
             Math.min(run.start + MATCH_LEN, run.end),
             meta,
-            layout
+            layout,
+            fixedQuads
           );
           out.push({ greenFlagAt: Number(run.start.toFixed(2)), method: 'run', run, quads });
           log('  match at ~' + run.start.toFixed(1) + 's  (run ' + run.start.toFixed(0) + '-' + run.end.toFixed(0) + 's, NO clock lock — flagged)');

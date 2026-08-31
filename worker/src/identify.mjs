@@ -105,6 +105,36 @@ export async function voteTeams(shots, quads, pool, opts = {}) {
   const minVotes = opts.minVotes ?? MIN_VOTES;
   const votes = { blue: new Map(), red: new Map() };
 
+  // A taught layout names each team box outright, so read those three directly
+  // instead of inferring a band from the score plate. Every heuristic below --
+  // which row the teams are on, where the plate ends, how to split one band
+  // into three numbers -- is a guess this replaces with an answer.
+  if (opts.teamQuads) {
+    for (const frame of shots) {
+      for (const side of ['blue', 'red']) {
+        for (const tq of opts.teamQuads[side] ?? []) {
+          const gray = rectifyToGray(frame, tq, BAND_W, BAND_H);
+          if (!gray) continue;
+          const band = { data: gray, width: BAND_W, height: BAND_H };
+          for (const variant of PREP_VARIANTS) {
+            const groups = prepareNumberGroups(band, {
+              ...variant,
+              minDigits: MIN_DIGITS,
+              maxDigits: MAX_DIGITS,
+            });
+            for (const g of groups) {
+              const r = await pool.run((w) => recognizePlane(w, g));
+              if (r.value === null || r.value < 1) continue;
+              const m = votes[side];
+              m.set(r.value, (m.get(r.value) || 0) + 1);
+            }
+          }
+        }
+      }
+    }
+    return tally(votes, minVotes, quads, shots.length);
+  }
+
   for (const frame of shots) {
     for (const side of ['blue', 'red']) {
       const scoreQuad = side === 'blue' ? quads.blue : quads.red;
@@ -155,6 +185,16 @@ export async function voteTeams(shots, quads, pool, opts = {}) {
     }
   }
 
+  return tally(votes, minVotes, quads, shots.length);
+}
+
+/**
+ * Turn per-side vote tallies into the numbers worth believing.
+ *
+ * Shared by both reading paths -- taught boxes and inferred bands -- so the
+ * threshold that separates a real number from a logo fragment is defined once.
+ */
+function tally(votes, minVotes, quads, frameCount) {
   const confident = (m) =>
     [...m.entries()].filter(([, n]) => n >= minVotes).map(([v]) => v);
 
@@ -166,7 +206,7 @@ export async function voteTeams(shots, quads, pool, opts = {}) {
       red: Object.fromEntries(votes.red),
     },
     quads,
-    frames: shots.length,
+    frames: frameCount,
   };
 }
 

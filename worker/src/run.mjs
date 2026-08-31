@@ -27,6 +27,12 @@ import { createPool, defaultWorkers } from './ocr.mjs';
 import { isRemoteSource, resolveVodUrl, downloadVod } from './sources.mjs';
 import { resolveLayout } from './layouts.mjs';
 import { FRC_BROADCAST } from './core.mjs';
+import {
+  fetchCalibratedLayout,
+  quadsFromLayout,
+  teamQuadsFromLayout,
+  validateLayout,
+} from './calibrated.mjs';
 
 /**
  * Scan a recording for matches, read each one, and optionally write them.
@@ -94,6 +100,29 @@ export async function runVod(source, opts = {}) {
   if (eventKey && !schedule) log('warning: ' + eventKey + ' not on TBA — matches cannot be identified');
   else if (schedule) log(eventKey + ': ' + schedule.length + ' qual matches on TBA');
 
+  // A layout a human taught for this event replaces the whole detection step.
+  // See calibrated.mjs: this is the path that makes an unfamiliar or distorted
+  // scoreboard workable, and detection stays as the fallback when there is none.
+  let fixedQuads = null;
+  let teamQuads = null;
+  const calibrated = opts.calibrated ?? (await fetchCalibratedLayout(eventKey));
+  if (calibrated) {
+    const problem = validateLayout(calibrated);
+    if (problem) {
+      log('calibrated layout for ' + eventKey + ' is unusable (' + problem + ') — falling back to detection');
+    } else {
+      fixedQuads = quadsFromLayout(calibrated);
+      teamQuads = teamQuadsFromLayout(calibrated);
+      log(
+        'using the calibrated layout for ' + eventKey +
+          (calibrated.label ? ' (' + calibrated.label + ')' : '') +
+          (teamQuads ? ' with team boxes' : ' — no team boxes, identification will infer them')
+      );
+    }
+  } else if (eventKey) {
+    log('no calibrated layout for ' + eventKey + ' — detecting the scoreboard from the video');
+  }
+
   const meta = opts.meta ?? (await probe(input));
   log(sourceLabel + '  ' + meta.width + 'x' + meta.height + '  ' + (meta.duration / 60).toFixed(1) + ' min');
 
@@ -113,6 +142,7 @@ export async function runVod(source, opts = {}) {
       layout,
       start: scanStart,
       duration: scanDuration,
+      fixedQuads,
       signal: opts.signal,
       // Reported against the window actually being scanned, not the whole
       // recording. `--start 3600 --duration 900` on a nine-hour VOD is 100% of
@@ -146,7 +176,7 @@ export async function runVod(source, opts = {}) {
         out = await processMatch(input, f.greenFlagAt, {
           pool,
           meta,
-          quads: f.quads,
+          quads: fixedQuads ?? f.quads,
           layout,
           eventKey,
           sourceLabel: isRemoteSource(sourceLabel) ? sourceLabel : sourceLabel.split(/[\\/]/).pop(),
@@ -173,7 +203,7 @@ export async function runVod(source, opts = {}) {
       if (schedule) {
         log(tag + ' identifying…');
         ident = await identify(input, f.greenFlagAt, schedule, {
-          pool, meta, quads: f.quads, layout,
+          pool, meta, quads: fixedQuads ?? f.quads, teamQuads, layout,
         });
         if (ident.matchKey) out.log.matchKey = ident.matchKey;
       }

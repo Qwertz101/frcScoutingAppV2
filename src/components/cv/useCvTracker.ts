@@ -179,6 +179,19 @@ export function useCvTracker() {
    */
   const [workerKeepDownload, setWorkerKeepDownload] = useState(false);
 
+  /**
+   * Frames captured for calibration, as data URLs, plus what the detector made
+   * of the first one.
+   *
+   * Several frames, never one. Every layout mistake in this pipeline so far came
+   * from confirming a box against a single frame and finding it wrong the moment
+   * the match moved on — a replay cutaway, a phase change, a graphic sliding in.
+   */
+  const [calFrames, setCalFrames] = useState<string[]>([]);
+  const [calFrameSize, setCalFrameSize] = useState<{ width: number; height: number } | null>(null);
+  const [calDetected, setCalDetected] = useState<Record<string, { x0: number; y0: number; x1: number; y1: number }>>({});
+  const [calibrating, setCalibrating] = useState(false);
+
   const refreshWorker = useCallback(async () => {
     try {
       setWorker(await getWorkerState());
@@ -784,6 +797,99 @@ export function useCvTracker() {
    * operator to "almost right" instantly, after which the handles are for
    * nudging rather than for finding the scoreboard from scratch.
    */
+  /**
+   * Grab several frames spread across the footage, for calibrating against.
+   *
+   * Seeks a recorded video to evenly spaced points; for a live screen share
+   * there is nothing to seek, so it samples over a few seconds of wall time
+   * instead. Either way the point is the same: a box has to be right on more
+   * than the one frame that happened to be showing.
+   */
+  const captureCalibrationFrames = async (count = 6) => {
+    const v = videoRef.current;
+    if (!v || !v.videoWidth || !v.videoHeight) {
+      setError('Load footage first, and let a frame with the scoreboard on screen show.');
+      return;
+    }
+    setError(null);
+
+    const shots: string[] = [];
+    const canvas = document.createElement('canvas');
+    canvas.width = v.videoWidth;
+    canvas.height = v.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const grab = () => {
+      ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+      // JPEG, not PNG: these are photographs of a broadcast, and six 1080p PNGs
+      // is tens of megabytes of state to hold in a React component.
+      return canvas.toDataURL('image/jpeg', 0.85);
+    };
+
+    const seekable = sourceKind !== 'screen' && Number.isFinite(v.duration) && v.duration > 1;
+    try {
+      if (seekable) {
+        const wasPaused = v.paused;
+        v.pause();
+        const start = v.duration * 0.1;
+        const span = v.duration * 0.8;
+        for (let i = 0; i < count; i++) {
+          const at = start + (span * i) / Math.max(1, count - 1);
+          await new Promise<void>((resolve) => {
+            const done = () => {
+              v.removeEventListener('seeked', done);
+              resolve();
+            };
+            v.addEventListener('seeked', done);
+            v.currentTime = Math.min(at, v.duration - 0.1);
+          });
+          shots.push(grab());
+        }
+        if (!wasPaused) void v.play().catch(() => {});
+      } else {
+        for (let i = 0; i < count; i++) {
+          shots.push(grab());
+          await new Promise((r) => setTimeout(r, 700));
+        }
+      }
+    } catch {
+      setError(
+        'The browser would not let this video be read pixel-by-pixel. Upload the file directly, or use Share Screen.'
+      );
+      return;
+    }
+
+    setCalFrames(shots);
+    setCalFrameSize({ width: v.videoWidth, height: v.videoHeight });
+
+    // Offer the detector's guess as a starting point. Failure here is fine and
+    // expected on an unfamiliar layout — that is why a human is being asked.
+    try {
+      const frame = captureFrame(v, v.videoWidth, v.videoHeight);
+      const found = frame ? detectScoreRegions(frame) : null;
+      if (found) {
+        const box = (q: Quad) => ({
+          x0: Math.min(...q.map((p) => p.x)),
+          y0: Math.min(...q.map((p) => p.y)),
+          x1: Math.max(...q.map((p) => p.x)),
+          y1: Math.max(...q.map((p) => p.y)),
+        });
+        setCalDetected({
+          blueScore: box(found.blue),
+          redScore: box(found.red),
+          timer: box(found.timer),
+        });
+      } else {
+        setCalDetected({});
+      }
+    } catch {
+      setCalDetected({});
+    }
+
+    setCalibrating(true);
+  };
+
   const autoDetect = () => {
     const v = videoRef.current;
     if (!v || !v.videoWidth || !v.videoHeight) {
@@ -952,6 +1058,12 @@ export function useCvTracker() {
     reset,
     resetQuad,
     autoDetect,
+    calFrames,
+    calFrameSize,
+    calDetected,
+    calibrating,
+    setCalibrating,
+    captureCalibrationFrames,
     persist,
     buildLog,
     correct,

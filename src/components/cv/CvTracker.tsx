@@ -6,6 +6,8 @@ import { GrayPlane, Quad } from '../../services/cv/imagePipeline';
 import { grayToImageData } from '../../services/cv/browserCanvas';
 import { isStreamLink, useCvTracker } from './useCvTracker';
 import { WORKER_DASHBOARD_URL } from '../../services/cv/captureWorker';
+import { LayoutCalibrator } from './LayoutCalibrator';
+import { LayoutElementId, LayoutRect } from '../../services/cv/layoutStore';
 import '../../styles/cvtracker.css';
 
 const BoltMark = () => (
@@ -430,6 +432,16 @@ export function CvTracker({ onBack }: CvTrackerProps) {
             <button className="cv-btn-outline" onClick={t.shareScreen}>
               Share Screen
             </button>
+            {/* Teaching the layout is per event, not per match: the worker
+                reads it from Supabase, so this is done once and every machine
+                scanning this event benefits. */}
+            <button
+              className="cv-btn-outline"
+              onClick={() => void t.captureCalibrationFrames()}
+              title="Show the software where this competition's scoreboard is. Done once per event."
+            >
+              Calibrate Layout
+            </button>
             <label className="cv-btn-outline cv-file-btn">
               Import JSON
               <input
@@ -515,6 +527,19 @@ export function CvTracker({ onBack }: CvTrackerProps) {
             be served by the worker itself. Without it you can still{' '}
             <strong>Upload File</strong>, paste a direct video URL served with permissive CORS, or
             use <strong>Share Screen</strong> and pick the tab playing the stream.
+          </div>
+        )}
+
+        {t.calibrating && (
+          <div className="cv-card">
+            <LayoutCalibrator
+              eventKey={t.eventKey}
+              frames={t.calFrames}
+              frameSize={t.calFrameSize}
+              sourceLabel={t.sourceLabel}
+              detected={t.calDetected as Partial<Record<LayoutElementId, LayoutRect>>}
+              onClose={() => t.setCalibrating(false)}
+            />
           </div>
         )}
 
