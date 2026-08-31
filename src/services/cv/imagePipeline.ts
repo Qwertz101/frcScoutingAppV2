@@ -1138,16 +1138,16 @@ const PLATE_MIN_FLAT_FRACTION = 0.4;
 /** Saturation below this counts as "not an alliance colour". */
 const PLATE_FLAT_SAT = 0.2;
 
+/**
+ * How far, in band heights, to search for the coloured bar's full extent when
+ * a profile slices it. The bar on a two-row scoreboard measured about six band
+ * heights tall, so this reaches past it rather than stopping inside it.
+ */
+const BAR_SEARCH_BANDS = 8;
+
 /** Samples per axis for the white-plate test. See `flatBrightness`. */
 const PLATE_SAMPLE_SIDE = 24;
 
-/**
- * Below this luma counts as ink when asking whether a timer plate is blank.
- * See `LayoutProfile.gapInk`. Deliberately mid-range rather than near-black:
- * the question is "is anything printed here", and clock glyphs are
- * anti-aliased, so a strict threshold would undercount their edges.
- */
-const GAP_INK_LUMA = 128;
 
 /**
  * The two alliance blocks are near-identical widths by design. Two unrelated
@@ -1279,41 +1279,6 @@ function glyphRows(
   return best;
 }
 
-/**
- * Fraction of a rectangle dark enough to be ink on a white plate.
- *
- * Distinguishes a clock plate from a blank one; see `LayoutProfile.gapInk`.
- * Subsampled on the same reasoning as `flatBrightness` -- this is a fraction
- * over a large area, and it runs inside the candidate loop.
- */
-function darkFraction(
-  frame: RgbaFrame,
-  x0: number,
-  x1: number,
-  y0: number,
-  y1: number
-): number {
-  const W = frame.width;
-  const ax0 = Math.max(0, Math.round(x0));
-  const ax1 = Math.min(W - 1, Math.round(x1));
-  const ay0 = Math.max(0, Math.round(y0));
-  const ay1 = Math.min(frame.height - 1, Math.round(y1));
-  if (ax1 <= ax0 || ay1 <= ay0) return 0;
-
-  const stepX = Math.max(1, Math.floor((ax1 - ax0 + 1) / PLATE_SAMPLE_SIDE));
-  const stepY = Math.max(1, Math.floor((ay1 - ay0 + 1) / PLATE_SAMPLE_SIDE));
-
-  let dark = 0;
-  let n = 0;
-  for (let y = ay0; y <= ay1; y += stepY) {
-    for (let x = ax0; x <= ax1; x += stepX) {
-      if (lumaAt(frame.data, (y * W + x) * 4) < GAP_INK_LUMA) dark++;
-      n++;
-    }
-  }
-  return n ? dark / n : 0;
-}
-
 /** Mean luma and desaturated fraction of a rectangle — the timer-plate test. */
 function flatBrightness(
   frame: RgbaFrame,
@@ -1412,27 +1377,38 @@ export interface LayoutProfile {
    */
   timer: { mode: 'inline' } | { mode: 'below' };
   /**
-   * Minimum fraction of dark pixels required inside the timer gap.
+   * Where the scores and team numbers sit inside the coloured bar, as
+   * fractions of its height.
    *
-   * For a scoreboard drawn as TWO stacked rows sharing one column layout, where
-   * the wrong one would otherwise win. IRI's broadcast is the case this was
-   * built for: team numbers and BLUE/RED labels on top, scores and clock
-   * underneath, and *both* rows are blue block | white gap | red block. Every
-   * geometric test passes on both -- colour runs, symmetry, fill, even "a white
-   * plate exists in the gap" -- so the detector took the upper row, framed the
-   * word "BLUE" as a score, and returned 0-0 with the clock never locking.
+   * For a scoreboard drawn as TWO stacked rows inside one continuous bar. IRI's
+   * is the case this was built for: team numbers and BLUE/RED labels above,
+   * scores and clock below, and crucially the blue and red blocks run
+   * unbroken through both rows -- so the plate's colour extent is the whole
+   * bar and the glyph pass, left to itself, crops the label and the score
+   * together.
    *
-   * What actually separates them is that the upper row's white plate is *blank*
-   * while the real one holds the clock. Measured on that broadcast: 0.000 dark
-   * fraction on the label row against 0.336 on the score row -- not a close
-   * call, which is why a plain threshold suffices.
+   * Measured on that broadcast (blue score column, one frame mid-match): bar
+   * 88-254, label text 112-127, score digits 175-229. As fractions of the bar
+   * that is labels at 0.14-0.24 and scores at 0.52-0.85, so a split anywhere
+   * around 0.4 separates them with room to spare.
    *
-   * Left unset for existing layouts rather than applied globally. It only makes
-   * sense for `timer: inline` (a `below` timer's gap legitimately holds a logo,
-   * not digits), and imposing a new requirement on broadcasts already verified
-   * against the golden set would risk them for no gain.
+   * Two earlier attempts are worth not repeating. Measuring the plates'
+   * CONTENT does not separate the rows: the obvious "the label row's timer gap
+   * is blank" holds on a staged frame (0.000 dark against 0.336) and fails
+   * during play, where a robot icon sits in that gap in AUTO (0.12-0.33) and
+   * the row's content spreads wider than the clock in TELEOP (0.94 against
+   * 0.84). Picking the lower candidate BAND does not work either -- the bands
+   * are search windows over a bar that is continuous, so growing a plate from
+   * a low band still spans both rows and hands OCR an unreadable 120px crop.
+   * Slicing the bar sidesteps both, because the bar is the one thing here that
+   * is stable.
    */
-  gapInk?: number;
+  bar?: {
+    /** The score row, as [top, bottom] fractions of the bar's height. */
+    score: [number, number];
+    /** The team-number row, same units. Read by `voteTeams`. */
+    teams?: [number, number];
+  };
   /**
    * Which row carries the team numbers.
    *
@@ -1478,7 +1454,7 @@ export const SUNSET_SHOWDOWN: LayoutProfile = {
  *
  * Team numbers and BLUE/RED labels sit on an upper row directly above the
  * scores, drawn with the same blue | white | red columns, so the geometry alone
- * cannot tell the rows apart -- see `gapInk`, which is the whole reason this
+ * cannot tell the rows apart -- see `bar`, which is the whole reason this
  * profile exists. Once the right row is chosen the season's own box geometry
  * fits it: the score blocks sit flush against the clock plate and are within a
  * few percent of its width, which is what `ratio: 0.95, inset: 0` already
@@ -1488,10 +1464,10 @@ export const IRI: LayoutProfile = {
   name: 'iri',
   scoreBox: { mode: 'gap', ratio: 0.95 },
   timer: { mode: 'inline' },
-  // Far below the 0.336 measured on the real score row, and far above the
-  // 0.000 on the label row: placed to reject a blank plate, not to grade a
-  // clock, so a partly-obscured or mid-transition clock still passes.
-  gapInk: 0.05,
+  // Measured, not guessed -- see `bar`. Generous on both edges: the split only
+  // has to fall in the flat blue between the two rows, which spans roughly
+  // 0.25-0.50 of the bar.
+  bar: { score: [0.42, 1.0], teams: [0.0, 0.40] },
   // Teams share the upper row with the BLUE/RED labels, directly above the
   // scores. Measured: score band y 162-244 (h 82), team row y 95-145, so
   // reaching most of a band height up covers the numbers with margin.
@@ -1746,15 +1722,6 @@ function evaluateBand(
         continue;
       }
 
-      // ...and does it hold a clock, rather than merely being white? Only asked
-      // where a layout says a blank plate is a real possibility -- see
-      // `gapInk`. Costs a second pass over the gap, so it runs last, after
-      // every cheaper test has had its chance to reject the band.
-      if (profile.gapInk != null && darkFraction(frame, gapStart, gapEnd, by0, by1) < profile.gapInk) {
-        lastReject = 'timer plate is blank';
-        continue;
-      }
-
       const score = symmetry * fill * sharpTerm;
       if (!bestPair || score > bestPair.score) {
         bestPair = { blueRun, redRun, blueFirst, gapStart, gapEnd, gap, score, symmetry, fill, plate };
@@ -1803,8 +1770,13 @@ function evaluateBand(
     const x0 = Math.max(0, Math.round(xa));
     const x1 = Math.min(W - 1, Math.round(xb));
     const span = Math.max(1, x1 - x0 + 1);
-    const sy0 = Math.max(0, by0 - bandH);
-    const sy1 = Math.min(yLimit, by1 + bandH);
+    // A bar split needs the WHOLE bar, and the bar is several band-heights
+    // tall -- the band is only ever one row of it. Searching the usual one
+    // band-height either side finds just the row the band sat on, which then
+    // gets sliced as though it were the bar and lands back on the wrong row.
+    const reach = profile.bar ? bandH * BAR_SEARCH_BANDS : bandH;
+    const sy0 = Math.max(0, by0 - reach);
+    const sy1 = Math.min(yLimit, by1 + reach);
     const rows = new Int32Array(sy1 - sy0 + 1);
     for (let y = sy0; y <= sy1; y++) {
       let n = 0;
@@ -1827,8 +1799,32 @@ function evaluateBand(
   // plate.
   const [pbTop, pbBot] = plateRows(blueX[0], blueX[1], 1);
   const [prTop, prBot] = plateRows(redX[0], redX[1], 2);
-  const searchLo = Math.min(pbTop, prTop) - bandH;
-  const searchHi = Math.max(pbBot, prBot) + bandH;
+  const barTop = Math.min(pbTop, prTop);
+  const barBot = Math.max(pbBot, prBot);
+
+  // A two-row scoreboard puts labels and team numbers on one row and the
+  // scores on another, both inside ONE continuous coloured bar -- so the colour
+  // extent above spans both, and the glyph pass then finds the label and the
+  // score together and crops a box containing both. `bar.score` says which
+  // slice of that bar the scores occupy, so the glyph pass only ever sees the
+  // right row.
+  //
+  // Proportions rather than pixels because the bar's measured extent moves with
+  // the feed's scaling, and proportions of it do not. Slicing the bar also
+  // makes the choice of candidate band stop mattering: both rows' bands find
+  // the same continuous bar, so either one now yields the same score row. That
+  // is the property that makes this work where picking a band by position did
+  // not -- band choice was never stable, and the bar is.
+  let searchLo: number;
+  let searchHi: number;
+  if (profile.bar) {
+    const h = barBot - barTop + 1;
+    searchLo = Math.round(barTop + h * profile.bar.score[0]);
+    searchHi = Math.round(barTop + h * profile.bar.score[1]);
+  } else {
+    searchLo = barTop - bandH;
+    searchHi = barBot + bandH;
+  }
 
   const bGlyph = glyphRows(frame, blueX[0], blueX[1], searchLo, searchHi);
   const rGlyph = glyphRows(frame, redX[0], redX[1], searchLo, searchHi);

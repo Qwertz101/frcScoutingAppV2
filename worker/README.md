@@ -376,34 +376,34 @@ changes:
 Verified against TBA on the Saturday broadcast: qm55 read **567-259** against
 TBA's **567-262** (blue exact; red 3 low is the usual post-buzzer settle).
 
-**Still wrong on this layout: green-flag detection.** Ground truth for the
-Saturday clip (via `worker/tools/clock-timeline.mjs`) is green flags at 128s,
-700s, 1236s and 1790s; the scanner agrees on roughly one of them per run.
+The fix is `bar`, which slices the coloured bar by proportion: the bar is
+continuous through both rows, so the plate's colour extent spans both and the
+glyph pass would otherwise crop a label and a score together. Measured on the
+blue score column mid-match: bar 88-254, label text 112-127, score digits
+175-229 -- labels at 0.14-0.24 of the bar, scores at 0.52-0.85, so the split at
+0.42 has room either side.
 
-Two things make it hard, and both are worth knowing before attempting it:
+Slicing the bar also makes the choice of candidate band stop mattering, which
+is what makes it work where two earlier attempts failed. Both are documented on
+`LayoutProfile.bar` so they are not retried: measuring plate CONTENT (true on a
+staged frame, false during play) and picking the lowest BAND (grows across both
+rows, unreadable crop).
 
-*The clock is staged long before the match.* IRI parks the scoreboard on a
-frozen `0:20` for over a minute -- measured 57s-126s ahead of a green flag at
-128s. `MatchClock` locks on two consecutive ticking reads, and one OCR slip on
-that static plate supplies them, so a false start appears mid-stage. Worse, a
-false start costs the *next* match too: the scan then advances the cursor by
-`MATCH_LEN + FINE_LEAD` and steps straight over the real one.
+Verified on the Saturday clip against TBA:
 
-Requiring the lock to keep counting for several seconds before believing it was
-tried and **made things worse** -- it rejected the genuine locks along with the
-false ones, and a slightly-wrong start beats falling back to the run-start
-guess. Reverted; see the note on `lockClock`.
+| green flag | truth | match | read | TBA |
+|---|---|---|---|---|
+| 129s | 128s | qm54 | 437-423 | 457-430 |
+| 701s | 700s | qm55 | 567-259 | 567-262 |
+| 1237s | 1236s | qm56 | 210-609 | 214-628 |
 
-*Row selection is the thing underneath.* When the quads land on the label row
-during play the clock cannot be read at all, so no lock happens and the scanner
-falls back to guessing. Fixing the green flag probably means fixing that first,
-and `scoreRow` is not sufficient for it (see the note there).
+Every start within a second; every score short by the usual post-buzzer settle
+and never over. qm57 is not found because it starts 10s before the clip ends.
 
-**Results here vary between identical runs.** Quad consensus and OCR are both
-sensitive enough that the same command produces different Tier A run boundaries
-and different lock outcomes. Do not evaluate a change to this code on a single
-run in either direction -- that mistake was made repeatedly while investigating
-the above.
+**Results here still vary between identical runs.** Quad consensus and OCR are
+both sensitive enough that the same command produces different Tier A run
+boundaries. Do not evaluate a change to this code on a single run in either
+direction -- that mistake was made repeatedly while investigating the above.
 
 ### Keeping a download between runs
 
