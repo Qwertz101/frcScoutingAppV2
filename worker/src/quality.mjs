@@ -90,8 +90,20 @@ export function scoreQuality(log, diagnostics, identification = null) {
   // an on-screen 641/420 against TBA's 645/438 purely because the reveal was
   // still climbing when the recording ended. So it costs a term, which is what
   // keeps the number and the stated reason telling the same story.
-  const finished = Boolean(d.finished);
-  if (!finished) {
+  //
+  // Unless the gap was closed from the official result. `backfillSettle` only
+  // ever adds a small, positive difference to an identified match, so once it
+  // has run the final IS the official score and there is nothing left to be
+  // short of. Keeping the penalty then would flag every correctly-completed
+  // match forever, which is the opposite of what a review queue is for.
+  const backfilled = Boolean(log.settleBackfill);
+  const finished = Boolean(d.finished) || backfilled;
+  if (backfilled) {
+    reasons.push(
+      'final topped up from the official score (+' + log.settleBackfill.blue +
+        '/' + log.settleBackfill.red + ') for points that landed after the buzzer'
+    );
+  } else if (!finished) {
     reasons.push('score never settled — the final may be short of the real one');
   }
 
@@ -142,6 +154,23 @@ export function scoreQuality(log, diagnostics, identification = null) {
     reasons.push('clock never locked — timing came from a fixed offset, not the scoreboard');
   }
 
+  // A flag with nothing to explain it is a flag nobody can act on. Each signal
+  // above only speaks up once it crosses its own threshold, so a log can be
+  // dragged under by a term that is merely mediocre -- measured on a Sunset
+  // match whose final matched TBA exactly, flagged at 0.54 with its sole listed
+  // reason reading like good news. Name the weakest term in that case.
+  const WEAK_TERM_TEXT = {
+    timer: 'the clock was only read on part of the match',
+    reads: 'a sizeable share of score readings were rejected, so the per-second numbers are noisier than usual',
+    coverage: 'parts of the match were never seen',
+    resyncs: 'the clock had to be resynchronised repeatedly',
+    settled: 'the score had not settled when reading stopped',
+  };
+  if (score < FLAG_BELOW && !reasons.some((r) => !r.startsWith('final topped up'))) {
+    const weakest = Object.entries(terms).sort((a, b) => a[1] - b[1])[0];
+    if (weakest && weakest[1] < 1) reasons.push(WEAK_TERM_TEXT[weakest[0]]);
+  }
+
   return {
     score: Number(score.toFixed(3)),
     /** How well the scoreboard was read. Identification is reported separately. */
@@ -161,6 +190,7 @@ export function scoreQuality(log, diagnostics, identification = null) {
       resyncs,
       monotonic,
       finished,
+      settleBackfilled: backfilled,
       timerFallback: Boolean(d.timerFallback),
       matchIdMethod: identification ? identification.method : null,
       matchIdScore: identification ? (identification.score ?? null) : null,

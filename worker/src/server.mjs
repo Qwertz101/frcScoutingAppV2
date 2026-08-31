@@ -44,6 +44,9 @@ const defaultEventKey = flag('event', '');
 const allowWrite = has('write');
 const allowForce = has('force');
 const workers = Number(flag('workers', String(defaultWorkers())));
+// Lets a second worker run alongside one already serving -- useful for trying a
+// change without stopping a capture someone else is watching.
+const port = Number(flag('port', '7654'));
 
 /** How many log lines to keep. Enough to see a whole run, bounded so an
  *  all-day process cannot grow without limit. */
@@ -340,6 +343,7 @@ const seeded = await fetchCvLogs(defaultEventKey).catch(() => []);
 state.rows = seeded;
 
 const dash = await startDashboard({
+  port,
   eventKey: defaultEventKey,
   getState: async () => ({ ...state, job: jobView() }),
   onSubmitJob: startJob,

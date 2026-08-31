@@ -30,10 +30,21 @@ const WORKER_PORT = '7654';
  * The absolute fallback still covers `npm run dev`, where the app is on Vite's
  * port and the worker is on its own; both are loopback, so that hop is allowed.
  */
-export const WORKER_BASE =
-  typeof window !== 'undefined' && window.location.port === WORKER_PORT
-    ? ''
-    : `http://127.0.0.1:${WORKER_PORT}`;
+function resolveBase(): string {
+  if (typeof window === 'undefined') return `http://127.0.0.1:${WORKER_PORT}`;
+  const { protocol, port } = window.location;
+  // Served over plain http from something that is not the Vite dev server: the
+  // worker is serving this page, so it is same-origin whatever port it chose.
+  // Matching on the port number alone was too brittle -- a worker started with
+  // --port then served an app that called back to 7654, i.e. a different worker.
+  if (protocol === 'http:' && port && port !== VITE_DEV_PORT) return '';
+  return `http://127.0.0.1:${WORKER_PORT}`;
+}
+
+/** Vite's dev server, where the app and the worker really are separate origins. */
+const VITE_DEV_PORT = '5173';
+
+export const WORKER_BASE = resolveBase();
 
 /** Where the operator can open the worker's own dashboard. */
 export const WORKER_DASHBOARD_URL = `http://127.0.0.1:${WORKER_PORT}`;

@@ -21,6 +21,7 @@ import { processMatch } from './process.mjs';
 import { identify } from './identify.mjs';
 import { scoreQuality } from './quality.mjs';
 import { fetchQualSchedule } from './tba.mjs';
+import { backfillSettle } from './settle.mjs';
 import { upsertCvLog, checkSchema } from './supabase.mjs';
 import { probe } from './ffmpeg.mjs';
 import { createPool, defaultWorkers } from './ocr.mjs';
@@ -206,6 +207,23 @@ export async function runVod(source, opts = {}) {
           pool, meta, quads: fixedQuads ?? f.quads, teamQuads, layout,
         });
         if (ident.matchKey) out.log.matchKey = ident.matchKey;
+      }
+
+      // Give back the points that landed after the scoreboard froze. Only ever
+      // upward, only ever small, and only for an identified match -- see
+      // settle.mjs. Runs BEFORE quality is scored so the score describes the
+      // log that is actually written.
+      if (out.log.matchKey && schedule) {
+        const sched = schedule.find((m) => m.matchKey === out.log.matchKey);
+        const fill = backfillSettle(out.log, sched?.blueScore, sched?.redScore);
+        if (fill.applied) {
+          log(
+            '    settled: added ' + fill.blue + '/' + fill.red +
+              ' point(s) that landed after the buzzer'
+          );
+        } else if (fill.overread || fill.tooLarge) {
+          log('    ! ' + fill.reason);
+        }
       }
 
       const q = scoreQuality(out.log, out.diagnostics, ident);
