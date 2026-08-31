@@ -376,10 +376,34 @@ changes:
 Verified against TBA on the Saturday broadcast: qm55 read **567-259** against
 TBA's **567-262** (blue exact; red 3 low is the usual post-buzzer settle).
 
-**Still wrong on this layout:** green-flag detection. The scan finds false
-starts, misses some matches outright, and lands the window off the real start
-often enough that most matches log only half their seconds. The *reading* is
-fixed; the *finding* is not.
+**Still wrong on this layout: green-flag detection.** Ground truth for the
+Saturday clip (via `worker/tools/clock-timeline.mjs`) is green flags at 128s,
+700s, 1236s and 1790s; the scanner agrees on roughly one of them per run.
+
+Two things make it hard, and both are worth knowing before attempting it:
+
+*The clock is staged long before the match.* IRI parks the scoreboard on a
+frozen `0:20` for over a minute -- measured 57s-126s ahead of a green flag at
+128s. `MatchClock` locks on two consecutive ticking reads, and one OCR slip on
+that static plate supplies them, so a false start appears mid-stage. Worse, a
+false start costs the *next* match too: the scan then advances the cursor by
+`MATCH_LEN + FINE_LEAD` and steps straight over the real one.
+
+Requiring the lock to keep counting for several seconds before believing it was
+tried and **made things worse** -- it rejected the genuine locks along with the
+false ones, and a slightly-wrong start beats falling back to the run-start
+guess. Reverted; see the note on `lockClock`.
+
+*Row selection is the thing underneath.* When the quads land on the label row
+during play the clock cannot be read at all, so no lock happens and the scanner
+falls back to guessing. Fixing the green flag probably means fixing that first,
+and `scoreRow` is not sufficient for it (see the note there).
+
+**Results here vary between identical runs.** Quad consensus and OCR are both
+sensitive enough that the same command produces different Tier A run boundaries
+and different lock outcomes. Do not evaluate a change to this code on a single
+run in either direction -- that mistake was made repeatedly while investigating
+the above.
 
 ### Keeping a download between runs
 

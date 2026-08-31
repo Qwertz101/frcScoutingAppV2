@@ -74,6 +74,16 @@ const FRESH_TELEOP = [TELEOP_LEN - 10, TELEOP_LEN + 5];
 const FINE_LEAD = 25;
 /** How long the fine pass will look for a lock before giving up. */
 const FINE_SPAN = 60;
+/**
+ * Shortest overlay run that may be *guessed* to be a match, when no clock
+ * locked. MIN_RUN answers "is the overlay up"; this answers the much stronger
+ * "could a whole match have happened here", so it is tied to the match length
+ * rather than to visibility. Set below MATCH_LEN because a run legitimately
+ * starts late when the broadcast cuts away over a green flag -- measured on
+ * IRI, real matches sat in runs of 136s and up, while the false ones were 92s
+ * and 60s.
+ */
+const MIN_GUESS_RUN = Math.round(MATCH_LEN * 0.75);
 
 /**
  * Read only the match clock out of a frame.
@@ -220,6 +230,15 @@ async function bracketStart(input, from, until, quads, meta, pool) {
  *
  * This is the same clock the processor uses, with the same corroboration rules,
  * so a start it accepts here is one the processor will agree with.
+ *
+ * NOTE: this locks eagerly, on two consecutive ticking reads, and that is known
+ * to be too eager on a scoreboard that sits frozen before a match -- a single
+ * OCR slip on a static 0:20 satisfies it and invents a start. Requiring the
+ * lock to keep counting for several seconds was tried and made things worse,
+ * not better: it rejected the real locks too (including a green flag measured
+ * correct to within a second), leaving every match to the far less accurate
+ * run-start guess. The eager lock plus a wrong start beats no lock at all, so
+ * this stays as it is until the row-selection problem underneath it is fixed.
  */
 async function lockClock(input, from, quads, meta, pool) {
   const clock = new MatchClock();
@@ -332,11 +351,20 @@ export async function scan(input, opts = {}) {
       }
 
       if (inRun === 0) {
-        // Nothing locked. Only guess for a run short enough to be a single
-        // match: offering a start for a ten-minute overlay hold would invent a
-        // match that never happened, and downstream that gets identified as
-        // something and written.
-        if (run.end - run.start <= 2 * MATCH_LEN) {
+        // Nothing locked. Only guess for a run that could actually hold a
+        // match: long enough to contain one, and short enough to be a single
+        // one. The upper bound was always here -- offering a start for a
+        // ten-minute overlay hold invents a match that never happened, and
+        // downstream that gets identified as something and written.
+        //
+        // The lower bound is newer, and MIN_RUN (60s, which is about "is the
+        // overlay up at all") was far too permissive to double as "might this
+        // be a match". Measured on IRI, where the scoreboard stays up between
+        // matches: runs of 92s and 60s each produced a confident-looking start
+        // for a match that does not exist there, and a run cannot contain a
+        // 163-second match in 60 seconds.
+        const runLen = run.end - run.start;
+        if (runLen >= MIN_GUESS_RUN && runLen <= 2 * MATCH_LEN) {
           const quads = await quadsForWindow(
             input,
             run.start,
@@ -347,7 +375,11 @@ export async function scan(input, opts = {}) {
           out.push({ greenFlagAt: Number(run.start.toFixed(2)), method: 'run', run, quads });
           log('  match at ~' + run.start.toFixed(1) + 's  (run ' + run.start.toFixed(0) + '-' + run.end.toFixed(0) + 's, NO clock lock — flagged)');
         } else {
-          log('  run ' + run.start.toFixed(0) + '-' + run.end.toFixed(0) + 's: no clock lock, too long to guess — skipped');
+          log(
+            '  run ' + run.start.toFixed(0) + '-' + run.end.toFixed(0) + 's (' + runLen.toFixed(0) +
+              's): no clock lock, ' + (runLen < MIN_GUESS_RUN ? 'too short to hold a match' : 'too long to guess') +
+              ' — skipped'
+          );
         }
       }
     }

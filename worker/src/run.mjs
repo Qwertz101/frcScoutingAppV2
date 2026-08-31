@@ -136,14 +136,38 @@ export async function runVod(source, opts = {}) {
       const tag = '[' + (i + 1) + '/' + found.length + '] t0=' + f.greenFlagAt;
 
       log(tag + ' processing…');
-      const out = await processMatch(input, f.greenFlagAt, {
-        pool,
-        meta,
-        quads: f.quads,
-        layout,
-        eventKey,
-        sourceLabel: isRemoteSource(sourceLabel) ? sourceLabel : sourceLabel.split(/[\\/]/).pop(),
-      });
+      // One unreadable candidate must not take the run down with it. The
+      // scanner deliberately offers low-confidence starts (`method: 'run'`,
+      // sometimes with no quads at all), and `processMatch` quite reasonably
+      // throws when it cannot find the scoreboard -- so the whole event's
+      // remaining matches used to be lost to a single bad candidate.
+      let out;
+      try {
+        out = await processMatch(input, f.greenFlagAt, {
+          pool,
+          meta,
+          quads: f.quads,
+          layout,
+          eventKey,
+          sourceLabel: isRemoteSource(sourceLabel) ? sourceLabel : sourceLabel.split(/[\\/]/).pop(),
+        });
+      } catch (e) {
+        log(tag + ' skipped: ' + (e.message ?? e));
+        rows.push({
+          match_key: '',
+          event_key: eventKey,
+          source: 'auto-worker',
+          quality: { score: 0, reasons: ['could not be read: ' + (e.message ?? e)], flagged: true },
+          flagged: true,
+          final: null,
+          greenFlagAt: sourceOffset + f.greenFlagAt,
+          write: 'skipped',
+          updated_at: new Date().toISOString(),
+        });
+        unidentified++;
+        onRow(rows[rows.length - 1], null);
+        continue;
+      }
 
       let ident = null;
       if (schedule) {
