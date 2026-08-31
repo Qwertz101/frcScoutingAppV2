@@ -73,7 +73,10 @@ const PAGE = `<!doctype html>
              padding:12px 14px; margin-bottom:18px; display:flex; gap:8px; flex-wrap:wrap;
              align-items:center; }
   form.job input[type=text] { flex:1; min-width:260px; }
+  form.job input[type=number] { width:92px; }
   form.job label { color:var(--dim); font-size:12px; display:flex; gap:5px; align-items:center; }
+  form.job .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; flex-basis:100%; }
+  form.job .hint { color:var(--dim); font-size:11px; flex-basis:100%; }
   .jobline { color:var(--dim); font-size:12px; margin:-10px 0 16px; }
   pre.log { background:#0d0f14; border:1px solid var(--line); border-radius:10px;
             padding:12px 14px; margin-top:18px; max-height:280px; overflow:auto;
@@ -91,6 +94,18 @@ const PAGE = `<!doctype html>
   <label><input type="checkbox" id="write"> save to database</label>
   <button type="submit" id="go">Start</button>
   <button type="button" id="cancel" style="display:none">Cancel</button>
+  <!-- Same controls as the app's CV tab. Their absence here is what made an
+       unbounded, streaming scan of a nine-hour recording the accidental
+       default: the only settings this form could express were the slowest
+       ones, with no way to say otherwise. -->
+  <div class="row">
+    <label>limit to</label>
+    <input type="number" id="start" min="0" placeholder="start, min">
+    <label>for</label>
+    <input type="number" id="dur" min="0" placeholder="length, min">
+    <label><input type="checkbox" id="download" checked> download first (much faster)</label>
+  </div>
+  <div class="hint" id="cost"></div>
 </form>
 <div class="jobline" id="jobline"></div>
 <div class="cards" id="cards"></div>
@@ -118,7 +133,9 @@ const isWorker = (r) => typeof r.source === 'string' && r.source.startsWith('aut
 
 /** True while the operator is mid-edit, so a poll never yanks the text away. */
 let touched = false;
-for (const id of ['url', 'event']) $(id).addEventListener('input', () => (touched = true));
+for (const id of ['url', 'event', 'start', 'dur']) {
+  $(id).addEventListener('input', () => (touched = true));
+}
 
 let seededEvent = false;
 
@@ -136,6 +153,8 @@ function renderJob(s) {
   $('write').parentElement.title = s.allowWrite
     ? 'Uncheck for a dry run'
     : 'This worker was started without --write, so every job is a dry run';
+
+  for (const id of ['start', 'dur', 'download']) $(id).disabled = Boolean(running);
 
   if (!seededEvent && !touched && s.eventKey) {
     $('event').value = s.eventKey;
@@ -166,15 +185,50 @@ function renderJob(s) {
   $('jobline').textContent = bits.join(' · ') + (j.lastLine ? ' — ' + j.lastLine : '');
 }
 
+/**
+ * Say up front roughly what this run will cost.
+ *
+ * Measured rates: streaming a remote VOD scans at very roughly 0.45x the
+ * footage's own length, while downloading first runs several times quicker but
+ * pays a fetch up front. Both are rough, and labelled as such -- the point is
+ * to make "this is a four-hour job" visible before the click rather than
+ * discovered forty minutes in.
+ */
+function updateCost() {
+  const mins = Number($('dur').value);
+  const dl = $('download').checked;
+  if (!mins) {
+    $('cost').textContent =
+      'Leave the window blank and it scans the WHOLE recording — on a full-event VOD that is hours. ' +
+      (dl ? '' : 'Streaming without downloading first is the slowest combination.');
+    return;
+  }
+  const est = dl ? mins * 0.35 : mins * 0.45 + mins * 0.9;
+  $('cost').textContent =
+    'Roughly ' + (est < 60 ? Math.round(est) + ' min' : (est / 60).toFixed(1) + ' hr') +
+    ' for ' + mins + ' min of footage' + (dl ? ' (downloaded, then read locally)' : ' (streamed)') +
+    ' — a rough estimate, not a promise.';
+}
+for (const id of ['dur', 'download']) $(id).addEventListener('input', updateCost);
+updateCost();
+
 $('job').onsubmit = async (e) => {
   e.preventDefault();
+  const startMin = $('start').value.trim();
+  const durMin = $('dur').value.trim();
   const body = {
     url: $('url').value.trim(),
     eventKey: $('event').value.trim(),
     mode: document.querySelector('input[name=mode]:checked').value,
     write: $('write').checked,
+    download: $('download').checked,
+    start: startMin ? Number(startMin) * 60 : undefined,
+    duration: durMin ? Number(durMin) * 60 : undefined,
   };
   if (!body.url) return;
+  if (!durMin && !confirm(
+    'No length set, so this scans the entire recording — potentially several hours. Start anyway?'
+  )) return;
   $('go').disabled = true;
   const r = await fetch('/api/job', {
     method: 'POST',
