@@ -102,6 +102,8 @@ export async function runVod(source, opts = {}) {
   const began = Date.now();
   const rows = [];
   let unidentified = 0;
+  /** Best quality seen per match key, so a duplicate cannot overwrite a better read. */
+  const bestByKey = new Map();
 
   try {
     log('scanning for match starts…');
@@ -177,7 +179,25 @@ export async function runVod(source, opts = {}) {
 
       if (!out.log.matchKey) unidentified++;
 
-      if (write && schema.ok) {
+      // One real match can be detected twice -- a partial lock near its start
+      // and the true green flag a little later both look like starts, and both
+      // identify to the same teams. Measured on IRI qm55: t0=552 read 313-94
+      // over 77 of 164 seconds, t0=702 read 567-259 against TBA's 567-262.
+      //
+      // Both upsert the same primary key, so without this the LAST one written
+      // wins on ordering alone -- and a partial read landing after a good one
+      // silently destroys it. Keeping the higher-quality read makes that a
+      // decision rather than a coincidence.
+      const prior = out.log.matchKey ? bestByKey.get(out.log.matchKey) : undefined;
+      const supersededByPrior = prior != null && prior.score >= q.score;
+
+      if (supersededByPrior) {
+        row.write = 'skipped — duplicate of a better read';
+        row.quality = {
+          ...q,
+          reasons: [...q.reasons, 'another detection of this match scored higher (q=' + prior.score.toFixed(2) + ')'],
+        };
+      } else if (write && schema.ok) {
         const res = await upsertCvLog(out.log, { force });
         row.write = res.written ? (res.replaced ? 'replaced' : 'written') : 'refused';
         if (!res.written) {
@@ -189,6 +209,8 @@ export async function runVod(source, opts = {}) {
         row.write = 'dry run';
       }
 
+      if (out.log.matchKey && !supersededByPrior) bestByKey.set(out.log.matchKey, { score: q.score });
+
       rows.push(row);
       onRow(row, out.log);
 
@@ -197,6 +219,15 @@ export async function runVod(source, opts = {}) {
           (last ? last.blue + '-' + last.red : 'n/a').padEnd(10) +
           'q=' + q.score.toFixed(2) + (q.flagged ? ' FLAGGED' : '') + '  ' + row.write
       );
+      // After the summary line, so the note reads as belonging to the match it
+      // is about rather than to the one printed above it.
+      if (prior != null) {
+        log(
+          supersededByPrior
+            ? '      - kept the earlier read of this match instead (q=' + prior.score.toFixed(2) + ')'
+            : '      - supersedes an earlier, lower-quality read (q=' + prior.score.toFixed(2) + ')'
+        );
+      }
       for (const r of q.reasons) log('      - ' + r);
     }
   } finally {

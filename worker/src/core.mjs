@@ -46,6 +46,7 @@ export const {
   LAYOUTS,
   FRC_BROADCAST,
   SUNSET_SHOWDOWN,
+  IRI,
 } = pipeline;
 export const {
   bootOcr,

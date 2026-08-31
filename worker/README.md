@@ -350,6 +350,37 @@ place. That slop is harmless because `t0` only ever has to be roughly right --
 `MatchClock` derives the true start from the on-screen timer. Verified: a match
 found at 5224s streaming came back as 5228s downloaded.
 
+### A second scoreboard shape: two stacked rows (IRI)
+
+IRI draws team numbers and BLUE/RED labels on one row and the scores and clock
+on the row directly beneath, using the *same* blue | white | red columns for
+both. Every geometric test passes on both rows -- colour runs, symmetry, fill,
+even "a white plate exists in the gap" -- so the detector took the upper one,
+framed the word "BLUE" as the blue score, and pointed the timer at a blank
+white rectangle. The symptom was a whole event of `0-0` with
+`clock read only 0% of frames`: not a failure to read, but a perfect read of
+the wrong pixels.
+
+Two profile fields carry the difference, both opt-in so no existing layout
+changes:
+
+- `gapInk` -- the timer plate must contain some ink. Measured on that
+  broadcast: **0.000** dark fraction on the label row against **0.336** on the
+  score row, which is why a plain threshold settles it.
+- `teams: { mode: 'above' }` -- the team numbers are one row *up* from the
+  score, not beside it. Worth knowing that fixing `gapInk` alone made
+  identification worse, not better: it had been working only because the
+  detector was parked on the team row by mistake, and moving it to the right
+  row took the team reader with it.
+
+Verified against TBA on the Saturday broadcast: qm55 read **567-259** against
+TBA's **567-262** (blue exact; red 3 low is the usual post-buzzer settle).
+
+**Still wrong on this layout:** green-flag detection. The scan finds false
+starts, misses some matches outright, and lands the window off the real start
+often enough that most matches log only half their seconds. The *reading* is
+fixed; the *finding* is not.
+
 ### Keeping a download between runs
 
 `--download` deletes the fetched file when the job ends. `--keep-download`

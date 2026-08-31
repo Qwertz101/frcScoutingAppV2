@@ -31,6 +31,10 @@ export const EVENT_LAYOUTS = {
   // logo, and a score drawn wider than that badge. Verified 2026-08-24 against
   // the Saturday broadcast: red 613, clock 1:17, blue 301.
   '2026sunshow': 'sunset-showdown',
+  // Two stacked rows sharing one column layout -- team numbers and BLUE/RED
+  // labels above, scores and clock below. Verified 2026-08-30 against the
+  // Saturday broadcast, qm54-57.
+  '2026iri': 'iri',
 };
 
 /** The profile for an event, honouring an explicit override first. */

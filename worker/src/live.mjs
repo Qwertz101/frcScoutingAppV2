@@ -323,7 +323,10 @@ export async function monitorLive(url, opts = {}) {
       if (schedule) {
         const teamShots = ring.slice(t0 + 20, t0 + MATCH_LEN - 10);
         if (teamShots.length >= 2) {
-          const seen = await voteTeams(teamShots, quads, pool, { minVotes: LIVE_MIN_VOTES });
+          const seen = await voteTeams(teamShots, quads, pool, {
+            minVotes: LIVE_MIN_VOTES,
+            layout: opts.layout ?? FRC_BROADCAST,
+          });
           ident = matchBySet(schedule, seen);
         } else {
           ident = { matchKey: null, method: 'none', reason: 'too few buffered frames to read team numbers' };

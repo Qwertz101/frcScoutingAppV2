@@ -107,12 +107,24 @@ export async function voteTeams(shots, quads, pool, opts = {}) {
 
   for (const frame of shots) {
     for (const side of ['blue', 'red']) {
-      const sq = side === 'blue' ? quads.blue : quads.red;
+      const scoreQuad = side === 'blue' ? quads.blue : quads.red;
+      const sx0 = Math.min(...scoreQuad.map((p) => p.x));
+      const sx1 = Math.max(...scoreQuad.map((p) => p.x));
+      const sTop = Math.min(...scoreQuad.map((p) => p.y));
+      const sBot = Math.max(...scoreQuad.map((p) => p.y));
+
+      // On a two-row scoreboard the teams sit one row up from the score at the
+      // same horizontal extents -- see LayoutProfile.teams. The plate extent
+      // below has to be measured on THAT row too, not the score's, or it walks
+      // the wrong stripe of pixels and quietly finds nothing at all.
+      const teamsMode = opts.layout?.teams ?? { mode: 'inline' };
+      const [top, bot] =
+        teamsMode.mode === 'above'
+          ? [Math.max(0, sTop - (sBot - sTop) * teamsMode.height), sTop]
+          : [sTop, sBot];
+
+      const sq = rectQuad(sx0, top, sx1, bot);
       const [px0, px1] = plateExtent(frame, sq, side);
-      const sx0 = Math.min(...sq.map((p) => p.x));
-      const sx1 = Math.max(...sq.map((p) => p.x));
-      const top = Math.min(...sq.map((p) => p.y));
-      const bot = Math.max(...sq.map((p) => p.y));
 
       // The teams occupy the plate either side of the score: to its left on the
       // blue plate, to its right on the red one, mirrored about the timer.

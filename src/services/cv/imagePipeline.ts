@@ -1142,6 +1142,14 @@ const PLATE_FLAT_SAT = 0.2;
 const PLATE_SAMPLE_SIDE = 24;
 
 /**
+ * Below this luma counts as ink when asking whether a timer plate is blank.
+ * See `LayoutProfile.gapInk`. Deliberately mid-range rather than near-black:
+ * the question is "is anything printed here", and clock glyphs are
+ * anti-aliased, so a strict threshold would undercount their edges.
+ */
+const GAP_INK_LUMA = 128;
+
+/**
  * The two alliance blocks are near-identical widths by design. Two unrelated
  * lighting blobs are not.
  */
@@ -1271,6 +1279,41 @@ function glyphRows(
   return best;
 }
 
+/**
+ * Fraction of a rectangle dark enough to be ink on a white plate.
+ *
+ * Distinguishes a clock plate from a blank one; see `LayoutProfile.gapInk`.
+ * Subsampled on the same reasoning as `flatBrightness` -- this is a fraction
+ * over a large area, and it runs inside the candidate loop.
+ */
+function darkFraction(
+  frame: RgbaFrame,
+  x0: number,
+  x1: number,
+  y0: number,
+  y1: number
+): number {
+  const W = frame.width;
+  const ax0 = Math.max(0, Math.round(x0));
+  const ax1 = Math.min(W - 1, Math.round(x1));
+  const ay0 = Math.max(0, Math.round(y0));
+  const ay1 = Math.min(frame.height - 1, Math.round(y1));
+  if (ax1 <= ax0 || ay1 <= ay0) return 0;
+
+  const stepX = Math.max(1, Math.floor((ax1 - ax0 + 1) / PLATE_SAMPLE_SIDE));
+  const stepY = Math.max(1, Math.floor((ay1 - ay0 + 1) / PLATE_SAMPLE_SIDE));
+
+  let dark = 0;
+  let n = 0;
+  for (let y = ay0; y <= ay1; y += stepY) {
+    for (let x = ax0; x <= ax1; x += stepX) {
+      if (lumaAt(frame.data, (y * W + x) * 4) < GAP_INK_LUMA) dark++;
+      n++;
+    }
+  }
+  return n ? dark / n : 0;
+}
+
 /** Mean luma and desaturated fraction of a rectangle — the timer-plate test. */
 function flatBrightness(
   frame: RgbaFrame,
@@ -1368,6 +1411,42 @@ export interface LayoutProfile {
    * logo instead of the time.
    */
   timer: { mode: 'inline' } | { mode: 'below' };
+  /**
+   * Minimum fraction of dark pixels required inside the timer gap.
+   *
+   * For a scoreboard drawn as TWO stacked rows sharing one column layout, where
+   * the wrong one would otherwise win. IRI's broadcast is the case this was
+   * built for: team numbers and BLUE/RED labels on top, scores and clock
+   * underneath, and *both* rows are blue block | white gap | red block. Every
+   * geometric test passes on both -- colour runs, symmetry, fill, even "a white
+   * plate exists in the gap" -- so the detector took the upper row, framed the
+   * word "BLUE" as a score, and returned 0-0 with the clock never locking.
+   *
+   * What actually separates them is that the upper row's white plate is *blank*
+   * while the real one holds the clock. Measured on that broadcast: 0.000 dark
+   * fraction on the label row against 0.336 on the score row -- not a close
+   * call, which is why a plain threshold suffices.
+   *
+   * Left unset for existing layouts rather than applied globally. It only makes
+   * sense for `timer: inline` (a `below` timer's gap legitimately holds a logo,
+   * not digits), and imposing a new requirement on broadcasts already verified
+   * against the golden set would risk them for no gain.
+   */
+  gapInk?: number;
+  /**
+   * Which row carries the team numbers.
+   *
+   * `inline` is the season layout: `[teams][score][clock][score][teams]`, all
+   * on one row, which is what `voteTeams` assumes when this is unset.
+   *
+   * `above` is for a two-row scoreboard like IRI's, where the teams sit at the
+   * same horizontal extents but one row up. Getting this wrong is quiet rather
+   * than loud -- the reader simply finds no numbers and every match abstains,
+   * which looks like "OCR is struggling" and is really "it is reading the
+   * wrong stripe of pixels". `height` is how far up to reach, as a multiple of
+   * the score band's own height.
+   */
+  teams?: { mode: 'inline' } | { mode: 'above'; height: number };
 }
 
 /** The FRC-season broadcast layout. Default, and the behaviour before profiles existed. */
@@ -1394,9 +1473,35 @@ export const SUNSET_SHOWDOWN: LayoutProfile = {
   timer: { mode: 'below' },
 };
 
+/**
+ * IRI: a two-row scoreboard, otherwise the season layout.
+ *
+ * Team numbers and BLUE/RED labels sit on an upper row directly above the
+ * scores, drawn with the same blue | white | red columns, so the geometry alone
+ * cannot tell the rows apart -- see `gapInk`, which is the whole reason this
+ * profile exists. Once the right row is chosen the season's own box geometry
+ * fits it: the score blocks sit flush against the clock plate and are within a
+ * few percent of its width, which is what `ratio: 0.95, inset: 0` already
+ * describes.
+ */
+export const IRI: LayoutProfile = {
+  name: 'iri',
+  scoreBox: { mode: 'gap', ratio: 0.95 },
+  timer: { mode: 'inline' },
+  // Far below the 0.336 measured on the real score row, and far above the
+  // 0.000 on the label row: placed to reject a blank plate, not to grade a
+  // clock, so a partly-obscured or mid-transition clock still passes.
+  gapInk: 0.05,
+  // Teams share the upper row with the BLUE/RED labels, directly above the
+  // scores. Measured: score band y 162-244 (h 82), team row y 95-145, so
+  // reaching most of a band height up covers the numbers with margin.
+  teams: { mode: 'above', height: 0.85 },
+};
+
 export const LAYOUTS: Record<string, LayoutProfile> = {
   [FRC_BROADCAST.name]: FRC_BROADCAST,
   [SUNSET_SHOWDOWN.name]: SUNSET_SHOWDOWN,
+  [IRI.name]: IRI,
 };
 
 /** Dark enough to be clock digits printed on a white badge. */
@@ -1638,6 +1743,15 @@ function evaluateBand(
       const plate = flatBrightness(frame, gapStart, gapEnd, by0, by1);
       if (plate.luma < PLATE_MIN_LUMA || plate.flat < PLATE_MIN_FLAT_FRACTION) {
         lastReject = 'no white plate in gap';
+        continue;
+      }
+
+      // ...and does it hold a clock, rather than merely being white? Only asked
+      // where a layout says a blank plate is a real possibility -- see
+      // `gapInk`. Costs a second pass over the gap, so it runs last, after
+      // every cheaper test has had its chance to reject the band.
+      if (profile.gapInk != null && darkFraction(frame, gapStart, gapEnd, by0, by1) < profile.gapInk) {
+        lastReject = 'timer plate is blank';
         continue;
       }
 
