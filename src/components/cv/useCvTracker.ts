@@ -17,6 +17,7 @@ import {
   JobMode,
   WorkerState,
   cancelJob as cancelWorkerJob,
+  fetchCalibrationFrames,
   getWorkerState,
   submitJob,
 } from '../../services/cv/captureWorker';
@@ -806,6 +807,40 @@ export function useCvTracker() {
    * than the one frame that happened to be showing.
    */
   const captureCalibrationFrames = async (count = 6) => {
+    // A stream or VOD has no browser-readable video, so the worker supplies the
+    // frames. This is the primary path -- the local capture below only covers
+    // an uploaded file or a shared screen.
+    const link = urlInput.trim();
+    if (isStreamLink(link)) {
+      setError(null);
+      setWorkerBusy(true);
+      try {
+        const startMin = windowStart.trim() ? Number(windowStart) * 60 : undefined;
+        const durMin = windowDuration.trim() ? Number(windowDuration) * 60 : undefined;
+        const got = await fetchCalibrationFrames({
+          url: link,
+          count,
+          start: startMin,
+          duration: durMin,
+        });
+        if (!got.frames.length) {
+          setError('The worker could not read any frames from that link.');
+          return;
+        }
+        setCalFrames(got.frames.map((f) => f.dataUrl));
+        setCalFrameSize(got.frameSize);
+        // No proposal for a stream: the detector runs in the worker, not here,
+        // and offering a guess this side would mean decoding the video twice.
+        setCalDetected({});
+        setCalibrating(true);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setWorkerBusy(false);
+      }
+      return;
+    }
+
     const v = videoRef.current;
     if (!v || !v.videoWidth || !v.videoHeight) {
       setError('Load footage first, and let a frame with the scoreboard on screen show.');

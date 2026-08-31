@@ -259,18 +259,42 @@ export async function recognizeWindow(source, quads, opts) {
         finished = settle.held >= SETTLE_SECONDS;
       }
     } else {
-      sec = Math.floor(r.at - t0);
-      if (sec < 0) continue;
-      phase = sec < AUTO_LEN ? 'auto' : 'teleop';
-      if (sec > MATCH_LEN) break;
-      finished = sec >= MATCH_LEN;
+      // Still feed the clock. Falling back is a decision about the frames seen
+      // SO FAR, and it must not become a decision about the whole match --
+      // measured on Sunset Showdown, a 26-frame unreadable stretch immediately
+      // before a match tripped the give-up threshold by one frame, and two
+      // frames later the clock was ticking perfectly for the entire match. The
+      // scanner's t0 was right; the timing was thrown away anyway.
+      clock.feed(r.timer.remaining, r.at);
+      if (clock.state.started && clock.greenFlagAt !== null) {
+        // The clock came back. It is strictly better than a fixed offset, so
+        // take it over -- and re-time everything already collected onto its
+        // green flag, since the two bases are not guaranteed to agree.
+        fallback = false;
+        timerMisses = 0;
+        const green = clock.greenFlagAt;
+        for (const smp of samples) smp.sec = Math.round(smp.at - green);
+        for (let i = samples.length - 1; i >= 0; i--) {
+          if (samples[i].sec < 0 || samples[i].sec > MATCH_LEN) samples.splice(i, 1);
+        }
+        phase = clock.state.phase;
+        sec = Math.round(clock.elapsedAt(r.at));
+      } else {
+        sec = Math.floor(r.at - t0);
+        if (sec < 0) continue;
+        phase = sec < AUTO_LEN ? 'auto' : 'teleop';
+        if (sec > MATCH_LEN) break;
+        finished = sec >= MATCH_LEN;
+      }
     }
 
     // Upsert: sampling once per video second against a clock read from the
     // pixels means two frames can land in the same match second, and after the
     // buzzer many do. The later read is the better one.
     const idx = samples.findIndex((s) => s.sec === sec);
-    const row = { sec, phase, blue, red, db: 0, dr: 0 };
+    // `at` is carried so a late clock recovery can re-time what came before it;
+    // it is stripped before the log is returned.
+    const row = { sec, phase, blue, red, db: 0, dr: 0, at: r.at };
     if (idx >= 0) samples[idx] = row;
     else samples.push(row);
 
@@ -289,6 +313,8 @@ export async function recognizeWindow(source, quads, opts) {
     pb = s.blue;
     pr = s.red;
   }
+
+  for (const smp of samples) delete smp.at;
 
   return {
     samples,

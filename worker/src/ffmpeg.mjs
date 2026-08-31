@@ -225,3 +225,51 @@ export async function* frames(input, opts = {}) {
     if (!child.killed) child.kill('SIGKILL');
   }
 }
+
+/**
+ * Single frames as encoded JPEGs, for showing a human.
+ *
+ * Distinct from `frames()` above, which yields raw RGBA for the detector to
+ * measure. This exists because calibration happens in a browser, and a browser
+ * cannot read a YouTube page pixel-by-pixel -- so the frames a person calibrates
+ * against have to come from here, where ffmpeg already has the video open.
+ *
+ * One ffmpeg invocation per timestamp rather than a filter graph: the seeks are
+ * far apart, each is `-ss` before `-i` so it is a fast keyframe seek, and a
+ * failed grab then costs one frame instead of the whole set.
+ */
+export async function grabJpegs(input, times, opts = {}) {
+  const width = opts.width ?? 1280;
+  const quality = opts.quality ?? 4;
+  const out = [];
+
+  for (const at of times) {
+    const buf = await new Promise((resolve) => {
+      const child = spawn(
+        resolveBin('ffmpeg'),
+        [
+          '-hide_banner', '-loglevel', 'error',
+          '-ss', String(Math.max(0, at)),
+          '-i', input,
+          '-frames:v', '1',
+          '-vf', 'scale=' + width + ':-2',
+          '-q:v', String(quality),
+          '-f', 'image2', '-c:v', 'mjpeg',
+          'pipe:1',
+        ],
+        { stdio: ['ignore', 'pipe', 'pipe'] }
+      );
+      const chunks = [];
+      child.stdout.on('data', (c) => chunks.push(c));
+      child.on('error', () => resolve(null));
+      child.on('close', () => {
+        const b = Buffer.concat(chunks);
+        resolve(b.length ? b : null);
+      });
+      opts.signal?.addEventListener('abort', () => child.kill('SIGKILL'), { once: true });
+    });
+    if (buf) out.push({ at, dataUrl: 'data:image/jpeg;base64,' + buf.toString('base64') });
+  }
+
+  return out;
+}

@@ -29,7 +29,8 @@ import { startDashboard } from './dashboard.mjs';
 import { runVod, reprocessOne } from './run.mjs';
 import { monitorLive } from './live.mjs';
 import { resolveLayout } from './layouts.mjs';
-import { isRemoteSource, detectPlatform } from './sources.mjs';
+import { isRemoteSource, detectPlatform, resolveVodUrl } from './sources.mjs';
+import { probe, grabJpegs } from './ffmpeg.mjs';
 import { createPool, defaultWorkers } from './ocr.mjs';
 import { checkSchema, fetchCvLogs } from './supabase.mjs';
 
@@ -276,6 +277,51 @@ async function reprocess(body) {
   return { ok: true, matchKey: res.log.matchKey, quality: res.quality };
 }
 
+/**
+ * Frames for the layout calibrator.
+ *
+ * The browser cannot read a YouTube page pixel-by-pixel, so a person
+ * calibrating against a stream or VOD has to be shown frames from here, where
+ * ffmpeg already has the video open. Spread across the middle of the recording
+ * rather than clustered: calibration has to hold on more than one frame, and
+ * frames a few seconds apart all show the same moment of the same match.
+ *
+ * Refused while a capture is running -- the OCR pool already has the machine,
+ * and seeking a remote VOD alongside it would slow both.
+ */
+async function grabFrames(body) {
+  if (current) throw new Error('a capture is running — wait for it to finish, then grab frames');
+
+  const url = String(body.url ?? '').trim();
+  if (!url) throw new Error('need a url');
+
+  const count = Math.min(12, Math.max(2, Number(body.count) || 6));
+  let input = url;
+  if (isRemoteSource(url)) {
+    detectPlatform(url);
+    log('resolving ' + url + ' for calibration frames…');
+    input = await resolveVodUrl(url);
+  }
+
+  const meta = await probe(input);
+  const from = body.start != null ? Number(body.start) : meta.duration * 0.1;
+  const span =
+    body.duration != null ? Number(body.duration) : Math.max(1, meta.duration * 0.8);
+
+  const times = [];
+  for (let i = 0; i < count; i++) times.push(from + (span * i) / Math.max(1, count - 1));
+
+  log('grabbing ' + count + ' calibration frame(s)…');
+  const shots = await grabJpegs(input, times, { width: Math.min(1280, meta.width) });
+  log('grabbed ' + shots.length + ' frame(s)');
+
+  return {
+    frames: shots,
+    frameSize: { width: meta.width, height: meta.height },
+    duration: meta.duration,
+  };
+}
+
 /* ------------------------------------------------------------------ *
  * Serve
  * ------------------------------------------------------------------ */
@@ -299,6 +345,7 @@ const dash = await startDashboard({
   onSubmitJob: startJob,
   onCancelJob: async () => cancelJob(),
   onReprocess: reprocess,
+  onFrames: grabFrames,
 });
 
 console.error('capture worker ready on ' + dash.url);

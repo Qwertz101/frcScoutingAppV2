@@ -545,6 +545,11 @@ export function startDashboard(opts = {}) {
         if (!opts.onAssign) return send(res, 501, { error: 'assign not wired up' }, 'application/json', req);
         return send(res, 200, (await opts.onAssign(body)) ?? { ok: true }, 'application/json', req);
       }
+      if (req.method === 'POST' && url.pathname === '/api/frames') {
+        const body = await readBody(req);
+        if (!opts.onFrames) return send(res, 501, { error: 'frame grabbing not wired up' }, 'application/json', req);
+        return send(res, 200, await opts.onFrames(body), 'application/json', req);
+      }
       if (req.method === 'POST' && url.pathname === '/api/reprocess') {
         const body = await readBody(req);
         if (!opts.onReprocess) return send(res, 501, { error: 'reprocess not wired up' }, 'application/json', req);

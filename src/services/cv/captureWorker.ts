@@ -172,3 +172,30 @@ export function reprocessMatch(matchKey: string, greenFlagAt?: number) {
   });
 }
 
+
+export interface CalibrationFrames {
+  frames: { at: number; dataUrl: string }[];
+  frameSize: { width: number; height: number };
+  duration: number;
+}
+
+/**
+ * Frames from a stream or VOD, for calibrating a layout against.
+ *
+ * The browser cannot read a YouTube page pixel-by-pixel, so for the paths that
+ * matter most — a livestream or a VOD — these have to come from the worker.
+ * An uploaded file or a shared screen is read locally instead; see
+ * `captureCalibrationFrames`.
+ */
+export function fetchCalibrationFrames(req: {
+  url: string;
+  count?: number;
+  start?: number;
+  duration?: number;
+}): Promise<CalibrationFrames> {
+  return call<CalibrationFrames>('/api/frames', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  });
+}

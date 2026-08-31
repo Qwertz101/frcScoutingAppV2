@@ -113,9 +113,23 @@ export async function voteTeams(shots, quads, pool, opts = {}) {
     for (const frame of shots) {
       for (const side of ['blue', 'red']) {
         for (const tq of opts.teamQuads[side] ?? []) {
-          const gray = rectifyToGray(frame, tq, BAND_W, BAND_H);
+          // Rectify to the box's OWN aspect ratio, not the wide three-number
+          // band. A taught box holds a single number and is small -- measured
+          // on Sunset Showdown, about 73x30 px -- so forcing it into 1024x96
+          // stretches it 14x horizontally against 3x vertically and the digits
+          // come out unreadable. The band size is right for three numbers in a
+          // row and wrong for one on its own.
+          const xs = tq.map((pt) => pt.x * frame.width);
+          const ys = tq.map((pt) => pt.y * frame.height);
+          const wPx = Math.max(...xs) - Math.min(...xs);
+          const hPx = Math.max(...ys) - Math.min(...ys);
+          if (!(wPx > 1 && hPx > 1)) continue;
+          const outH = BAND_H;
+          const outW = Math.min(BAND_W, Math.max(64, Math.round(outH * (wPx / hPx))));
+
+          const gray = rectifyToGray(frame, tq, outW, outH);
           if (!gray) continue;
-          const band = { data: gray, width: BAND_W, height: BAND_H };
+          const band = { data: gray, width: outW, height: outH };
           for (const variant of PREP_VARIANTS) {
             const groups = prepareNumberGroups(band, {
               ...variant,
