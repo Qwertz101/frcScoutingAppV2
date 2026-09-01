@@ -13,6 +13,7 @@ import {
   saveLayout,
   seasonOf,
 } from '../../services/cv/layoutStore';
+import { SanityWarning, checkLayout } from '../../services/cv/layoutSanity';
 
 /**
  * Teaching the software where a competition's scoreboard is.
@@ -170,6 +171,8 @@ export function LayoutCalibrator({
    * out loud, rather than a slip nobody notices until the next scan.
    */
   const [confirmingSave, setConfirmingSave] = useState(false);
+  /** What a look at the pixels says about the boxes, filled in on Save. */
+  const [warnings, setWarnings] = useState<SanityWarning[] | null>(null);
 
   /**
    * The frames on screen, which start as whatever was sampled and grow as a
@@ -187,6 +190,7 @@ export function LayoutCalibrator({
   // it — "yes, save to 2026iri" should never fire a save to 2026sunshow.
   useEffect(() => {
     setConfirmingSave(false);
+    setWarnings(null);
   }, [eventKey]);
 
   const stageRef = useRef<HTMLDivElement | null>(null);
@@ -387,6 +391,41 @@ export function LayoutCalibrator({
 
   /* ---------------- save ---------------- */
 
+  /**
+   * Read the frame on screen through the boxes about to be saved.
+   *
+   * A layout is trusted by every machine scanning the event, and a wrong one
+   * fails silently rather than loudly -- the Sunset Showdown layout that
+   * prompted this had its timer box on the bleachers, and the run that used it
+   * simply reported reading the clock on 0% of frames. Nothing asked, at the
+   * moment of saving, whether the boxes were on the overlay at all.
+   *
+   * Advisory only: the answer is shown next to the confirm button and the save
+   * stays available either way, because a person looking at the frame can see
+   * things this cannot.
+   */
+  const inspect = useCallback(async (): Promise<SanityWarning[]> => {
+    if (!frameSrc) return [];
+    try {
+      const img = new Image();
+      img.src = frameSrc;
+      await img.decode();
+      const w = img.naturalWidth;
+      const h = img.naturalHeight;
+      if (!w || !h) return [];
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return [];
+      ctx.drawImage(img, 0, 0);
+      return checkLayout(ctx.getImageData(0, 0, w, h), mapToBoxes(boxes) as never);
+    } catch {
+      // A frame we cannot read is not a reason to block a save.
+      return [];
+    }
+  }, [frameSrc, boxes]);
+
   const confirmActive = () => {
     setConfirmed((c) => new Set(c).add(active));
     const order = LAYOUT_ELEMENTS.map((e) => e.id);
@@ -584,25 +623,51 @@ export function LayoutCalibrator({
             {frameSrc && (
               <div className="cal-loupe">
                 <div className="cal-loupe-view">
-                  <img
-                    src={frameSrc}
-                    alt=""
-                    draggable={false}
+                  {/*
+                    One scaled plane holding both the frame and the box outline,
+                    so every offset below is a fraction of the *image*.
+
+                    The earlier version positioned the image with percentages
+                    read straight off the fractional rect, which is only right
+                    horizontally: a percentage `left` resolves against the
+                    view's width, which the image also spans, but a percentage
+                    `top` resolves against the view's *height*, which the image
+                    does not. The view is 208x96 and the image inside it is
+                    16:9, so every vertical term came out short by a factor of
+                    (208/96) * (9/16) ~= 1.22 -- at 8x that put the magnified
+                    region tens of source pixels away from the box actually
+                    being edited. A person tuning against it would nudge the
+                    box until the *loupe* looked right and so leave the real
+                    box misaligned, which is exactly what showed up as boxes
+                    that looked correct magnified and wrong on the stage.
+
+                    Giving the plane the frame's true aspect ratio and moving
+                    it by a translate -- whose percentages resolve against the
+                    element's own size, both axes alike -- removes the mismatch
+                    rather than correcting for it, and the outline becomes a
+                    child measured in the same fractions the rect is stored in.
+                  */}
+                  <div
+                    className="cal-loupe-plane"
                     style={{
-                      position: 'absolute',
                       width: `${zoom * 100}%`,
-                      left: `${-activeRect.x0 * zoom * 100 + 50 - ((activeRect.x1 - activeRect.x0) * zoom * 100) / 2}%`,
-                      top: `${-activeRect.y0 * zoom * 100 + 50 - ((activeRect.y1 - activeRect.y0) * zoom * 100) / 2}%`,
-                      maxWidth: 'none',
+                      aspectRatio: `${frameSize?.width || 1920} / ${frameSize?.height || 1080}`,
+                      transform: `translate(${-(activeRect.x0 + activeRect.x1) * 50}%, ${
+                        -(activeRect.y0 + activeRect.y1) * 50
+                      }%)`,
                     }}
-                  />
-                  <span
-                    className="cal-loupe-frame"
-                    style={{
-                      width: `${(activeRect.x1 - activeRect.x0) * zoom * 100}%`,
-                      height: `${(activeRect.y1 - activeRect.y0) * zoom * 100}%`,
-                    }}
-                  />
+                  >
+                    <img src={frameSrc} alt="" draggable={false} />
+                    <span
+                      className="cal-loupe-frame"
+                      style={{
+                        left: `${activeRect.x0 * 100}%`,
+                        top: `${activeRect.y0 * 100}%`,
+                        width: `${(activeRect.x1 - activeRect.x0) * 100}%`,
+                        height: `${(activeRect.y1 - activeRect.y0) * 100}%`,
+                      }}
+                    />
+                  </div>
                 </div>
                 <div className="cal-loupe-cap">
                   <span>{zoom}× magnified</span>
@@ -782,7 +847,10 @@ export function LayoutCalibrator({
               <button
                 className="cv-btn-grad"
                 disabled={busy || !eventKey || !loaded}
-                onClick={() => setConfirmingSave(true)}
+                onClick={async () => {
+                  setWarnings(await inspect());
+                  setConfirmingSave(true);
+                }}
               >
                 Save layout
               </button>
@@ -798,6 +866,21 @@ export function LayoutCalibrator({
                     </>
                   )}
                 </p>
+                {warnings && warnings.length > 0 && (
+                  <div className="cal-warn">
+                    <strong>Check these against the frame first:</strong>
+                    <ul>
+                      {warnings.map((w) => (
+                        <li key={w.element + w.message}>
+                          <b>{w.element}</b> {w.message}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {warnings && warnings.length === 0 && (
+                  <div className="cal-warn ok">Every box looks like the thing it is named after.</div>
+                )}
                 <div className="cal-btnrow">
                   <button className="cv-btn-grad" disabled={busy} onClick={save}>
                     {busy ? 'Saving…' : `Yes, save to ${eventKey}`}
