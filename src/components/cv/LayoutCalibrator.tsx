@@ -391,6 +391,12 @@ export function LayoutCalibrator({
 
   /* ---------------- save ---------------- */
 
+  // Moved up from the render section below (it is otherwise only needed
+  // there) because `inspect`, right after it, closes over it -- and a
+  // `const` referenced before its own declaration executes is a runtime
+  // error, not a warning, whatever order the two appear on screen.
+  const frameSrc = shots[Math.min(frameIndex, Math.max(0, shots.length - 1))]?.url;
+
   /**
    * Read the frame on screen through the boxes about to be saved.
    *
@@ -492,7 +498,6 @@ export function LayoutCalibrator({
     };
   }, [activeRect, frameSize]);
 
-  const frameSrc = shots[Math.min(frameIndex, Math.max(0, shots.length - 1))]?.url;
   const groups = [...new Set(LAYOUT_ELEMENTS.map((e) => e.group))];
 
   return (
