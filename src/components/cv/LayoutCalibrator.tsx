@@ -113,6 +113,22 @@ export function LayoutCalibrator({
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  /**
+   * Saving writes over whatever layout the event already has, and it is easy
+   * to reach this screen with the app's selected event NOT the one just
+   * calibrated — the CV tab shows the boxes against whatever `eventKey` the
+   * app has selected, not against the video, so nothing stops a Sunset
+   * calibration from being saved onto an IRI event left selected from the
+   * last run. This makes that a deliberate second click that names the event
+   * out loud, rather than a slip nobody notices until the next scan.
+   */
+  const [confirmingSave, setConfirmingSave] = useState(false);
+
+  // A stale confirmation must not carry over if the event changes underneath
+  // it — "yes, save to 2026iri" should never fire a save to 2026sunshow.
+  useEffect(() => {
+    setConfirmingSave(false);
+  }, [eventKey]);
 
   const stageRef = useRef<HTMLDivElement | null>(null);
   const drag = useRef<{ corner: Corner | 'move'; startX: number; startY: number; rect: LayoutRect } | null>(null);
@@ -267,6 +283,7 @@ export function LayoutCalibrator({
   const save = async () => {
     setBusy(true);
     setStatus(null);
+    setConfirmingSave(false);
     try {
       const layout: CalibratedLayout = {
         eventKey,
@@ -569,16 +586,44 @@ export function LayoutCalibrator({
           </div>
 
           <div className="cal-save">
-            <button
-              className="cv-btn-grad"
-              disabled={busy || !eventKey || !loaded}
-              onClick={save}
-            >
-              {busy ? 'Saving…' : 'Save layout'}
-            </button>
+            {!confirmingSave ? (
+              <button
+                className="cv-btn-grad"
+                disabled={busy || !eventKey || !loaded}
+                onClick={() => setConfirmingSave(true)}
+              >
+                Save layout
+              </button>
+            ) : (
+              <div className="cal-confirm">
+                <p className="cal-confirm-text">
+                  Save this layout for <strong>{eventKey}</strong>?
+                  {confirmed.size < LAYOUT_ELEMENTS.length && (
+                    <>
+                      {' '}
+                      {LAYOUT_ELEMENTS.length - confirmed.size} element(s) are still unconfirmed and
+                      will save wherever their box currently sits.
+                    </>
+                  )}
+                </p>
+                <div className="cal-btnrow">
+                  <button className="cv-btn-grad" disabled={busy} onClick={save}>
+                    {busy ? 'Saving…' : `Yes, save to ${eventKey}`}
+                  </button>
+                  <button
+                    className="cv-btn-outline"
+                    disabled={busy}
+                    onClick={() => setConfirmingSave(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
             <span className="cal-hint">
               Stored against <strong>{eventKey || '—'}</strong> so any machine scanning this event
-              picks it up.
+              picks it up. Double-check that is the event you actually calibrated — the boxes are
+              saved against whichever event is selected in the app, not against the video itself.
             </span>
           </div>
 
