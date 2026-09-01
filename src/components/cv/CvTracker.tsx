@@ -535,6 +535,9 @@ export function CvTracker({ onBack }: CvTrackerProps) {
             <LayoutCalibrator
               eventKey={t.eventKey}
               frames={t.calFrames}
+              frameTimes={t.calTimes}
+              duration={t.calDuration}
+              onGrabFrameAt={t.grabCalibrationFrameAt}
               frameSize={t.calFrameSize}
               sourceLabel={t.sourceLabel}
               detected={t.calDetected as Partial<Record<LayoutElementId, LayoutRect>>}

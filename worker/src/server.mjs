@@ -298,7 +298,7 @@ async function grabFrames(body) {
   const url = String(body.url ?? '').trim();
   if (!url) throw new Error('need a url');
 
-  const count = Math.min(12, Math.max(2, Number(body.count) || 6));
+  const count = Math.min(12, Math.max(1, Number(body.count) || 6));
   let input = url;
   if (isRemoteSource(url)) {
     detectPlatform(url);
@@ -307,14 +307,28 @@ async function grabFrames(body) {
   }
 
   const meta = await probe(input);
-  const from = body.start != null ? Number(body.start) : meta.duration * 0.1;
-  const span =
-    body.duration != null ? Number(body.duration) : Math.max(1, meta.duration * 0.8);
 
+  // Explicit timestamps win over an even spread, because an even spread is a
+  // guess and these are not. Most of an event is NOT a match -- crowd shots,
+  // sponsor cards, the post-match results graphic -- so sampling evenly across
+  // a window routinely returns six frames with no live scoreboard in any of
+  // them, and there is then nothing for a person to calibrate against. When
+  // someone has found the moment they want, take it.
   const times = [];
-  for (let i = 0; i < count; i++) times.push(from + (span * i) / Math.max(1, count - 1));
+  if (Array.isArray(body.times) && body.times.length) {
+    for (const t of body.times.slice(0, 12)) {
+      const n = Number(t);
+      if (Number.isFinite(n) && n >= 0) times.push(Math.min(n, Math.max(0, meta.duration - 0.5)));
+    }
+  }
+  if (!times.length) {
+    const from = body.start != null ? Number(body.start) : meta.duration * 0.1;
+    const span =
+      body.duration != null ? Number(body.duration) : Math.max(1, meta.duration * 0.8);
+    for (let i = 0; i < count; i++) times.push(from + (span * i) / Math.max(1, count - 1));
+  }
 
-  log('grabbing ' + count + ' calibration frame(s)…');
+  log('grabbing ' + times.length + ' calibration frame(s)…');
   const shots = await grabJpegs(input, times, { width: Math.min(1280, meta.width) });
   log('grabbed ' + shots.length + ' frame(s)');
 

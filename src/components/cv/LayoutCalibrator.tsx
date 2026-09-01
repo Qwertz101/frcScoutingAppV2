@@ -71,6 +71,38 @@ const mapToBoxes = (m: Record<LayoutElementId, LayoutRect>): LayoutBoxes => ({
 
 const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
 
+/** Seconds as h:mm:ss (or m:ss under an hour) — how a person reads a VOD timeline. */
+function fmtTime(sec: number): string {
+  const s = Math.max(0, Math.round(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  const mm = h ? String(m).padStart(2, '0') : String(m);
+  return (h ? h + ':' : '') + mm + ':' + String(ss).padStart(2, '0');
+}
+
+/**
+ * Parse what someone types after reading a timestamp off a VOD.
+ *
+ * Accepts `1:23:45`, `12:30`, `750`, and comma- or space-separated lists of
+ * them, because the fastest route to a usable frame is usually pasting the
+ * times of a few matches you already know — not scrubbing blind, which on a
+ * remote VOD costs several seconds per look.
+ */
+function parseStamps(text: string): number[] {
+  const out: number[] = [];
+  for (const raw of text.split(/[,\s]+/)) {
+    const t = raw.trim();
+    if (!t) continue;
+    const parts = t.split(':').map((p) => Number(p));
+    if (parts.some((n) => !Number.isFinite(n) || n < 0)) continue;
+    let sec = 0;
+    for (const p of parts) sec = sec * 60 + p;
+    out.push(sec);
+  }
+  return out;
+}
+
 /** Tone drives the outline colour: alliance colours mean alliance, nothing else. */
 function toneOf(id: LayoutElementId): 'blue' | 'red' | 'timer' {
   if (id.startsWith('blue')) return 'blue';
@@ -82,6 +114,18 @@ interface Props {
   eventKey: string;
   /** Frames sampled across a match. More than one, always — see the header. */
   frames: string[];
+  /** Seconds into the source each frame came from, index-aligned with `frames`. */
+  frameTimes?: number[];
+  /** Length of the source, so the scrubber knows how far it reaches. */
+  duration?: number;
+  /**
+   * Fetch one more frame at a chosen moment.
+   *
+   * Absent when the source cannot be scrubbed (a live screen share has no
+   * timeline), in which case the hunting controls are hidden rather than shown
+   * broken.
+   */
+  onGrabFrameAt?: (seconds: number) => Promise<string | null>;
   frameSize: { width: number; height: number } | null;
   sourceLabel?: string;
   /**
@@ -97,6 +141,9 @@ interface Props {
 export function LayoutCalibrator({
   eventKey,
   frames,
+  frameTimes,
+  duration,
+  onGrabFrameAt,
   frameSize,
   sourceLabel,
   detected,
@@ -124,6 +171,18 @@ export function LayoutCalibrator({
    */
   const [confirmingSave, setConfirmingSave] = useState(false);
 
+  /**
+   * The frames on screen, which start as whatever was sampled and grow as a
+   * person hunts down better ones. Held locally rather than pushed back up,
+   * because finding a usable frame is part of calibrating, not part of the
+   * capture the parent set up.
+   */
+  const [shots, setShots] = useState<{ url: string; at: number }[]>([]);
+  const [seekTo, setSeekTo] = useState(0);
+  const [stamp, setStamp] = useState('');
+  const [grabbing, setGrabbing] = useState(false);
+  const [grabNote, setGrabNote] = useState<string | null>(null);
+
   // A stale confirmation must not carry over if the event changes underneath
   // it — "yes, save to 2026iri" should never fire a save to 2026sunshow.
   useEffect(() => {
@@ -135,6 +194,12 @@ export function LayoutCalibrator({
 
   const season = seasonOf(eventKey);
   const activeRect = boxes[active];
+
+  // Seed from what the parent sampled, and re-seed if it samples again.
+  useEffect(() => {
+    setShots(frames.map((url, i) => ({ url, at: frameTimes?.[i] ?? 0 })));
+    setFrameIndex(0);
+  }, [frames, frameTimes]);
 
   // Order of preference: a layout already saved for this event, then whatever
   // the detector proposes, then the defaults. A saved layout wins because it
@@ -271,6 +336,55 @@ export function LayoutCalibrator({
     return () => window.removeEventListener('keydown', onKey);
   }, [active, boxes, frameSize]);
 
+  /* ---------------- finding a usable frame ---------------- */
+
+  const addShots = async (times: number[]) => {
+    if (!onGrabFrameAt || !times.length) return;
+    setGrabbing(true);
+    setGrabNote(null);
+    try {
+      const added: { url: string; at: number }[] = [];
+      for (const t of times.slice(0, 8)) {
+        const url = await onGrabFrameAt(t);
+        if (url) added.push({ url, at: t });
+      }
+      if (!added.length) {
+        setGrabNote('No frame came back for that time.');
+        return;
+      }
+      setShots((prev) => {
+        // Keep the strip in timeline order and drop anything landing on a
+        // second already covered, so repeated grabs at the same spot do not
+        // pile up identical thumbnails.
+        const merged = [...prev];
+        for (const a of added) {
+          const dup = merged.findIndex((m) => Math.abs(m.at - a.at) < 1);
+          if (dup >= 0) merged[dup] = a;
+          else merged.push(a);
+        }
+        merged.sort((x, y) => x.at - y.at);
+        const idx = merged.findIndex((m) => Math.abs(m.at - added[0].at) < 1);
+        if (idx >= 0) setFrameIndex(idx);
+        return merged;
+      });
+      setGrabNote(
+        added.length === 1
+          ? `Added the frame at ${fmtTime(added[0].at)}.`
+          : `Added ${added.length} frames.`
+      );
+    } finally {
+      setGrabbing(false);
+    }
+  };
+
+  const dropShot = (i: number) => {
+    setShots((prev) => {
+      const next = prev.filter((_, n) => n !== i);
+      setFrameIndex((cur) => Math.max(0, Math.min(cur, next.length - 1)));
+      return next;
+    });
+  };
+
   /* ---------------- save ---------------- */
 
   const confirmActive = () => {
@@ -339,7 +453,7 @@ export function LayoutCalibrator({
     };
   }, [activeRect, frameSize]);
 
-  const frameSrc = frames[Math.min(frameIndex, Math.max(0, frames.length - 1))];
+  const frameSrc = shots[Math.min(frameIndex, Math.max(0, shots.length - 1))]?.url;
   const groups = [...new Set(LAYOUT_ELEMENTS.map((e) => e.group))];
 
   return (
@@ -411,8 +525,8 @@ export function LayoutCalibrator({
         {/* stage */}
         <div className="cal-col">
           <span className="cal-col-label">
-            Frame {frames.length ? frameIndex + 1 : 0} of {frames.length}
-            {frames.length > 1 ? ' · check the box on every one' : ''}
+            Frame {shots.length ? frameIndex + 1 : 0} of {shots.length}
+            {shots.length > 1 ? ' · check the box on every one' : ''}
           </span>
 
           <div className="cal-stage" ref={stageRef} onPointerMove={onMove} onPointerUp={endDrag}>
@@ -500,16 +614,72 @@ export function LayoutCalibrator({
             )}
           </div>
 
-          {frames.length > 1 && (
+          {onGrabFrameAt && (
+            <div className="cal-hunt">
+              <span className="cal-col-label">Find the scoreboard</span>
+              <p className="cal-hint">
+                Most of an event is not a match, so the frames above are often crowd shots, sponsor
+                cards or the post-match results screen — none of which show the live overlay. Jump
+                to a moment where a match is actually running.
+              </p>
+
+              <div className="cal-hunt-row">
+                <input
+                  className="cv-input cal-stamp"
+                  placeholder="Timestamps, e.g. 12:30, 1:04:15"
+                  value={stamp}
+                  onChange={(e) => setStamp(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void addShots(parseStamps(stamp));
+                  }}
+                  disabled={grabbing}
+                />
+                <button
+                  className="cv-btn-grad"
+                  disabled={grabbing || !parseStamps(stamp).length}
+                  onClick={() => void addShots(parseStamps(stamp))}
+                >
+                  {grabbing ? 'Grabbing…' : 'Grab'}
+                </button>
+              </div>
+
+              {duration ? (
+                <div className="cal-hunt-row">
+                  <input
+                    className="cal-scrub"
+                    type="range"
+                    min={0}
+                    max={Math.floor(duration)}
+                    step={1}
+                    value={seekTo}
+                    onChange={(e) => setSeekTo(Number(e.target.value))}
+                    disabled={grabbing}
+                  />
+                  <span className="cal-scrub-time">{fmtTime(seekTo)}</span>
+                  <button
+                    className="cv-btn-outline"
+                    disabled={grabbing}
+                    onClick={() => void addShots([seekTo])}
+                  >
+                    Grab here
+                  </button>
+                </div>
+              ) : null}
+
+              {grabNote && <span className="cal-hint">{grabNote}</span>}
+            </div>
+          )}
+
+          {shots.length > 1 && (
             <div className="cal-strip">
-              {frames.map((f, i) => (
+              {shots.map((sh, i) => (
                 <button
                   key={i}
                   className={`cal-shot${i === frameIndex ? ' active' : ''}`}
                   onClick={() => setFrameIndex(i)}
-                  title={`Frame ${i + 1}`}
+                  title={`Frame ${i + 1} · ${fmtTime(sh.at)}`}
                 >
-                  <img src={f} alt="" draggable={false} />
+                  <img src={sh.url} alt="" draggable={false} />
                   <span
                     className="cal-shot-box"
                     style={{
@@ -519,6 +689,28 @@ export function LayoutCalibrator({
                       height: `${(activeRect.y1 - activeRect.y0) * 100}%`,
                     }}
                   />
+                  <span className="cal-shot-time">{fmtTime(sh.at)}</span>
+                  {/* Clearing out the frames with no scoreboard is most of the
+                      value here — a strip of crowd shots is worse than useless,
+                      because "check every frame" then means checking noise. */}
+                  <span
+                    className="cal-shot-drop"
+                    role="button"
+                    tabIndex={0}
+                    title="Remove this frame"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      dropShot(i);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.stopPropagation();
+                        dropShot(i);
+                      }
+                    }}
+                  >
+                    ×
+                  </span>
                 </button>
               ))}
             </div>

@@ -1291,3 +1291,82 @@
   font-size: 12.5px;
   line-height: 1.5;
 }
+
+/* ---------------------------------------------------------------------------
+   Finding a frame that actually shows the scoreboard.
+
+   The evenly-spread sample is a guess, and on a real broadcast it usually
+   misses: most of an event is crowd shots, sponsor cards and the post-match
+   results graphic. These controls are how a person overrides it.
+   --------------------------------------------------------------------------- */
+
+.cal-hunt {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e6ebee);
+  border-radius: 8px;
+  background: var(--surface-subtle, #f6f9fb);
+}
+
+.cal-hunt-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cal-stamp {
+  flex: 1;
+  min-width: 190px;
+}
+
+.cal-scrub {
+  flex: 1;
+  min-width: 160px;
+  accent-color: var(--cyan-500, #00baff);
+}
+
+.cal-scrub-time {
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  min-width: 60px;
+  text-align: right;
+}
+
+.cal-shot-time {
+  position: absolute;
+  left: 3px;
+  bottom: 3px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(10, 12, 16, 0.72);
+  color: #fff;
+  font-size: 9.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.cal-shot-drop {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(10, 12, 16, 0.72);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.cal-shot-drop:hover {
+  background: #c2323b;
+}

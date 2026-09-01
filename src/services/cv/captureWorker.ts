@@ -203,6 +203,15 @@ export function fetchCalibrationFrames(req: {
   count?: number;
   start?: number;
   duration?: number;
+  /**
+   * Exact seconds to grab, which beat any even spread.
+   *
+   * Most of an event is not a match, so sampling evenly across a window
+   * routinely returns frames of crowd shots, sponsor cards and the post-match
+   * results graphic with no live scoreboard among them. Once a person has
+   * found the moment they want, this is how they ask for it.
+   */
+  times?: number[];
 }): Promise<CalibrationFrames> {
   return call<CalibrationFrames>('/api/frames', {
     method: 'POST',

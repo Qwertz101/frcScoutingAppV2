@@ -189,6 +189,10 @@ export function useCvTracker() {
    * the match moved on — a replay cutaway, a phase change, a graphic sliding in.
    */
   const [calFrames, setCalFrames] = useState<string[]>([]);
+  /** Seconds into the source each calibration frame came from, index-aligned. */
+  const [calTimes, setCalTimes] = useState<number[]>([]);
+  /** Length of the source, so the scrubber knows how far it can reach. */
+  const [calDuration, setCalDuration] = useState(0);
   const [calFrameSize, setCalFrameSize] = useState<{ width: number; height: number } | null>(null);
   const [calDetected, setCalDetected] = useState<Record<string, { x0: number; y0: number; x1: number; y1: number }>>({});
   const [calibrating, setCalibrating] = useState(false);
@@ -806,6 +810,74 @@ export function useCvTracker() {
    * instead. Either way the point is the same: a box has to be right on more
    * than the one frame that happened to be showing.
    */
+  /**
+   * One frame at one moment, for hunting down the scoreboard by hand.
+   *
+   * The evenly-spread default is a guess, and on a real broadcast it is usually
+   * a bad one: most of an event is not a match, so six frames spread across a
+   * window land on crowd shots, sponsor cards, the title card and the
+   * post-match results graphic — none of which show the live overlay, and the
+   * results screen is actively misleading because it looks like a scoreboard
+   * while having a completely different layout. This is how a person says "no,
+   * THIS moment", either by scrubbing or by typing a timestamp they already
+   * know from watching the video elsewhere.
+   *
+   * Returns the frame, or null with `error` set.
+   */
+  const grabCalibrationFrameAt = async (seconds: number): Promise<string | null> => {
+    const link = urlInput.trim();
+    setError(null);
+
+    if (isStreamLink(link)) {
+      try {
+        const got = await fetchCalibrationFrames({ url: link, times: [seconds] });
+        const shot = got.frames[0];
+        if (!shot) {
+          setError('The worker could not read a frame at that point.');
+          return null;
+        }
+        if (got.duration) setCalDuration(got.duration);
+        setCalFrameSize(got.frameSize);
+        return shot.dataUrl;
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+        return null;
+      }
+    }
+
+    // Local file: seek the element we already have rather than asking the
+    // worker for something it may not even have a copy of.
+    const v = videoRef.current;
+    if (!v || !v.videoWidth || !Number.isFinite(v.duration)) {
+      setError('This source cannot be scrubbed — grab frames from a link or an uploaded file.');
+      return null;
+    }
+    try {
+      const wasPaused = v.paused;
+      v.pause();
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          v.removeEventListener('seeked', done);
+          resolve();
+        };
+        v.addEventListener('seeked', done);
+        v.currentTime = Math.max(0, Math.min(seconds, v.duration - 0.1));
+      });
+      const canvas = document.createElement('canvas');
+      canvas.width = v.videoWidth;
+      canvas.height = v.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+      const url = canvas.toDataURL('image/jpeg', 0.85);
+      if (!wasPaused) void v.play().catch(() => {});
+      return url;
+    } catch {
+      setError('The browser would not let this video be read pixel-by-pixel.');
+      return null;
+    }
+  };
+
   const captureCalibrationFrames = async (count = 6) => {
     // A stream or VOD has no browser-readable video, so the worker supplies the
     // frames. This is the primary path -- the local capture below only covers
@@ -828,6 +900,8 @@ export function useCvTracker() {
           return;
         }
         setCalFrames(got.frames.map((f) => f.dataUrl));
+        setCalTimes(got.frames.map((f) => f.at));
+        setCalDuration(got.duration || 0);
         setCalFrameSize(got.frameSize);
         // No proposal for a stream: the detector runs in the worker, not here,
         // and offering a guess this side would mean decoding the video twice.
@@ -849,6 +923,7 @@ export function useCvTracker() {
     setError(null);
 
     const shots: string[] = [];
+    const shotTimes: number[] = [];
     const canvas = document.createElement('canvas');
     canvas.width = v.videoWidth;
     canvas.height = v.videoHeight;
@@ -880,11 +955,15 @@ export function useCvTracker() {
             v.currentTime = Math.min(at, v.duration - 0.1);
           });
           shots.push(grab());
+          shotTimes.push(v.currentTime);
         }
         if (!wasPaused) void v.play().catch(() => {});
       } else {
         for (let i = 0; i < count; i++) {
           shots.push(grab());
+          // A live screen share has no timeline to point at, so the "time" is
+          // just how far into the sampling we were.
+          shotTimes.push(i * 0.7);
           await new Promise((r) => setTimeout(r, 700));
         }
       }
@@ -896,6 +975,8 @@ export function useCvTracker() {
     }
 
     setCalFrames(shots);
+    setCalTimes(shotTimes);
+    setCalDuration(Number.isFinite(v.duration) ? v.duration : 0);
     setCalFrameSize({ width: v.videoWidth, height: v.videoHeight });
 
     // Offer the detector's guess as a starting point. Failure here is fine and
@@ -1094,8 +1175,11 @@ export function useCvTracker() {
     resetQuad,
     autoDetect,
     calFrames,
+    calTimes,
+    calDuration,
     calFrameSize,
     calDetected,
+    grabCalibrationFrameAt,
     calibrating,
     setCalibrating,
     captureCalibrationFrames,
