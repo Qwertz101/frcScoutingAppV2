@@ -392,7 +392,7 @@ export function CvTracker({ onBack }: CvTrackerProps) {
             <span className="cv-source-label">Footage Source</span>
             <input
               className="cv-input"
-              placeholder="Paste a YouTube VOD or livestream link — the capture worker reads it"
+              placeholder="Paste a YouTube VOD/livestream link, or a video path already on the worker's disk"
               value={t.urlInput}
               onChange={(e) => t.setUrlInput(e.target.value)}
               onKeyDown={(e) => {

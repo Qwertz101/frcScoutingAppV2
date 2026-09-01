@@ -24,8 +24,28 @@ import {
 
 export type SourceKind = 'none' | 'file' | 'url' | 'screen';
 
+/**
+ * A path on the worker machine's own disk, rather than something for the
+ * browser to fetch. `worker/src/sources.mjs#isRemoteSource` already treats
+ * anything that is not a YouTube/Twitch page URL as exactly this and reads it
+ * directly with ffmpeg -- most usefully, a file already sitting in
+ * `worker/downloads/` from a previous run's "keep download", so re-running
+ * against the same footage never has to re-fetch it. Matched loosely (any
+ * absolute Windows or POSIX path ending in a common video extension) because
+ * this only decides which side of the app handles the string; the worker is
+ * what actually opens the file and reports a clear error if it is not there.
+ */
+const isLocalWorkerPath = (url: string) => {
+  const s = url.trim();
+  const drivePath = /^[a-zA-Z]:[\\/]/.test(s); // C:\... or C:/...
+  const uncOrPosixPath = s.startsWith('\\\\') || s.startsWith('/');
+  const videoExt = /\.(mp4|mkv|mov|webm|m4v|ts|avi)$/i.test(s);
+  return (drivePath || uncOrPosixPath) && videoExt && !/\s/.test(s);
+};
+
 /** Does this link belong to the capture worker rather than the <video> element? */
-export const isStreamLink = (url: string) => /youtube\.com|youtu\.be|twitch\.tv/i.test(url);
+export const isStreamLink = (url: string) =>
+  /youtube\.com|youtu\.be|twitch\.tv/i.test(url) || isLocalWorkerPath(url);
 
 /**
  * Quad positions survive a reload.
