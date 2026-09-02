@@ -510,7 +510,16 @@ export function sweepPoints(hitAt, backoff, ahead, step, duration) {
     if (d <= ahead) pts.push(hitAt + d);
     if (d <= backoff) pts.push(hitAt - d);
   }
-  return pts.filter((t) => t >= 0 && t + CLOCK_FRAMES <= (duration ?? Infinity));
+  return (
+    pts
+      .filter((t) => t >= 0 && t + CLOCK_FRAMES <= (duration ?? Infinity))
+      // The primary ladder has already read a cluster at each of its offsets and
+      // found nothing legible, and a cluster covers `CLOCK_FRAMES` seconds from
+      // where it starts. Re-reading those same seconds on the expensive path
+      // cannot produce a different answer -- it just costs two more clusters
+      // before the sweep reaches anywhere new.
+      .filter((t) => !PROBE_LADDER.some((o) => Math.abs(t - (hitAt + o)) < CLOCK_FRAMES))
+  );
 }
 
 /**
