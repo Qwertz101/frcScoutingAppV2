@@ -44,7 +44,7 @@ const input = process.argv[2];
 if (!input || input.startsWith('--')) {
   console.error(
     'usage: node worker/src/main.mjs <video-or-youtube-url> --event <eventKey> ' +
-      '[--start sec] [--duration sec] [--download] [--keep-download] [--write] [--force] [--no-dashboard]'
+      '[--start sec] [--duration sec] [--download] [--keep-download] [--write] [--force] [--no-stride] [--no-dashboard]'
   );
   process.exit(1);
 }
@@ -89,6 +89,11 @@ const res = await runVod(input, {
   duration: flag('duration', null),
   download: has('download'),
   keepDownload: has('keep-download'),
+  // Escape hatch. The stride scanner seeks to a few hundred places instead of
+  // decoding the recording, which is ~40x less work but relies on the overlay
+  // being up for most of every match. A broadcast that cuts away from it far
+  // more than usual is the case to fall back on the full decode for.
+  strided: !has('no-stride'),
   layout,
   log,
   onSchema: (s) => {
