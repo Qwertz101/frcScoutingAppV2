@@ -80,6 +80,21 @@ const PROBE_FRAMES = 3;
 /** Of `PROBE_FRAMES`, how many must show the overlay to call it a hit. */
 const PROBE_AGREE = 2;
 
+/**
+ * Least fraction of the timer plate that must be clearly brighter than the
+ * plate's own average, *and* clearly darker than it, before the plate counts as
+ * showing a time.
+ *
+ * Requiring both is what makes this independent of the graphic's colour scheme:
+ * digits on a plate always produce two populations, whether they are dark on
+ * white or white on dark, while a plate with no time on it is one flat
+ * population either way. Measured on Sunset Showdown, where the pre-match
+ * graphic puts a plain white logo disc exactly where the clock later sits:
+ * 0.000 on every pre-match and between-match frame, 0.297-0.350 on every
+ * in-match one. 0.10 sits in the middle of that gap.
+ */
+const TIMER_DIGIT_MIN = 0.1;
+
 /** Frames per clock reading. Spans enough seconds to prove the plate is moving. */
 const CLOCK_FRAMES = 5;
 
@@ -106,12 +121,15 @@ const DISAMBIG_LEAD = 25;
 /**
  * Where to look for a clock, relative to a hit, in order.
  *
- * Forward only. A hit is either inside a match, where 0 finds the clock
- * immediately, or on the pre-match lineup graphic, which shows both alliance
- * colours with no clock and gives way to a green flag shortly *after*. Looking
- * backwards would find the previous match instead of this one.
+ * Offset 0 nearly always answers, because a hit now requires a time to be
+ * visible in the first place -- the rest is for a plate that is legible enough
+ * to detect but not to OCR, which motion blur on a compressed stream does
+ * produce. Outward rather than forward-only: a hit lands anywhere in the match,
+ * so a late one runs past the buzzer going forward and an early one runs into
+ * the pre-match graphic going back, and only covering both directions handles
+ * a hit at either end.
  */
-const PROBE_LADDER = [0, 12, 24, 45];
+const PROBE_LADDER = [0, 12, -12, 24, -24, 45, -45];
 
 /** Match-elapsed offsets to verify a resolved green flag against, in order. */
 const VERIFY_ELAPSED = [60, 90, 45];
@@ -132,9 +150,9 @@ const BACKOFF = 180;
 /**
  * How far past the hit the sweep will also look.
  *
- * The primary ladder already covers 0..45 forward, but a hit that landed on the
- * pre-match graphic of a match whose opening seconds are illegible needs to
- * reach further in than that.
+ * A hit sits inside a match, so the green flag is behind it and backwards is
+ * the productive direction -- but only just far enough forward to finish
+ * covering a match whose clock is legible only in its later half.
  */
 const SWEEP_AHEAD = 60;
 
@@ -210,15 +228,57 @@ async function readTimer(worker, frame, timerQuad) {
   return recognizeTimer(worker, { data: gray, width: SCORE_RECT_W, height: SCORE_RECT_H });
 }
 
-/** Is the scoreboard overlay on screen in this frame? */
+/**
+ * Does the timer plate actually have a time on it?
+ *
+ * The check that separates a match from a graphic *about* a match. Alliance
+ * colour alone does not: the pre-match lineup card carries both alliance blocks
+ * and the six team numbers, and so reads as the scoreboard while no match is
+ * running. Treating those as hits cost a wasted resolution attempt each, and
+ * made "the overlay is up" mean something weaker than "a match is happening"
+ * everywhere that phrase is relied on.
+ */
+function timerShowsDigits(frame, timerQuad) {
+  const gray = rectifyToGray(frame, timerQuad, SCORE_RECT_W, SCORE_RECT_H);
+  if (!gray || !gray.length) return false;
+
+  let sum = 0;
+  for (let i = 0; i < gray.length; i++) sum += gray[i];
+  const mean = sum / gray.length;
+
+  let bright = 0;
+  let dark = 0;
+  for (let i = 0; i < gray.length; i++) {
+    if (gray[i] > mean + 40) bright++;
+    else if (gray[i] < mean - 40) dark++;
+  }
+  return Math.min(bright, dark) / gray.length >= TIMER_DIGIT_MIN;
+}
+
+/**
+ * Is a match actually running in this frame?
+ *
+ * Both halves are needed. The colour test says the score plates are there and
+ * filled with alliance colour; the digit test says a clock is on screen, which
+ * is what distinguishes a match in progress from the card announcing one.
+ */
 function overlayIn(frame, fixedQuads, layout) {
   // A taught layout removes the geometry search entirely, and with it every way
   // that search can lock onto something scoreboard-shaped that is not the
   // scoreboard -- the red and blue championship banners above the bleachers at
   // Sunset Showdown being the measured example.
-  if (fixedQuads) return isOverlayPresent(frame, fixedQuads.blue, fixedQuads.red);
+  if (fixedQuads) {
+    return (
+      isOverlayPresent(frame, fixedQuads.blue, fixedQuads.red) &&
+      timerShowsDigits(frame, fixedQuads.timer)
+    );
+  }
   const regions = detectScoreRegions(frame, layout);
-  return regions !== null && isOverlayPresent(frame, regions.blue, regions.red);
+  return (
+    regions !== null &&
+    isOverlayPresent(frame, regions.blue, regions.red) &&
+    timerShowsDigits(frame, regions.timer)
+  );
 }
 
 /**
@@ -330,13 +390,9 @@ export async function resolveGreenFlag(input, hitAt, quads, meta, pool, opts = {
   const log = opts.log ?? (() => {});
   const duration = meta.duration ?? Infinity;
 
-  // Read the clock at the hit itself, then a little further on if the plate is
-  // not legible there. Two quite different things bring us here: a replay wipe
-  // or lower-third covering the plate mid-match, and a hit that landed on the
-  // pre-match lineup graphic -- which carries both alliance colours and so
-  // reads as the overlay, but has no clock on it at all and sits *before* the
-  // match rather than inside it. Stepping forward covers both; stepping back
-  // would only cover the first.
+  // Read the clock at the hit itself, then nearby if the plate is not legible
+  // there -- a replay wipe or a lower-third over it, or motion blur bad enough
+  // to defeat OCR on a plate whose digits were still clear enough to detect.
   let consensus = null;
   for (const offset of PROBE_LADDER) {
     if (opts.signal?.aborted) return null;
@@ -643,13 +699,15 @@ export async function scanStrided(input, opts = {}) {
     /**
      * Is this hit already accounted for by a match we have found?
      *
-     * Two ways it can be. Inside `[G, G + MATCH_LEN]` is the obvious one -- a
-     * match is longer than a stride, so consecutive hits routinely name the
-     * same match. The other is the stride immediately *before* `G`: that is the
-     * pre-match lineup graphic, which shows both alliance colours and so counts
-     * as a hit while belonging to the match about to start rather than to any
-     * earlier one. One stride of lead-in cannot swallow a real earlier match,
-     * because no event runs matches 135 seconds apart.
+     * Inside `[G, G + MATCH_LEN]` is the ordinary case -- a match is longer than
+     * a stride, so consecutive hits routinely name the same match.
+     *
+     * The stride of lead-in before `G` is defensive rather than routine now
+     * that a hit requires a clock on screen. It still costs nothing and still
+     * covers a broadcast that counts down to the green flag in the same plate,
+     * which would put a hit just before a match it belongs to. One stride of
+     * lead-in cannot swallow a real earlier match, because no event runs
+     * matches 135 seconds apart.
      */
     const explained = (hitAt) =>
       out.some((m) => hitAt >= m.greenFlagAt - stride && hitAt <= m.greenFlagAt + MATCH_LEN + 1);
@@ -684,12 +742,13 @@ export async function scanStrided(input, opts = {}) {
     }
 
     // Pass two: sweep only what nothing else explained. Deliberately after the
-    // whole of pass one rather than inline, because most unresolved hits are
-    // the pre-match graphic of a match that pass one goes on to find from the
-    // *next* hit -- and a sweep costs ~180 sequential OCR calls against the ten
-    // a clock probe costs. Measured on Sunset Showdown: the hit at 540s failed
-    // its probes and bought a full fruitless sweep, while the very next hit
-    // resolved the match at 638s that explains it.
+    // whole of pass one rather than inline, because a sweep is many times the
+    // cost of a clock probe and an unresolved hit is often explained by a match
+    // that pass one goes on to find from a later hit. That was routine when a
+    // lineup card counted as a hit -- the hit at 540s bought a fruitless sweep
+    // while the next hit resolved the match at 638s that explained it -- and is
+    // rarer now that a hit requires a clock, but the ordering still costs
+    // nothing and still pays whenever a match's opening is illegible.
     for (const hitAt of unresolved) {
       if (opts.signal?.aborted) return out;
       if (explained(hitAt)) continue;
