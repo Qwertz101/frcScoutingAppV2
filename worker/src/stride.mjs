@@ -642,6 +642,11 @@ export async function scanStrided(input, opts = {}) {
     out.sort((a, b) => a.greenFlagAt - b.greenFlagAt);
     return out;
   } finally {
-    if (ownPool) await pool.close?.();
+    // `terminate`, matching scan.mjs and run.mjs. Written as `pool.close?.()`
+    // first, which is not a method the pool has -- and the optional chaining
+    // meant that was not an error, just a silent no-op that left every OCR
+    // worker alive and the event loop with it. Two test runs sat idle for
+    // hours after printing their results because of it.
+    if (ownPool) await pool.terminate();
   }
 }
