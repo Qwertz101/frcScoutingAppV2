@@ -17,6 +17,7 @@
  */
 
 import { scan } from './scan.mjs';
+import { scanStrided } from './stride.mjs';
 import { processMatch } from './process.mjs';
 import { identify } from './identify.mjs';
 import { scoreQuality } from './quality.mjs';
@@ -137,7 +138,7 @@ export async function runVod(source, opts = {}) {
 
   try {
     log('scanning for match starts…');
-    const found = await scan(input, {
+    const scanOpts = {
       pool,
       meta,
       layout,
@@ -155,7 +156,25 @@ export async function runVod(source, opts = {}) {
         opts.onProgress?.({ phase: 'scan', at, from, to, total });
       },
       log,
-    });
+    };
+
+    // Seek to a few hundred places rather than decoding the whole recording,
+    // when there is a taught layout to read the clock through. Tier A's
+    // `fps=0.5` still decodes every frame and only discards most of them --
+    // measured at ~7.4x realtime, so about 72 minutes for a nine-hour event
+    // before any OCR. See stride.mjs. Detection-based scanning keeps the old
+    // path, because a stride probe has no quads to read a clock with and
+    // deriving them per probe would cost more than the decode it saves.
+    let found = null;
+    if (fixedQuads && opts.strided !== false) {
+      found = await scanStrided(input, scanOpts);
+      if (found && !found.length) {
+        log('stride scan found nothing — falling back to the full decode');
+        found = null;
+      }
+    }
+    if (!found) found = await scan(input, scanOpts);
+
     log(found.length + ' match(es) found');
 
     for (let i = 0; i < found.length; i++) {
