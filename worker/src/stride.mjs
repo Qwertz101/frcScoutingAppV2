@@ -539,8 +539,15 @@ export async function sweepForStart(input, hitAt, quads, meta, pool, opts = {}) 
   const backoff = opts.backoff ?? BACKOFF;
   const points = sweepPoints(hitAt, backoff, SWEEP_AHEAD, SWEEP_STEP, meta.duration);
 
+  // Neighbouring matches already found and rejected. Several probe points land
+  // inside the same one, and without this each re-reads its clock and re-pays
+  // disambiguation and verification to reach an identical conclusion -- measured
+  // at six identical rejections of the match at 1749.5s for one hit at 2025s.
+  const rejected = [];
+
   for (const at of points) {
     if (opts.signal?.aborted) return null;
+    if (rejected.some((g) => at >= g - 1 && at <= g + MATCH_LEN + 1)) continue;
 
     const consensus = clockConsensus(await readClockCluster(input, at, quads, meta, pool));
     if (!consensus) continue;
@@ -558,6 +565,7 @@ export async function sweepForStart(input, hitAt, quads, meta, pool, opts = {}) 
       '    sweep found a match at ' + resolved.greenFlagAt.toFixed(1) +
         's, which does not contain the hit at ' + hitAt.toFixed(1) + 's — looking elsewhere'
     );
+    rejected.push(resolved.greenFlagAt);
   }
   return null;
 }
