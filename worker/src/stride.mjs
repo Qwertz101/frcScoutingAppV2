@@ -36,13 +36,16 @@
  * looking exactly as confident as a correct read. So the phase is never assumed
  * from one reading -- it is stated as two hypotheses and one of them is
  * disproved against the video. See `resolveGreenFlag`.
+ *
+ * `MatchClock` is deliberately not used anywhere in this file, for that reason.
+ * The processor still uses it, where a match is read start to finish and the
+ * phase is established from the countdown's own opening rather than guessed.
  */
 
 import {
   MATCH_LEN,
   AUTO_LEN,
   TELEOP_LEN,
-  MatchClock,
   detectScoreRegions,
   isOverlayPresent,
   recognizeTimer,
@@ -126,8 +129,24 @@ const VERIFY_TOLERANCE = 4;
  */
 const BACKOFF = 180;
 
-/** How long the fallback sweep will look before giving up. */
-const SWEEP_SPAN = BACKOFF + 40;
+/**
+ * How far past the hit the sweep will also look.
+ *
+ * The primary ladder already covers 0..45 forward, but a hit that landed on the
+ * pre-match graphic of a match whose opening seconds are illegible needs to
+ * reach further in than that.
+ */
+const SWEEP_AHEAD = 60;
+
+/**
+ * Spacing of the sweep's probe points.
+ *
+ * A five-frame cluster at each covers five seconds in twelve, so a countdown
+ * legible for any twelve-second stretch of the window will be found. Small
+ * enough, too, that stepping past a rejected match cannot skip over the real
+ * green flag -- which is what the old `locked + MATCH_LEN` step could do.
+ */
+const SWEEP_STEP = 12;
 
 /** The handover between AUTO ending and TELEOP's clock appearing. 3s, from the manual. */
 const AUTO_TELEOP_DELAY = MATCH_LEN - AUTO_LEN - TELEOP_LEN;
@@ -328,6 +347,20 @@ export async function resolveGreenFlag(input, hitAt, quads, meta, pool, opts = {
   }
   if (!consensus) return null;
 
+  return resolveFromConsensus(input, consensus, quads, meta, pool, opts);
+}
+
+/**
+ * Everything that follows a clock consensus: pick a phase, prove it, verify it.
+ *
+ * Split out from `resolveGreenFlag` so the fallback sweep resolves a countdown
+ * through exactly the same reasoning rather than through `MatchClock`'s
+ * single-frame phase guess. Any countdown found anywhere in the video can be
+ * handed to this; deciding whether it belongs to the match we are looking for
+ * is the caller's job.
+ */
+async function resolveFromConsensus(input, consensus, quads, meta, pool, opts = {}) {
+  const log = opts.log ?? (() => {});
   const options = hypotheses(consensus);
 
   // One hypothesis: the reading was above AUTO's ceiling, so it can only have
@@ -462,59 +495,69 @@ async function verify(input, greenFlagAt, quads, meta, pool, opts = {}) {
 }
 
 /**
- * Last resort: sweep a `MatchClock` forward from well before the hit.
+ * Probe points for the fallback sweep, nearest the hit first.
  *
- * This is the original plan for this scanner, kept as the fallback rather than
- * the primary because it costs ~180 sequential OCR calls where `resolveGreenFlag`
- * costs about ten. It earns its place on footage where the clock is only
- * legible in patches: the sweep gets many more chances to lock than three
- * clusters do.
- *
- * The phase hazard is handled differently here -- the sweep starts before the
- * green flag, so it meets the countdown from the top and `MatchClock` sees an
- * unambiguous value first. Where it can still go wrong is by locking onto the
- * *previous* match, so every lock is checked against the one thing we know for
- * certain: the overlay was on screen at `hitAt`, so `hitAt` must fall inside
- * the match the lock describes.
+ * Order matters more than coverage. The hit is inside the match we want, so a
+ * countdown found near it is far more likely to belong to that match than one
+ * found 180 seconds earlier -- which is quite likely to be the *previous*
+ * match. Working outwards means the common case never consults the previous
+ * match at all, rather than consulting it first and relying on a guard to throw
+ * the answer away.
  */
-async function sweepForStart(input, hitAt, quads, meta, pool, opts = {}) {
+export function sweepPoints(hitAt, backoff, ahead, step, duration) {
+  const pts = [];
+  for (let d = step; d <= Math.max(backoff, ahead); d += step) {
+    if (d <= ahead) pts.push(hitAt + d);
+    if (d <= backoff) pts.push(hitAt - d);
+  }
+  return pts.filter((t) => t >= 0 && t + CLOCK_FRAMES <= (duration ?? Infinity));
+}
+
+/**
+ * Last resort: hunt the window around the hit for any legible countdown.
+ *
+ * This is the original back-off-and-scrub plan, with the scrubbing done by the
+ * same reasoning as the primary path rather than by `MatchClock`. That change
+ * closes a real hole. `MatchClock` sets phase from a single value, so a sweep
+ * that happened to start in the **last 20 seconds of the previous match** read
+ * a countdown below 0:20, called it AUTO, and invented a green flag near that
+ * match's *end*. The containment check below did reject it -- the algebra works
+ * out to needing 36 seconds of overrun where at most 20 are possible, so a
+ * 16-second margin -- but the recovery step was `locked + MATCH_LEN`, a full
+ * match length measured from a fabricated start. That lands 17 to 37 seconds
+ * before the hit, so any match whose hit sat further than ~37s past its green
+ * flag had its real start skipped over and was lost.
+ *
+ * Resolving through `resolveFromConsensus` removes the fabricated start
+ * entirely: a countdown in the previous match now resolves to that match's
+ * *correct* green flag, gets rejected by containment for the honest reason that
+ * it does not contain the hit, and the search continues at `SWEEP_STEP` rather
+ * than leaping a match length from a wrong number.
+ */
+export async function sweepForStart(input, hitAt, quads, meta, pool, opts = {}) {
   const log = opts.log ?? (() => {});
-  let from = Math.max(0, hitAt - BACKOFF);
-  const until = hitAt + 5;
+  const backoff = opts.backoff ?? BACKOFF;
+  const points = sweepPoints(hitAt, backoff, SWEEP_AHEAD, SWEEP_STEP, meta.duration);
 
-  for (let attempt = 0; attempt < 3 && from < until; attempt++) {
-    const clock = new MatchClock();
-    let locked = null;
+  for (const at of points) {
+    if (opts.signal?.aborted) return null;
 
-    for await (const f of frames(input, {
-      start: from,
-      duration: Math.min(SWEEP_SPAN, until - from),
-      fps: 1,
-      width: meta.width,
-      height: meta.height,
-    })) {
-      if (opts.signal?.aborted) return null;
-      const t = await pool.run((w) => readTimer(w, f, quads.timer));
-      clock.feed(t ? t.remaining : null, f.at);
-      if (clock.state.started && clock.greenFlagAt !== null) {
-        locked = clock.greenFlagAt;
-        break;
-      }
-    }
+    const consensus = clockConsensus(await readClockCluster(input, at, quads, meta, pool));
+    if (!consensus) continue;
 
-    if (locked === null) return null;
+    const resolved = await resolveFromConsensus(input, consensus, quads, meta, pool, opts);
+    if (!resolved) continue;
 
-    // The hit is inside a match. Any green flag whose match does not contain it
-    // belongs to a different one -- most often the previous match, which a
-    // 180-second backoff can easily reach at a tight cadence.
-    if (hitAt >= locked - 1 && hitAt <= locked + MATCH_LEN + 1) {
-      return { greenFlagAt: locked, phase: 'auto', method: 'sweep', verified: false };
+    // The overlay was up at the hit, so the hit is inside a match. A green flag
+    // whose match does not contain it describes a different one -- most often
+    // the previous match, which the backoff reaches at a tight cadence.
+    if (hitAt >= resolved.greenFlagAt - 1 && hitAt <= resolved.greenFlagAt + MATCH_LEN + 1) {
+      return { ...resolved, method: 'sweep' };
     }
     log(
-      '    sweep locked ' + locked.toFixed(1) + 's, which does not contain the hit at ' +
-        hitAt.toFixed(1) + 's — looking past it'
+      '    sweep found a match at ' + resolved.greenFlagAt.toFixed(1) +
+        's, which does not contain the hit at ' + hitAt.toFixed(1) + 's — looking elsewhere'
     );
-    from = locked + MATCH_LEN;
   }
   return null;
 }
