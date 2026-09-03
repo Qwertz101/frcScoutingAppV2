@@ -39,7 +39,7 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { resolveBin } from './ffmpeg.mjs';
 import { REPO_ROOT } from './core.mjs';
-import { frames } from './ffmpeg.mjs';
+import { frames, probe } from './ffmpeg.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -114,7 +114,7 @@ function cacheStem(url, start, duration, maxHeight) {
 }
 
 /** A finished download for `stem`, or null. Ignores interrupted `.part` files. */
-async function findDownload(dir, stem) {
+async function findDownload(dir, stem, log = () => {}) {
   let files;
   try {
     files = await readdir(dir);
@@ -124,12 +124,36 @@ async function findDownload(dir, stem) {
   const found = files.find((f) => f.startsWith(stem + '.') && !f.endsWith('.part'));
   if (!found) return null;
   if (files.some((f) => f.startsWith(stem + '.') && f.endsWith('.part'))) return null;
+
+  const path = join(dir, found);
+  let size;
   try {
-    const { size } = await stat(join(dir, found));
-    return size > 0 ? { path: join(dir, found), size } : null;
+    ({ size } = await stat(path));
   } catch {
     return null;
   }
+  if (!size) return null;
+
+  // Size is not evidence. A `.part` file proves nothing here either: a windowed
+  // fetch passes `--download-sections`, which routes the copy through ffmpeg,
+  // and ffmpeg writes straight to the final name with no `.part` stage -- so a
+  // transfer that dies partway leaves a large, plausible, final-looking file.
+  // Worse, mp4 keeps its index (`moov`) at the *end*, so a truncated one is not
+  // merely short, it is unreadable: "moov atom not found".
+  //
+  // Measured: a 115-minute window stalled at 1.10 GB of an expected ~3 GB,
+  // reported 100%, and was accepted. Everything downstream then failed on a
+  // file this function had already blessed, and because the same file was found
+  // again on the next attempt it failed identically every time.
+  try {
+    await probe(path);
+  } catch (e) {
+    const why = String(e.message ?? e).split(/[\r\n]/)[0];
+    log('discarding an unreadable download (' + why + '): ' + path);
+    await rm(path, { force: true }).catch(() => {});
+    return null;
+  }
+  return { path, size };
 }
 
 /**
@@ -189,7 +213,7 @@ export async function downloadVod(url, opts = {}) {
   // renames on success, so a leftover `.part` beside the file means the last
   // attempt died partway and whatever is there must not be trusted.
   if (keep) {
-    const existing = await findDownload(dir, stem);
+    const existing = await findDownload(dir, stem, log);
     if (existing) {
       log('reusing existing download: ' + existing.path + ' (' + (existing.size / 1e9).toFixed(2) + ' GB)');
       return {
@@ -203,7 +227,20 @@ export async function downloadVod(url, opts = {}) {
   }
 
   try {
-    const args = ['-f', YT_FORMAT(maxHeight), '--no-warnings', '-o', join(dir, stem + '.%(ext)s')];
+    // A multi-gigabyte fetch across an hour is long enough that a stalled
+    // connection is routine rather than exceptional -- one measured here died
+    // at 35% and then dribbled 256 KiB over five minutes before giving up. Left
+    // to itself yt-dlp waits a very long time on a socket that is never coming
+    // back; these bound that and retry instead.
+    const args = [
+      '-f', YT_FORMAT(maxHeight),
+      '--no-warnings',
+      '--socket-timeout', '30',
+      '--retries', '10',
+      '--fragment-retries', '10',
+      '--retry-sleep', '5',
+      '-o', join(dir, stem + '.%(ext)s'),
+    ];
 
     let offset = 0;
     if (opts.start != null || opts.duration != null) {
@@ -313,16 +350,13 @@ export async function downloadVod(url, opts = {}) {
         // thing that actually proves the job worked: a non-empty file landed
         // on disk. A genuine failure (bad URL, network drop mid-copy, killed
         // early) still leaves no usable file and is still rejected.
-        try {
-          const files = await readdir(dir);
-          const found = files.find((f) => f.startsWith(stem + '.') && !f.endsWith('.part'));
-          if (found) {
-            const { size } = await stat(join(dir, found));
-            if (size > 0) return resolve();
-          }
-        } catch {
-          // fall through to the rejection below
-        }
+        // `findDownload` rather than a size check. The size check this replaces
+        // was what accepted a 1.10 GB fragment of an expected ~3 GB as a
+        // finished download: the transfer stalled, the process gave up, and a
+        // large file was sitting where a large file was expected. Asking ffprobe
+        // whether the file can actually be opened is the only test that
+        // separates those, and it costs well under a second.
+        if (await findDownload(dir, stem, log)) return resolve();
 
         reject(new Error(
           'yt-dlp exited ' + code + (signal ? ' (signal ' + signal + ')' : '') +
@@ -335,8 +369,8 @@ export async function downloadVod(url, opts = {}) {
 
     if (opts.signal?.aborted) throw new Error('cancelled during download');
 
-    const done = await findDownload(dir, stem);
-    if (!done) throw new Error('yt-dlp produced no file for ' + url);
+    const done = await findDownload(dir, stem, log);
+    if (!done) throw new Error('yt-dlp produced no usable file for ' + url);
     log(
       'downloaded ' + (done.size / 1e9).toFixed(2) + ' GB' +
         (keep ? ' -> kept at ' + done.path : '')
