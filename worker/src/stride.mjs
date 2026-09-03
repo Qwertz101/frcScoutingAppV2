@@ -40,6 +40,15 @@
  * `MatchClock` is deliberately not used anywhere in this file, for that reason.
  * The processor still uses it, where a match is read start to finish and the
  * phase is established from the countdown's own opening rather than guessed.
+ *
+ * All of the timings above are for a local file. Against a remote URL the same
+ * scan works and gives the same answers -- measured 5/5 exact against TBA on a
+ * 42-minute window either way -- but costs very differently: a probe is ~4s
+ * instead of ~0.4s, probes fail often enough to matter (5 of 19 on one run),
+ * and reading a match decodes ~180s of video at about 0.46x realtime. End to
+ * end that window took 68.3 minutes streamed against 4.9 downloaded. Streaming
+ * is for a scan; anything that processes more than a couple of matches should
+ * fetch the window first.
  */
 
 import {
