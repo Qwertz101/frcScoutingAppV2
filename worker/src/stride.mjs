@@ -81,6 +81,22 @@ const PROBE_FRAMES = 3;
 const PROBE_AGREE = 2;
 
 /**
+ * Extra attempts at a probe point whose seek failed.
+ *
+ * A remote seek fails on its own account -- a throttled connection, a dropped
+ * range request -- and against a real YouTube VOD that is not rare: 5 of 19
+ * probes failed on one measured run. Each failure leaves a whole stride
+ * unexamined, and on that run one of them was the only probe that would have
+ * landed inside Qual 4, so that match was never found at all. Retrying costs a
+ * second and recovers a transient failure; the alternates cover the case where
+ * one particular keyframe is itself the problem.
+ */
+const PROBE_RETRIES = 2;
+
+/** Offsets tried when a probe point keeps failing, to keep its stride covered. */
+const PROBE_ALTERNATES = [20, -20, 40];
+
+/**
  * Least fraction of the timer plate that must be clearly brighter than the
  * plate's own average, *and* clearly darker than it, before the plate counts as
  * showing a time.
@@ -657,6 +673,15 @@ export async function sweepForStart(input, hitAt, quads, meta, pool, opts = {}) 
         's, which does not contain the hit at ' + hitAt.toFixed(1) + 's — looking elsewhere'
     );
     rejected.push(resolved.greenFlagAt);
+    // It is not this hit's match, but it is still a match: `resolveFromConsensus`
+    // already put it through disambiguation and verification, so a verified one
+    // here is as well-established as any found by the ordinary path. Discarding
+    // it loses a real match whose own probe failed -- measured on a remote run,
+    // where Qual 4's probe was one of five that could not be read, and the only
+    // thing that found the match at all was this sweep, which then threw it away.
+    // Unverified ones are still dropped: without corroboration elsewhere in the
+    // video, a countdown that does not contain the hit is not worth trusting.
+    if (resolved.verified) opts.onOther?.(resolved, at);
   }
   return null;
 }
@@ -691,17 +716,24 @@ export async function findHits(input, opts = {}) {
     // escape would abandon the whole scan over one bad read, which is the
     // opposite of what independent probes are for. The count is reported below
     // so a scan that quietly lost half its probes cannot look like a clean one.
-    let shots;
-    try {
-      shots = await grabAt(input, at, PROBE_FRAMES, meta, PROBE_WIDTH);
-    } catch (e) {
-      failed++;
-      const why = String(e.message ?? e).split(/[\r\n]/)[0];
-      log('  probe at ' + at.toFixed(0) + 's failed: ' + why);
-      continue;
+    // The same point a few times, then near it. Abandoning a point means
+    // abandoning the whole stride around it, and a stride is wide enough to
+    // hold an entire match.
+    let shots = null;
+    let why = '';
+    for (const delta of [0, 0, 0].slice(0, 1 + PROBE_RETRIES).concat(PROBE_ALTERNATES)) {
+      const tryAt = at + delta;
+      if (tryAt < 0 || tryAt + PROBE_FRAMES > (meta.duration ?? Infinity)) continue;
+      try {
+        const got = await grabAt(input, tryAt, PROBE_FRAMES, meta, PROBE_WIDTH);
+        if (got.length) { shots = got; break; }
+      } catch (e) {
+        why = String(e.message ?? e).split(/[\r\n]/)[0];
+      }
     }
-    if (!shots.length) {
+    if (!shots) {
       failed++;
+      log('  probe at ' + at.toFixed(0) + 's failed after retries' + (why ? ': ' + why : ''));
       continue;
     }
     const present = shots.filter((f) => overlayIn(f, fixedQuads, layout)).length;
@@ -810,7 +842,19 @@ export async function scanStrided(input, opts = {}) {
       if (opts.signal?.aborted) return out;
       if (explained(hitAt)) continue;
       log('  hit at ' + hitAt.toFixed(0) + 's: clock probes inconclusive, sweeping…');
-      const found = await sweepForStart(input, hitAt, fixedQuads, meta, pool, { ...opts, meta, log });
+      const found = await sweepForStart(input, hitAt, fixedQuads, meta, pool, {
+        ...opts,
+        meta,
+        log,
+        // A verified match the sweep meets on its way past. It belongs to a
+        // different hit -- often one whose own probe failed -- so keeping it is
+        // the difference between finding that match and never seeing it.
+        onOther: (m, at) => {
+          if (explained(m.greenFlagAt)) return;
+          log('    keeping the verified match at ' + m.greenFlagAt.toFixed(1) + 's found on the way');
+          add({ ...m, method: 'sweep-incidental' }, at);
+        },
+      });
       if (found) add(found, hitAt);
       else log('  hit at ' + hitAt.toFixed(0) + 's: no match start could be established — skipped');
     }
