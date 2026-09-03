@@ -95,6 +95,24 @@ const PROBE_AGREE = 2;
  */
 const TIMER_DIGIT_MIN = 0.1;
 
+/**
+ * How much to shrink the timer box before measuring it.
+ *
+ * A person draws the box around the plate, not inside it, so its edge sits on
+ * or just past the plate's boundary -- and that boundary is the strongest
+ * light/dark transition anywhere near the clock. Include it and a plate with no
+ * time on it still yields both populations, from its own rim.
+ *
+ * That is not hypothetical: the first Sunset Showdown calibration scored 0.000
+ * on the pre-match card, and a later one drawn four pixels lower scored 0.224
+ * on the very same frames -- over the threshold, purely because it caught the
+ * bottom edge of the white logo disc. Measuring the middle of the box instead
+ * puts that back to 0.000 while in-match only falls from 0.374 to 0.348, so the
+ * gap more than doubles. Anywhere from 10% to 30% behaves the same; the test
+ * stops depending on how tightly the box was drawn.
+ */
+const TIMER_INSET = 0.15;
+
 /** Frames per clock reading. Spans enough seconds to prove the plate is moving. */
 const CLOCK_FRAMES = 5;
 
@@ -238,8 +256,16 @@ async function readTimer(worker, frame, timerQuad) {
  * made "the overlay is up" mean something weaker than "a match is happening"
  * everywhere that phrase is relied on.
  */
+/** Shrink a quad toward its own centre, so its edges are not measured. */
+function insetQuad(quad, fraction) {
+  const cx = quad.reduce((t, p) => t + p.x, 0) / quad.length;
+  const cy = quad.reduce((t, p) => t + p.y, 0) / quad.length;
+  const f = fraction / 2;
+  return quad.map((p) => ({ x: p.x + (cx - p.x) * f, y: p.y + (cy - p.y) * f }));
+}
+
 function timerShowsDigits(frame, timerQuad) {
-  const gray = rectifyToGray(frame, timerQuad, SCORE_RECT_W, SCORE_RECT_H);
+  const gray = rectifyToGray(frame, insetQuad(timerQuad, TIMER_INSET), SCORE_RECT_W, SCORE_RECT_H);
   if (!gray || !gray.length) return false;
 
   let sum = 0;
