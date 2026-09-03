@@ -501,13 +501,16 @@ export function CvTracker({ onBack }: CvTrackerProps) {
               </label>
               <span className="cv-window-hint">
                 {/* A multi-hour VOD is cheap to scan from a local file but every
-                    seek against a remote YouTube URL is a network round trip —
-                    measured at roughly 1.5x the wall time of the footage
-                    itself. Leaving both blank scans the whole recording, which
-                    is fine for a short clip and a bad idea for a full event. */}
-                Blank scans the whole recording. Downloading first is much faster
-                than streaming and the file is deleted afterwards — but bound the
-                window anyway for a full event, or it fetches the lot.
+                    seek against a remote YouTube URL is a network round trip.
+                    Measured on a 9.1-hour recording: one seek costs ~4s remote
+                    against ~0.4s local, but the download it avoids is several
+                    GB, so for a single pass streaming still wins. Leaving both
+                    blank scans the whole recording, which is fine for a short
+                    clip and a bad idea for a full event. */}
+                Blank scans the whole recording — always bound the window for a
+                full event. <strong>Download first</strong> is worth it when you
+                will re-run the same window; leave it off for a one-off, since
+                fetching several GB costs more than reading the stream directly.
               </span>
             </div>
           )}

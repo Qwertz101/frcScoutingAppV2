@@ -651,13 +651,44 @@ export async function findHits(input, opts = {}) {
   const to = opts.duration != null ? from + Number(opts.duration) : meta.duration;
   const stride = opts.stride ?? STRIDE;
 
+  const log = opts.log ?? (() => {});
   const hits = [];
+  let probes = 0;
+  let failed = 0;
+
   for (let at = from; at < to; at += stride) {
     if (opts.signal?.aborted) break;
-    const shots = await grabAt(input, at, PROBE_FRAMES, meta, PROBE_WIDTH);
+    probes++;
+    // One probe is one seek, and a seek against a remote VOD can fail on its
+    // own -- a throttled connection, a dropped range request -- without
+    // anything being wrong with the recording or the next probe. Letting that
+    // escape would abandon the whole scan over one bad read, which is the
+    // opposite of what independent probes are for. The count is reported below
+    // so a scan that quietly lost half its probes cannot look like a clean one.
+    let shots;
+    try {
+      shots = await grabAt(input, at, PROBE_FRAMES, meta, PROBE_WIDTH);
+    } catch (e) {
+      failed++;
+      const why = String(e.message ?? e).split(/[\r\n]/)[0];
+      log('  probe at ' + at.toFixed(0) + 's failed: ' + why);
+      continue;
+    }
+    if (!shots.length) {
+      failed++;
+      continue;
+    }
     const present = shots.filter((f) => overlayIn(f, fixedQuads, layout)).length;
     if (present >= PROBE_AGREE) hits.push(shots[0]?.at ?? at);
     opts.onProgress?.(at, meta.duration);
+  }
+
+  if (failed) {
+    const pct = (failed / Math.max(1, probes)) * 100;
+    log(
+      'WARNING: ' + failed + ' of ' + probes + ' probes (' + pct.toFixed(0) + '%) could not be read. ' +
+        'A match sitting under one of those was never looked at.'
+    );
   }
   return hits;
 }

@@ -112,11 +112,14 @@ export async function findOverlayRuns(input, opts = {}) {
   const fps = opts.fps ?? SCAN_FPS;
   const onProgress = opts.onProgress;
   const fixedQuads = opts.fixedQuads ?? null;
+  const log = opts.log ?? (() => {});
 
   const runs = [];
   let open = null;
   let lastSeen = -1;
   let n = 0;
+  /** Furthest point actually decoded, which is not the same as what was asked for. */
+  let reached = null;
 
   for await (const f of frames(input, {
     fps,
@@ -155,6 +158,7 @@ export async function findOverlayRuns(input, opts = {}) {
       present = regions !== null && isOverlayPresent(f, regions.blue, regions.red);
     }
     n++;
+    reached = f.at;
     if (onProgress && n % 100 === 0) onProgress(f.at, meta.duration);
 
     if (present) {
@@ -169,6 +173,34 @@ export async function findOverlayRuns(input, opts = {}) {
     }
   }
   if (open) runs.push(open);
+
+  // How much of the window was actually looked at.
+  //
+  // ffmpeg can end a remote read early and exit cleanly -- the connection
+  // drops, the server stops serving, the signed URL is throttled -- and the
+  // frame iterator then simply stops yielding, which is indistinguishable from
+  // having reached the end of the window. Everything downstream reports success
+  // over whatever fraction happened to arrive.
+  //
+  // Measured against a 9.1-hour recording: a 6900-second window scanned this
+  // way covered about 400 seconds before the read ended, and the job logged
+  // "0 match(es) found ... finished" with nothing to suggest it had seen 6% of
+  // what it was asked to look at. A silent partial scan of an event is worse
+  // than a failed one, because a failed one gets retried.
+  const from = opts.start ?? 0;
+  const to = opts.duration != null ? from + Number(opts.duration) : meta.duration;
+  const end = Math.min(to, meta.duration);
+  const shortfall = end - (reached ?? from);
+  const slack = Math.max(30, 4 / fps);
+  if (shortfall > slack) {
+    const pct = Math.max(0, (((reached ?? from) - from) / Math.max(1, end - from)) * 100);
+    log(
+      'WARNING: the scan ended early — covered ' + pct.toFixed(0) + '% of the requested window (' +
+        'reached ' + (reached ?? from).toFixed(0) + 's of ' + end.toFixed(0) + 's). ' +
+        'Any match in the rest of it was never looked at. This is usually a dropped or throttled ' +
+        'remote read; downloading the window first avoids it.'
+    );
+  }
 
   return runs.filter((r) => r.end - r.start >= MIN_RUN);
 }
