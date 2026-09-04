@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AUTO_LEN, CvMatchLog, CvScoreSample, MATCH_LEN } from '../../types';
 import { DataService } from '../../services/dataService';
-import { getCvLog, getCvLogs, saveCvLog } from '../../services/bpsStore';
+import { fetchCvLogs, getCvLog, getCvLogs, saveCvLog } from '../../services/bpsStore';
 import {
   DEFAULT_BLUE_QUAD,
   DEFAULT_RED_QUAD,
@@ -318,7 +318,15 @@ export function useCvTracker() {
 
     setMatches(quals);
 
-    const logs = getCvLogs();
+    // Only this event's logs. The counter used to take every log in storage
+    // while the chips could only ever colour a key on this event's schedule,
+    // so the two disagreed by construction: a laptop still holding five
+    // Glendale logs showed "5 / 52 uploaded" against a Sunset schedule with
+    // every chip blank -- a progress bar claiming work that had not been done
+    // here. Filtering on the schedule's own keys keeps the count and the
+    // colours describing the same thing, whatever `eventKey` is set to.
+    const keys = new Set(quals.map((q) => q.key));
+    const logs = getCvLogs().filter((l) => keys.has(l.matchKey));
     setUploaded(new Set(logs.map((l) => l.matchKey)));
 
     // `source` is what distinguishes a worker log from a hand-made one; the
@@ -347,6 +355,35 @@ export function useCvTracker() {
   }, []);
 
   useEffect(refreshMatches, [refreshMatches]);
+
+  /**
+   * Pull what the capture worker wrote, so its matches show up here.
+   *
+   * `refreshMatches` reads `getCvLogs()`, which is localStorage -- and the
+   * worker does not write to localStorage. It writes to Supabase, on a
+   * different machine's process, so a match it captured left the upload log
+   * showing nothing at all: the count, the chip colours and the review queue
+   * were all describing this browser's own history rather than the event's.
+   *
+   * One pull on open, merged into local storage by `fetchCvLogs`, then
+   * `refreshMatches` again to recolour from the merged set. Failure is
+   * deliberately quiet -- an offline laptop should still show the local logs
+   * and let the manual path work, exactly as it did before.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        await fetchCvLogs();
+        if (!cancelled) refreshMatches();
+      } catch {
+        /* offline, or Supabase not configured — local logs still render */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshMatches]);
 
   /* ---------------- OCR worker ---------------- */
 

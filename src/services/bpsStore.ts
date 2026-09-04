@@ -256,6 +256,13 @@ export async function fetchCvLogs(): Promise<CvMatchLog[]> {
     createdAt: r.created_at ? Date.parse(r.created_at) : Date.now(),
     updatedAt: r.updated_at ? Date.parse(r.updated_at) : undefined,
     deletedAt: r.deleted_at ? Date.parse(r.deleted_at) : null,
+    // Carried, not dropped. These are what tell a worker-written log from a
+    // hand-made one and what drives the chip colours and the review queue --
+    // leaving them behind meant every match the worker captured came back
+    // looking like an ordinary upload with no quality attached.
+    quality: r.quality ?? undefined,
+    flagged: Boolean(r.flagged),
+    rawReads: r.raw_reads ?? undefined,
   }));
 
   const pending = new Set(readJson<string[]>(KEYS.PENDING_CV, []));
