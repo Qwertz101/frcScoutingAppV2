@@ -365,10 +365,21 @@ export function useCvTracker() {
    * showing nothing at all: the count, the chip colours and the review queue
    * were all describing this browser's own history rather than the event's.
    *
-   * One pull on open, merged into local storage by `fetchCvLogs`, then
-   * `refreshMatches` again to recolour from the merged set. Failure is
-   * deliberately quiet -- an offline laptop should still show the local logs
-   * and let the manual path work, exactly as it did before.
+   * Pulled on open, and again whenever a job on this same page finishes --
+   * not just once. A capture run start to finish inside the CV tab wrote 8
+   * matches straight to Supabase, the Capture Worker panel showed all 8 (it
+   * polls the worker's own state), and the Scoreboard Upload Log below it
+   * still read "0 / 52 uploaded" until the page was reloaded, because nothing
+   * had told this pull to run again. `worker?.job?.status` is what a run
+   * finishing actually looks like from here -- it moves through
+   * running/cancelling into done/cancelled/error -- so re-pulling on that
+   * transition catches a completed job without polling Supabase every two
+   * seconds alongside the worker itself.
+   *
+   * Merged into local storage by `fetchCvLogs`, then `refreshMatches` again to
+   * recolour from the merged set. Failure is deliberately quiet -- an offline
+   * laptop should still show the local logs and let the manual path work,
+   * exactly as it did before.
    */
   useEffect(() => {
     let cancelled = false;
@@ -383,7 +394,7 @@ export function useCvTracker() {
     return () => {
       cancelled = true;
     };
-  }, [refreshMatches]);
+  }, [refreshMatches, worker?.job?.status]);
 
   /* ---------------- OCR worker ---------------- */
 
