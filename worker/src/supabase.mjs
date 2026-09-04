@@ -50,7 +50,16 @@ async function rest(path, init = {}) {
     const body = await res.text().catch(() => '');
     throw new Error('Supabase ' + res.status + ' ' + path + (body ? ': ' + body : ''));
   }
-  return res.status === 204 ? null : res.json();
+  // Parse only when there is something to parse, rather than trusting the
+  // status code to tell us. `Prefer: return=minimal` is answered with an empty
+  // body, but PostgREST sends it as **201 Created** on an insert, not 204 --
+  // measured against this project's own database. So the 204 check missed it,
+  // `res.json()` ran on a zero-length body, and the write failed with
+  // "Unexpected end of JSON input" *after the row had already been inserted*.
+  // A whole capture died on its first successful write, seven matches short,
+  // reporting an error for something that had actually worked.
+  const text = await res.text();
+  return text ? JSON.parse(text) : null;
 }
 
 /**
