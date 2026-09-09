@@ -54,6 +54,8 @@ export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
   const [showCall, setShowCall] = useState(true);
   /** Cell being typed into, so a half-typed number is not fought by re-renders. */
   const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
+  /** A typed value the board refused, so the cell can say why. */
+  const [rejected, setRejected] = useState<{ key: string; text: string } | null>(null);
 
   /** Ranking restricted to robots we actually have numbers for. */
   const ranked = useMemo(
@@ -206,14 +208,36 @@ export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
       )
     );
 
-  const commitCell = (allianceIdx: number, seat: number, raw: string) => {
+  /**
+   * Commit a typed cell, refusing a team that is not at this event.
+   *
+   * A board cell takes free text, so a mistyped digit could seat a robot that
+   * does not exist here -- 9733 for 973 -- and nothing downstream could tell
+   * it from a real pick. It has no metrics, so it scores zero: it quietly drags
+   * that alliance's projection down and holds a seat the real robot should be
+   * in. `metricsFor` is the event's own roster, so anything it does not know is
+   * a typo. `ourTeam` is allowed through because the whole screen is written
+   * from its point of view and it is legitimately absent from an event we are
+   * only modelling.
+   */
+  const commitCell = (allianceIdx: number, seat: number, raw: string, key: string) => {
     const trimmed = raw.trim();
     if (!trimmed) {
       setSeat(allianceIdx, seat, null);
+      setRejected(null);
       return;
     }
     const team = Number(trimmed);
-    if (Number.isFinite(team) && team > 0) setSeat(allianceIdx, seat, team);
+    if (!Number.isFinite(team) || team <= 0) {
+      setRejected({ key, text: `"${trimmed}" is not a team number` });
+      return;
+    }
+    if (!metricsFor(team) && team !== ourTeam) {
+      setRejected({ key, text: `${team} is not at this event — check the number` });
+      return;
+    }
+    setRejected(null);
+    setSeat(allianceIdx, seat, team);
   };
 
   const roster = (n: number): number[] => {
@@ -392,7 +416,7 @@ export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
                           key={seat}
                           className={`as-cell${explicit === ourTeam ? ' ours' : ''}${
                             explicit == null && derived != null ? ' derived' : ''
-                          }`}
+                          }${rejected?.key === key ? ' bad' : ''}`}
                           inputMode="numeric"
                           value={shown}
                           placeholder={explicit == null && derived != null ? String(derived) : '—'}
@@ -401,10 +425,13 @@ export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
                               ? `${derived} is the derived captain — type to confirm or override`
                               : undefined
                           }
-                          onChange={(e) => setEditing({ key, value: e.target.value })}
+                          onChange={(e) => {
+                            if (rejected?.key === key) setRejected(null);
+                            setEditing({ key, value: e.target.value });
+                          }}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') {
-                              commitCell(i, seat, (e.target as HTMLInputElement).value);
+                              commitCell(i, seat, (e.target as HTMLInputElement).value, key);
                               setEditing(null);
                               (e.target as HTMLInputElement).blur();
                             } else if (e.key === 'Escape') {
@@ -412,7 +439,7 @@ export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
                             }
                           }}
                           onBlur={(e) => {
-                            if (isEditing) commitCell(i, seat, e.target.value);
+                            if (isEditing) commitCell(i, seat, e.target.value, key);
                             setEditing(null);
                           }}
                         />
@@ -435,6 +462,8 @@ export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
                 );
               })}
             </div>
+
+            {rejected && <span className="as-reject">{rejected.text}</span>}
           </div>
         </div>
 

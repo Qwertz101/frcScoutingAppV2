@@ -624,3 +624,16 @@
   font-weight: 700;
   color: #66787f;
 }
+
+/* A typed team the board refused. Loud enough to stop a pick being logged
+   against a robot that is not at the event, quiet enough not to be modal. */
+.as-cell.bad {
+  box-shadow: inset 0 0 0 1.5px #ff8f6b;
+  color: #ff8f6b;
+}
+.as-reject {
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #ff8f6b;
+}
