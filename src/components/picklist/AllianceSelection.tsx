@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { ScoutData } from '../scout/useScoutData';
 import { PicklistState } from '../scout/usePicklistState';
+import { AllianceSlot } from '../../services/picklistService';
 import {
   Scenario,
   acceptScenario,
@@ -10,7 +11,7 @@ import {
   seatedMap,
 } from './allianceModel';
 import { useAllianceContext } from './roles';
-import { useTeamPhotos } from './useTeamPhotos';
+import './allianceSelection.css';
 
 interface AllianceSelectionProps {
   data: ScoutData;
@@ -20,6 +21,9 @@ interface AllianceSelectionProps {
 /** Under this many points the two options are not meaningfully different. */
 const COIN_FLIP = 10;
 
+/** Seats in an alliance, in the order the board shows them. */
+const SEATS = ['capt', '1st', '2nd'] as const;
+
 /**
  * Alliance selection, live in the arena.
  *
@@ -27,13 +31,29 @@ const COIN_FLIP = 10;
  * promote when one gets drafted, saved branches strike through as their teams
  * disappear, and every open offer is re-scored as accept-versus-decline with
  * both sides projected as full three-robot alliances.
+ *
+ * The layout is the "arena display" — a dark board shaped like the field
+ * projection, so the laptop matches the room. Two ways in: tap a robot in
+ * AVAILABLE TEAMS to seat it with whichever alliance is on the clock, or type
+ * a team number straight into a board cell when the announcement outruns you.
  */
 export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
   const { metricsFor, rankedTeams } = data;
   const ctx = useAllianceContext(data);
-  const { board, branches, ourTeam, markTeam, setMarkTeam, assignTo, unassign, resetBoard } = pick;
+  const {
+    board,
+    setBoard,
+    branches,
+    setBranches,
+    ourTeam,
+    setOurTeam,
+    resetBoard,
+  } = pick;
 
-  const [showWhy, setShowWhy] = useState<number | null>(null);
+  /** The accept/decline call is opt-in: during a fast draft it is noise. */
+  const [showCall, setShowCall] = useState(true);
+  /** Cell being typed into, so a half-typed number is not fought by re-renders. */
+  const [editing, setEditing] = useState<{ key: string; value: string } | null>(null);
 
   /** Ranking restricted to robots we actually have numbers for. */
   const ranked = useMemo(
@@ -43,9 +63,6 @@ export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
 
   const seated = useMemo(() => seatedMap(board), [board]);
   const captains = useMemo(() => deriveCaptains(board, ranked), [board, ranked]);
-  const photos = useTeamPhotos(
-    useMemo(() => branches.map((b) => b.first).filter((t): t is number => t != null), [branches])
-  );
 
   const ourRankIdx = ranked.indexOf(ourTeam);
 
@@ -84,9 +101,120 @@ export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [board, ranked, ourTeam, ctx, captains]);
 
-  const liveBranches = branches.filter(
-    (b) => !(b.first != null && seated[b.first]) && !(b.seconds.length > 0 && b.seconds.every((s) => seated[s]))
-  ).length;
+  /** Robots still on the table, best first. */
+  const available = useMemo(() => ranked.filter((t) => !seated[t]), [ranked, seated]);
+
+  /**
+   * Teams offerable in the "scouting for" picker.
+   *
+   * `ourTeam` is included even when it is not in `ranked`, which happens
+   * whenever we have no scouting data for our own robot at this event. Without
+   * it the `<select>` has no option matching its value and silently falls back
+   * to displaying the first — the header said "our team 6560" while the picker
+   * read "#1 · 581", which reads as though the pose had been changed.
+   */
+  const poseOptions = useMemo(
+    () => (ranked.includes(ourTeam) ? ranked : [ourTeam, ...ranked]),
+    [ranked, ourTeam]
+  );
+
+  /**
+   * Which alliance is on the clock, counting derived captains.
+   *
+   * The shared hook's `onTheClock` only counts a captain that has been written
+   * to the board, but this screen shows the eight captains the ranking implies
+   * before anyone types anything — so on a fresh board it reported "nobody",
+   * and tapping a robot did nothing at all. Round 1 runs A1 → A8 and round 2
+   * runs A8 → A1 (manual §10.6.1), same as the hook.
+   */
+  const effectiveClock = useMemo(() => {
+    const capOf = (i: number) => board[i].captain ?? captains[i];
+    for (let i = 0; i < board.length; i++) {
+      if (capOf(i) != null && board[i].picks.length === 0) return i;
+    }
+    for (let i = board.length - 1; i >= 0; i--) {
+      if (capOf(i) != null && board[i].picks.length === 1) return i;
+    }
+    return -1;
+  }, [board, captains]);
+
+  /**
+   * Write one seat directly.
+   *
+   * `assignTo` in the shared hook appends to `picks`, which is right for the
+   * "picked by A3" button it was built for but wrong for a grid whose three
+   * cells are addressed individually — typing into the 2nd-pick cell of an
+   * alliance with no 1st pick would land in the 1st. This addresses the seat
+   * the operator actually clicked, and clears the team from anywhere else
+   * first so a mis-keyed number is corrected by retyping it in the right box.
+   */
+  const setSeat = (allianceIdx: number, seat: number, team: number | null) => {
+    const next: AllianceSlot[] = board.map((a) => ({ captain: a.captain, picks: [...a.picks] }));
+
+    if (team != null) {
+      next.forEach((a) => {
+        a.picks = a.picks.filter((p) => p !== team);
+        if (a.captain === team) {
+          // Promote rather than orphan: an alliance whose captain moves keeps
+          // its picks under the next robot in the slot.
+          a.captain = a.picks[0] ?? null;
+          a.picks = a.picks.slice(1);
+        }
+      });
+    }
+
+    const slot = next[allianceIdx];
+    if (seat === 0) {
+      slot.captain = team;
+    } else {
+      const picks = [...slot.picks];
+      if (team == null) picks.splice(seat - 1, 1);
+      else picks[seat - 1] = team;
+      slot.picks = picks.filter((p): p is number => p != null).slice(0, 2);
+      // A pick implies a captain. Seat the derived one so the row reads as a
+      // real alliance rather than a pick under an empty chair.
+      if (team != null && slot.captain == null) {
+        const derived = captains[allianceIdx];
+        if (derived != null && derived !== team) slot.captain = derived;
+      }
+    }
+    setBoard(next);
+  };
+
+  /** Undo the most recently seated robot, wherever it landed. */
+  const undoLast = () => {
+    for (let i = board.length - 1; i >= 0; i--) {
+      const slot = board[i];
+      if (slot.picks.length) {
+        setSeat(i, slot.picks.length, null);
+        return;
+      }
+    }
+    for (let i = board.length - 1; i >= 0; i--) {
+      if (board[i].captain != null) {
+        setSeat(i, 0, null);
+        return;
+      }
+    }
+  };
+
+  /** Move a 2nd-pick option to the front of its branch's order. */
+  const promoteSecond = (branchId: number, team: number) =>
+    setBranches(
+      branches.map((b) =>
+        b.id === branchId ? { ...b, seconds: [team, ...b.seconds.filter((s) => s !== team)] } : b
+      )
+    );
+
+  const commitCell = (allianceIdx: number, seat: number, raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      setSeat(allianceIdx, seat, null);
+      return;
+    }
+    const team = Number(trimmed);
+    if (Number.isFinite(team) && team > 0) setSeat(allianceIdx, seat, team);
+  };
 
   const roster = (n: number): number[] => {
     const slot = board[n - 1];
@@ -94,10 +222,22 @@ export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
     return cap != null ? [cap, ...slot.picks] : [];
   };
 
-  const assignTarget = markTeam ?? ourTeam;
+  const liveBranches = branches.filter(
+    (b) =>
+      !(b.first != null && seated[b.first]) &&
+      !(b.seconds.length > 0 && b.seconds.every((s) => seated[s]))
+  ).length;
+
+  /* Where we land if we turn everything down — the honest version of the
+     design's "odds we captain", which nothing here can compute as a real
+     probability. This is a full draft projection, so it is a fact about the
+     current board rather than a guess. */
+  const base = scenarios.base;
+  const fallback = base ? `A${base.n}` : '—';
+  const fallbackNote = base ? (base.asCaptain ? 'as captain' : 'as a pick') : 'outside the top 8';
 
   return (
-    <div className="pl-body">
+    <div className="pl-body as-wrap">
       <div className="pl-title-row">
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
           <span className="pl-eyebrow">Step 3 — live in the arena</span>
@@ -108,215 +248,402 @@ export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
         </span>
       </div>
 
-      <div className="pl-card pl-as-card">
-        <div className="pl-as-head">
-          <span className="pl-card-label">Alliance board</span>
-          <span className="pl-header-spacer" />
-          <span className="pl-as-pose">
-            Deciding for <b>{ourTeam}</b>
-            {ourRankIdx >= 0 ? ` · rank #${ourRankIdx + 1}` : ' · not in this field'}
-          </span>
-          <button className="pl-pill-btn" onClick={resetBoard}>
-            Reset board
-          </button>
-        </div>
-
-        <div className="pl-as-board">
-          {Array.from({ length: 8 }, (_, i) => {
-            const n = i + 1;
-            const members = roster(n);
-            const isOffer = scenarios.offer[i];
-            const a = scenarios.accept[n];
-            const d = scenarios.decline[n];
-            const gap = a && d ? a.ev - d.ev : null;
-            const verdict =
-              !isOffer || !a ? '' : gap == null ? 'YES' : Math.abs(gap) < COIN_FLIP ? '?' : gap > 0 ? 'YES' : 'NO';
-            const total = members
-              .map(metricsFor)
-              .filter((m) => m)
-              .reduce((s, m) => s + (m?.median ?? 0), 0);
-
-            return (
-              <div
-                key={n}
-                className={`pl-as-slotcard${members.includes(ourTeam) ? ' ours' : ''}${
-                  members.length >= 3 ? ' full' : ''
-                }`}
-              >
-                <div className="pl-as-slot-head">
-                  <span className="pl-as-slot-num">A{n}</span>
-                  {verdict && (
-                    <span className={`pl-as-verdict v${verdict === 'YES' ? 'yes' : verdict === 'NO' ? 'no' : 'maybe'}`}>
-                      {verdict === '?' ? 'TOSS-UP' : verdict}
-                    </span>
-                  )}
-                </div>
-
-                {['captain', '1st pick', '2nd pick'].map((role, k) => {
-                  const team = members[k];
-                  return (
-                    <button
-                      key={role}
-                      className={`pl-as-seat${team == null ? ' empty' : ''}${
-                        team === ourTeam ? ' ours' : ''
-                      }${k === 0 && team != null ? ' captain' : ''}`}
-                      onClick={() => team != null && setMarkTeam(team)}
-                      title={team != null ? `Select ${team} for assignment` : 'Not picked yet'}
-                    >
-                      <span className="pl-as-seat-role">{role}</span>
-                      <span className="pl-as-seat-team">{team ?? '—'}</span>
-                    </button>
-                  );
-                })}
-
-                <span className="pl-as-total">{total ? `${Math.round(total)} med` : '—'}</span>
-
-                {isOffer && a && (
-                  <div className="pl-as-ev">
-                    <div className="pl-as-ev-row">
-                      <span>Accept</span>
-                      <b style={{ color: 'var(--blue-600)' }}>{a.ev}</b>
-                    </div>
-                    <span className="pl-as-ev-roster">{a.roster.join(' · ')}</span>
-                    <div className="pl-as-ev-row">
-                      <span>Decline</span>
-                      <b style={{ color: 'var(--teal-500)' }}>{d ? d.ev : '—'}</b>
-                    </div>
-                    <span className="pl-as-ev-roster">
-                      {d
-                        ? `A${d.n}${d.asCaptain ? ' as captain: ' : ': '}${d.roster.join(' · ')}`
-                        : 'goes unpicked'}
-                    </span>
-                    <button className="pl-as-why" onClick={() => setShowWhy(showWhy === n ? null : n)}>
-                      {showWhy === n ? 'hide' : 'why?'}
-                    </button>
-                    {showWhy === n && (
-                      <p className="pl-as-why-text">
-                        {!d
-                          ? `Declining leaves ${ourTeam} outside the top 8 — take the offer.`
-                          : gap != null && gap >= 0
-                            ? `Worth ${gap} more than ${
-                                d.asCaptain ? `captaining A${d.n}` : `being A${d.n}'s pick`
-                              } with ${d.picks.join(' + ') || 'nobody left'}.`
-                            : `${d.asCaptain ? `Captaining A${d.n}` : `Going to A${d.n}`} with ${
-                                d.picks.join(' + ') || 'nobody left'
-                              } scores ${Math.abs(gap ?? 0)} more.`}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="pl-as-assign">
-          <span className="pl-card-label">Assign</span>
+      <div className="as-panel">
+        {/* ---------------- header strip ---------------- */}
+        <div className="as-top">
+          <span className="as-kicker">Scouting for</span>
           <select
-            className="pl-as-select"
-            value={String(assignTarget)}
-            onChange={(e) => setMarkTeam(Number(e.target.value))}
+            className="as-select"
+            value={String(ourTeam)}
+            onChange={(e) => setOurTeam(Number(e.target.value))}
           >
-            {ranked.map((t, i) => (
-              <option key={t} value={String(t)}>
-                #{i + 1} · {t}
-                {t === ourTeam ? ' · us' : ''}
-              </option>
-            ))}
+            {poseOptions.map((t) => {
+              const r = ranked.indexOf(t);
+              return (
+                <option key={t} value={String(t)}>
+                  {r >= 0 ? `#${r + 1} · ${t}` : `${t} · no data here`}
+                </option>
+              );
+            })}
           </select>
-          <span className="pl-as-assign-mid">picked by</span>
-          <div className="pl-as-assign-btns">
-            {Array.from({ length: 8 }, (_, i) => (
-              <button
-                key={i}
-                className={`pl-as-assign-btn${roster(i + 1).includes(assignTarget) ? ' on' : ''}`}
-                onClick={() => assignTo(i, assignTarget, captains[i])}
-              >
-                A{i + 1}
-              </button>
-            ))}
+
+          <span className="as-spacer" />
+
+          <div className="as-stat">
+            <span className="as-stat-label">If we decline · {fallbackNote}</span>
+            <span className="as-stat-value">{fallback}</span>
           </div>
-          <button className="pl-pill-btn" onClick={() => unassign(assignTarget)}>
-            Un-assign
+
+          <button
+            className={`as-toggle${showCall ? ' on' : ''}`}
+            onClick={() => setShowCall((v) => !v)}
+          >
+            {showCall ? 'Call on' : 'Call off'}
+          </button>
+          <button className="as-undo" onClick={resetBoard}>
+            Reset
           </button>
         </div>
 
-        <p className="pl-note" style={{ margin: 0 }}>
-          Accept and Decline are both full three-robot projections: accept means {ourTeam} takes
-          that offer and the rest of the draft plays out around it; decline means {ourTeam} stays on
-          the board and lands wherever the remaining picks put it
-          {scenarios.base ? `, currently A${scenarios.base.n}` : ''}. Treat gaps under about{' '}
-          {COIN_FLIP} points as a coin flip.
-        </p>
-      </div>
-
-      <div className="pl-card pl-as-card">
-        <span className="pl-card-label">Pick tree</span>
-        {branches.length === 0 && (
-          <p className="pl-empty" style={{ padding: 0 }}>
-            No branches yet — build them on the Picklist page.
-          </p>
-        )}
-
-        {branches.map((br) => {
-          const first = br.first != null ? metricsFor(br.first) : undefined;
-          const gone = br.first != null ? seated[br.first] : undefined;
-          const allSecondsGone = br.seconds.length > 0 && br.seconds.every((s) => seated[s]);
-          const dead = !!gone || allSecondsGone;
-          const bestLive = br.seconds.find((s) => !seated[s]);
-          const projected =
-            br.first != null && !gone && bestLive != null
-              ? Math.round(allianceScore([ourTeam, br.first, bestLive], ctx))
-              : null;
-
-          return (
-            <div key={br.id} className={`pl-as-branch${dead ? ' dead' : ''}`}>
-              <div className="pl-as-branch-head">
-                <div className="pl-as-branch-photo">
-                  {br.first != null && photos[br.first] ? (
-                    <img src={photos[br.first]!} alt="" loading="lazy" />
-                  ) : (
-                    <span>{br.first ?? '—'}</span>
-                  )}
-                </div>
-                <div className="pl-as-branch-id">
-                  <span className="pl-as-branch-label">1st pick</span>
-                  <span className={`pl-as-branch-team${gone ? ' struck' : ''}`}>{br.first}</span>
-                  <span className="pl-as-branch-sub">
-                    {first?.hasData ? `${Math.round(first.adjMean)} avg pts` : 'unscouted'}
-                  </span>
-                </div>
-                <span className="pl-header-spacer" />
-                {projected != null && (
-                  <span className="pl-as-branch-proj">{projected} projected</span>
-                )}
-                {gone && <span className="pl-as-branch-gone">Gone · alliance {gone}</span>}
-                <button
-                  className="pl-as-branch-del"
-                  title="Delete branch"
-                  onClick={() => pick.removeBranch(br.id)}
-                >
-                  ×
-                </button>
-              </div>
-
-              <div className="pl-as-branch-seconds">
-                <span className="pl-as-branch-label">2nd pick order</span>
-                {br.seconds.map((s, i) => {
-                  const sg = seated[s];
-                  return (
-                    <span key={s} className={`pl-as-second${sg ? ' taken' : ''}`}>
-                      <span className="pl-as-second-ord">#{i + 1}</span>
-                      <span className={sg ? 'struck' : ''}>{s}</span>
-                      {sg && <span className="pl-as-second-a">A{sg}</span>}
-                    </span>
-                  );
-                })}
-              </div>
+        {/* ---------------- available / board ---------------- */}
+        <div className="as-split">
+          <div className="as-col">
+            <span className="as-h">AVAILABLE TEAMS</span>
+            <div className="as-pool">
+              {available.map((t) => {
+                const idx = ranked.indexOf(t);
+                return (
+                  <button
+                    key={t}
+                    className={`as-chip${t === ourTeam ? ' ours' : ''}${
+                      idx < 8 ? ' captainly' : ''
+                    }`}
+                    onClick={() =>
+                      effectiveClock >= 0 &&
+                      setSeat(effectiveClock, board[effectiveClock].picks.length + 1, t)
+                    }
+                    disabled={effectiveClock < 0}
+                    title={
+                      effectiveClock < 0
+                        ? 'Every alliance is full — nothing left on the clock'
+                        : `Seat ${t} with A${effectiveClock + 1}`
+                    }
+                  >
+                    <span className="as-chip-idx">{idx + 1}</span>
+                    <span className="as-chip-team">{t}</span>
+                  </button>
+                );
+              })}
             </div>
-          );
-        })}
+            <span className="as-hint">
+              {available.length} robots unpicked ·{' '}
+              {effectiveClock >= 0
+                ? `tap one to seat it with A${effectiveClock + 1}, on the clock`
+                : 'every alliance is full'}
+            </span>
+          </div>
+
+          <div className="as-col">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <span className="as-h">ALLIANCES</span>
+              <span className="as-spacer" />
+              <button className="as-undo" onClick={undoLast} title="Undo last pick">
+                Undo
+              </button>
+            </div>
+
+            <div className="as-board-head">
+              <span />
+              {SEATS.map((s) => (
+                <span key={s}>{s}</span>
+              ))}
+              <span>{showCall ? 'yes/no' : ''}</span>
+            </div>
+
+            <div className="as-rows">
+              {Array.from({ length: 8 }, (_, i) => {
+                const n = i + 1;
+                const slot = board[i];
+                const members = roster(n);
+                const isOffer = scenarios.offer[i];
+                const a = scenarios.accept[n];
+                const d = scenarios.decline[n];
+                const gap = a && d ? a.ev - d.ev : null;
+                const verdict =
+                  !isOffer || !a
+                    ? ''
+                    : gap == null
+                      ? 'YES'
+                      : Math.abs(gap) < COIN_FLIP
+                        ? '?'
+                        : gap > 0
+                          ? 'YES'
+                          : 'NO';
+                const callColor =
+                  verdict === 'YES'
+                    ? 'var(--cyan-500, #00baff)'
+                    : verdict === 'NO'
+                      ? '#ff8f6b'
+                      : '#a9bcc4';
+
+                return (
+                  <div className="as-row" key={n}>
+                    <span
+                      className={`as-num${members.includes(ourTeam) ? ' ours' : ''}${
+                        effectiveClock === i ? ' clock' : ''
+                      }`}
+                      title={effectiveClock === i ? 'On the clock' : undefined}
+                    >
+                      {n}
+                    </span>
+
+                    {SEATS.map((_, seat) => {
+                      const explicit = seat === 0 ? slot.captain : slot.picks[seat - 1];
+                      const derived = seat === 0 ? captains[i] : null;
+                      const key = `${i}:${seat}`;
+                      const isEditing = editing?.key === key;
+                      const shown = isEditing
+                        ? editing.value
+                        : explicit != null
+                          ? String(explicit)
+                          : '';
+                      return (
+                        <input
+                          key={seat}
+                          className={`as-cell${explicit === ourTeam ? ' ours' : ''}${
+                            explicit == null && derived != null ? ' derived' : ''
+                          }`}
+                          inputMode="numeric"
+                          value={shown}
+                          placeholder={explicit == null && derived != null ? String(derived) : '—'}
+                          title={
+                            explicit == null && derived != null
+                              ? `${derived} is the derived captain — type to confirm or override`
+                              : undefined
+                          }
+                          onChange={(e) => setEditing({ key, value: e.target.value })}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              commitCell(i, seat, (e.target as HTMLInputElement).value);
+                              setEditing(null);
+                              (e.target as HTMLInputElement).blur();
+                            } else if (e.key === 'Escape') {
+                              setEditing(null);
+                            }
+                          }}
+                          onBlur={(e) => {
+                            if (isEditing) commitCell(i, seat, e.target.value);
+                            setEditing(null);
+                          }}
+                        />
+                      );
+                    })}
+
+                    <span className="as-call">
+                      {showCall && verdict ? (
+                        <>
+                          <span className="as-call-delta" style={{ color: callColor }}>
+                            {gap == null ? '—' : `${gap > 0 ? '+' : ''}${gap}`}
+                          </span>
+                          <span className="as-call-word" style={{ color: callColor }}>
+                            {verdict === '?' ? 'toss-up' : verdict}
+                          </span>
+                        </>
+                      ) : null}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="as-rule" />
+
+        {/* ---------------- pick tree ---------------- */}
+        <div className="as-tree">
+          <div className="as-tree-head">
+            <span className="as-h">PICK TREE</span>
+            <span className="as-tree-note">
+              If {ourTeam} captains — first pick, then second picks in order
+            </span>
+            <span className="as-spacer" />
+            <span className="as-tree-aside">
+              Built on the Picklist page — reorder or drop them here
+            </span>
+          </div>
+
+          {branches.length === 0 && (
+            <span className="as-empty">No branches yet — build them on the Picklist page.</span>
+          )}
+
+          <div className="as-branches">
+            {branches.map((br) => {
+              const firstM = br.first != null ? metricsFor(br.first) : undefined;
+              const gone = br.first != null ? seated[br.first] : undefined;
+              const allSecondsGone = br.seconds.length > 0 && br.seconds.every((s) => seated[s]);
+              const dead = !!gone || allSecondsGone;
+              const bestLive = br.seconds.find((s) => !seated[s]);
+
+              const vecTeams = [ourTeam, br.first, bestLive].filter(
+                (t): t is number => t != null
+              );
+              const vec = vecTeams.map((t) => {
+                const m = metricsFor(t);
+                return {
+                  team: t,
+                  auto: m ? Math.round(m.autoAvg) : 0,
+                  tele: m ? Math.round(m.teleopAvg) : 0,
+                  end: m ? Math.round(m.towerAvg) : 0,
+                  def: m ? m.defenseAvg : 0,
+                  hasData: !!m?.hasData,
+                };
+              });
+              const colAuto = vec.reduce((s, v) => s + v.auto, 0);
+              const colTele = vec.reduce((s, v) => s + v.tele, 0);
+              const colEnd = vec.reduce((s, v) => s + v.end, 0);
+              const colDef = vec.length
+                ? (vec.reduce((s, v) => s + v.def, 0) / vec.length).toFixed(1)
+                : '0.0';
+
+              const total =
+                br.first != null && !gone && bestLive != null
+                  ? Math.round(allianceScore([ourTeam, br.first, bestLive], ctx))
+                  : null;
+
+              /* Auto plan, stated from the numbers rather than asserted: who
+                 actually puts points up before teleop. */
+              const autoLine = vec.length
+                ? vec.map((v) => `${v.team} ${v.hasData ? v.auto : '?'}`).join(' · ') +
+                  ' pts in auto'
+                : 'no teams to plan with yet';
+
+              return (
+                <div className={`as-branch${dead ? ' dead' : ''}`} key={br.id}>
+                  <div className="as-branch-top">
+                    <div className="as-branch-id">
+                      <span className="as-mini">1st pick</span>
+                      <span className={`as-branch-team${gone ? ' struck' : ''}`}>
+                        {br.first ?? '—'}
+                      </span>
+                      <span className="as-branch-sub">
+                        {firstM?.hasData ? `${Math.round(firstM.adjMean)} avg pts` : 'unscouted'}
+                      </span>
+                    </div>
+                    <span className="as-spacer" />
+                    <div className="as-branch-right">
+                      <span className={`as-status ${dead ? 'gone' : 'live'}`}>
+                        {gone ? `gone · A${gone}` : allSecondsGone ? 'seconds gone' : 'live'}
+                      </span>
+                      <button
+                        className="as-del"
+                        title="Delete branch"
+                        onClick={() => pick.removeBranch(br.id)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="as-seconds">
+                    <span className="as-mini">2nd pick order</span>
+                    <div className="as-seconds-row">
+                      {br.seconds.map((s) => {
+                        const taken = seated[s];
+                        return (
+                          <button
+                            key={s}
+                            className={`as-second${taken ? ' taken' : ''}${
+                              s === bestLive ? ' next' : ''
+                            }`}
+                            title={taken ? `Taken by A${taken}` : 'Move to front'}
+                            disabled={!!taken}
+                            onClick={() => promoteSecond(br.id, s)}
+                          >
+                            {s}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="as-vec">
+                    <div className="as-vec-names">
+                      {vec.map((v) => (
+                        <span
+                          key={v.team}
+                          className={`as-vec-name${v.team === ourTeam ? ' ours' : ''}`}
+                        >
+                          {v.team}
+                        </span>
+                      ))}
+                    </div>
+
+                    <div className="as-vec-col">
+                      <span className="as-vec-cap" style={{ color: 'var(--cyan-500, #00baff)' }}>
+                        auto
+                      </span>
+                      <div className="as-vec-stack">
+                        {vec.map((v) => (
+                          <span className="as-vec-val" key={v.team}>
+                            {v.auto}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="as-op">
+                      <span className="as-op-pad">.</span>
+                      <span className="as-op-sign">+</span>
+                    </div>
+
+                    <div className="as-vec-col">
+                      <span className="as-vec-cap" style={{ color: 'var(--blue-600, #1179ee)' }}>
+                        tele
+                      </span>
+                      <div className="as-vec-stack">
+                        {vec.map((v) => (
+                          <span className="as-vec-val" key={v.team}>
+                            {v.tele}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="as-op">
+                      <span className="as-op-pad">.</span>
+                      <span className="as-op-sign">+</span>
+                    </div>
+
+                    <div className="as-vec-col">
+                      <span className="as-vec-cap" style={{ color: 'var(--blue-600, #1179ee)' }}>
+                        climb
+                      </span>
+                      <div className="as-vec-stack">
+                        {vec.map((v) => (
+                          <span className="as-vec-val" key={v.team}>
+                            {v.end}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="as-op">
+                      <span className="as-op-pad">.</span>
+                      <span className="as-op-sign">=</span>
+                    </div>
+
+                    <div className="as-total">
+                      <span className="as-total-val">{total ?? '—'}</span>
+                      <span className="as-total-label">alliance</span>
+                    </div>
+                  </div>
+
+                  <div className="as-cols">
+                    <span style={{ color: 'var(--cyan-500, #00baff)' }}>auto {colAuto}</span>
+                    <span style={{ color: 'var(--blue-600, #1179ee)' }}>teleop {colTele}</span>
+                    <span style={{ color: 'var(--blue-600, #1179ee)' }}>climb {colEnd}</span>
+                    <span style={{ color: 'var(--teal-500, #33becc)' }}>defense {colDef}</span>
+                  </div>
+
+                  <div className="as-auto-plan">
+                    <span className="as-mini">Auto plan</span>
+                    <span className="as-auto-line">{autoLine}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
+
+      <p className="pl-note" style={{ margin: 0 }}>
+        The yes/no column is a full three-robot projection on both sides: accept means {ourTeam}{' '}
+        takes that offer and the rest of the draft plays out around it; decline means {ourTeam}{' '}
+        stays on the board and lands wherever the remaining picks put it
+        {base ? `, currently A${base.n}` : ''}. Treat gaps under about {COIN_FLIP} points as a coin
+        flip.
+      </p>
     </div>
   );
 }

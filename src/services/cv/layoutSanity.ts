@@ -15,7 +15,19 @@
  * displaced onto bleachers, a label bar, or the empty field.
  */
 
-import type { LayoutRect } from '../../types';
+/**
+ * A box as fractions of the frame, matching `layoutStore`'s `LayoutRect`.
+ *
+ * Declared here rather than imported so this module stays dependency-free:
+ * it is pure pixel arithmetic and pulling in `layoutStore` would drag the
+ * Supabase client along with it.
+ */
+export interface LayoutRect {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
 
 /** A raw RGBA frame. Browser `ImageData` satisfies this structurally. */
 export interface SanityFrame {

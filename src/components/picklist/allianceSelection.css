@@ -1,0 +1,626 @@
+/*
+ * Alliance selection — the "arena display" (design 3A).
+ *
+ * Deliberately its own file with its own `as-` prefix rather than more rules in
+ * `picklist.css`. That file is imported by the whole scout shell and shared with
+ * the Picklist tab, so a dark-panel rule added there would leak into a light
+ * screen it was never designed for. Nothing here is referenced outside
+ * `AllianceSelection.tsx`.
+ *
+ * The panel is dark on a light shell on purpose: it mirrors the field
+ * projection, so what the scouting lead sees on the laptop matches what the
+ * room is looking at during the draft.
+ */
+
+.as-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.as-panel {
+  background: #05080a;
+  border-radius: 16px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.14);
+}
+
+/* ---------------- header strip ---------------- */
+
+.as-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  align-items: center;
+}
+
+.as-kicker {
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #66787f;
+}
+
+.as-select {
+  background: #0f161a;
+  border: 1.5px solid #223037;
+  border-radius: 8px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 8px 10px;
+  outline: none;
+  cursor: pointer;
+}
+.as-select:focus {
+  border-color: var(--cyan-500, #00baff);
+}
+
+.as-spacer {
+  flex: 1;
+  min-width: 6px;
+}
+
+.as-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+.as-stat-label {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #66787f;
+}
+.as-stat-value {
+  font-family: 'Anton', sans-serif;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--cyan-500, #00baff);
+}
+
+.as-toggle {
+  border: none;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 9px 12px;
+  cursor: pointer;
+  background: #0f161a;
+  color: #a9bcc4;
+}
+.as-toggle:hover {
+  filter: brightness(1.1);
+}
+.as-toggle.on {
+  background: var(--cyan-500, #00baff);
+  color: #04222e;
+}
+
+/* ---------------- main split ---------------- */
+
+.as-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 268px;
+  gap: 14px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .as-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.as-col {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+
+.as-h {
+  font-family: 'Anton', sans-serif;
+  font-size: 15px;
+  color: #fff;
+  letter-spacing: 0.02em;
+}
+
+.as-hint {
+  font-size: 10px;
+  font-weight: 600;
+  color: #66787f;
+  line-height: 1.4;
+}
+
+/* ---------------- available teams ---------------- */
+
+.as-pool {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+@media (max-width: 600px) {
+  .as-pool {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.as-chip {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: stretch;
+  border: none;
+  border-radius: 5px;
+  overflow: hidden;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+  background: #101a1f;
+}
+.as-chip:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+.as-chip:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.as-chip-idx {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+  background: #16232a;
+  color: #7f939b;
+}
+.as-chip-team {
+  font-family: 'Anton', sans-serif;
+  font-size: 15px;
+  line-height: 1;
+  padding: 6px 7px;
+  color: #fff;
+}
+
+/* Our own team, and the top-eight cut, read differently at a glance. */
+.as-chip.ours .as-chip-idx {
+  background: var(--cyan-500, #00baff);
+  color: #04222e;
+}
+.as-chip.ours .as-chip-team {
+  color: var(--cyan-500, #00baff);
+}
+.as-chip.captainly .as-chip-idx {
+  background: #1d3440;
+  color: var(--teal-500, #33becc);
+}
+
+/* ---------------- alliance board ---------------- */
+
+.as-board-head,
+.as-row {
+  display: grid;
+  grid-template-columns: 26px repeat(3, minmax(0, 1fr)) 44px;
+  gap: 3px;
+}
+
+.as-board-head span {
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #55666e;
+  text-align: center;
+}
+
+.as-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.as-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Anton', sans-serif;
+  font-size: 15px;
+  border-radius: 4px;
+  background: #16232a;
+  color: #7f939b;
+}
+.as-num.ours {
+  background: var(--cyan-500, #00baff);
+  color: #04222e;
+}
+.as-num.clock {
+  background: var(--blue-600, #1179ee);
+  color: #fff;
+}
+
+.as-cell {
+  width: 100%;
+  min-width: 0;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 3px;
+  font-family: 'Anton', sans-serif;
+  font-size: 14px;
+  line-height: 1;
+  text-align: center;
+  outline: none;
+  background: #0f161a;
+  color: #fff;
+}
+.as-cell::placeholder {
+  color: #46585f;
+  font-family: 'Anton', sans-serif;
+}
+.as-cell:focus {
+  box-shadow: inset 0 0 0 1.5px var(--cyan-500, #00baff);
+}
+.as-cell.ours {
+  background: #04222e;
+  color: var(--cyan-500, #00baff);
+}
+.as-cell.derived {
+  color: #7f939b;
+}
+
+.as-call {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.as-call-delta {
+  font-family: 'Anton', sans-serif;
+  font-size: 13px;
+}
+.as-call-word {
+  font-size: 7.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.as-undo {
+  border: 1.5px solid #223037;
+  border-radius: 6px;
+  background: transparent;
+  color: #a9bcc4;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 4px 8px;
+  cursor: pointer;
+  flex: none;
+}
+.as-undo:hover {
+  border-color: var(--cyan-500, #00baff);
+  color: #fff;
+}
+
+.as-rule {
+  height: 1px;
+  background: #1b2429;
+}
+
+/* ---------------- pick tree ---------------- */
+
+.as-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.as-tree-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  align-items: center;
+}
+.as-tree-note {
+  font-size: 10px;
+  font-weight: 700;
+  color: #66787f;
+}
+.as-tree-aside {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #55666e;
+}
+
+.as-branches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  align-items: stretch;
+}
+
+.as-branch {
+  flex: 1 1 246px;
+  min-width: 0;
+  border-radius: 12px;
+  padding: 12px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #0b1216;
+  border: 1.5px solid #16232a;
+}
+.as-branch.dead {
+  opacity: 0.5;
+}
+
+.as-branch-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+}
+.as-branch-id {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.as-mini {
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #66787f;
+}
+.as-branch-team {
+  font-family: 'Anton', sans-serif;
+  font-size: 25px;
+  line-height: 1;
+  color: #fff;
+}
+.as-branch-team.struck {
+  text-decoration: line-through;
+  color: #7f939b;
+}
+.as-branch-sub {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #7f939b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.as-branch-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+.as-status {
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+.as-status.live {
+  background: #04222e;
+  color: var(--cyan-500, #00baff);
+}
+.as-status.gone {
+  background: #2a1a14;
+  color: #ff8f6b;
+}
+
+.as-del {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1.5px solid #223037;
+  background: transparent;
+  color: #7f939b;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  line-height: 1;
+}
+.as-del:hover {
+  border-color: #ff8f6b;
+  color: #ff8f6b;
+}
+
+.as-seconds {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding-left: 9px;
+  border-left: 2px solid #1b2429;
+}
+.as-seconds-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.as-second {
+  border: none;
+  border-radius: 7px;
+  padding: 5px 9px;
+  font-family: 'Anton', sans-serif;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  background: #16232a;
+  color: #fff;
+}
+.as-second:hover {
+  filter: brightness(1.15);
+}
+.as-second.taken {
+  text-decoration: line-through;
+  color: #7f939b;
+  cursor: default;
+}
+.as-second.next {
+  background: var(--blue-600, #1179ee);
+}
+
+/* the auto + tele + climb = total strip */
+.as-vec {
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  gap: 10px;
+  border-top: 1px solid #1b2429;
+  padding-top: 10px;
+  overflow: hidden;
+}
+.as-vec-names {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  justify-content: flex-end;
+  padding-bottom: 2px;
+}
+.as-vec-name {
+  font-family: 'Anton', sans-serif;
+  font-size: 11px;
+  line-height: 15px;
+  display: block;
+  height: 15px;
+  color: #7f939b;
+}
+.as-vec-name.ours {
+  color: var(--cyan-500, #00baff);
+}
+
+.as-vec-col {
+  position: relative;
+  padding-top: 13px;
+  flex: none;
+}
+.as-vec-cap {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.as-vec-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 3px 5px;
+  height: 53px;
+  box-sizing: content-box;
+  border-left: 1.5px solid #223037;
+  border-right: 1.5px solid #223037;
+  border-radius: 3px;
+}
+.as-vec-val {
+  font-family: 'Anton', sans-serif;
+  font-size: 13px;
+  line-height: 15px;
+  display: block;
+  height: 15px;
+  text-align: right;
+  color: #fff;
+}
+
+.as-op {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+}
+.as-op-pad {
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  line-height: 10px;
+  visibility: hidden;
+}
+.as-op-sign {
+  font-family: 'Anton', sans-serif;
+  font-size: 16px;
+  color: #fff;
+  height: 59px;
+  display: flex;
+  align-items: center;
+  padding: 0 1px;
+}
+
+.as-total {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 1px;
+  flex: 1 0 52px;
+  min-width: 52px;
+  height: 59px;
+  margin-top: 13px;
+  padding: 0 0 0 4px;
+  align-self: flex-start;
+}
+.as-total-val {
+  font-family: 'Anton', sans-serif;
+  font-size: 24px;
+  line-height: 1;
+  color: var(--cyan-500, #00baff);
+}
+.as-total-label {
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #66787f;
+}
+
+.as-cols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #55666e;
+  white-space: nowrap;
+}
+
+.as-auto-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  border-top: 1px solid #1b2429;
+  padding-top: 8px;
+}
+.as-auto-line {
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #a9bcc4;
+}
+
+.as-empty {
+  font-size: 11px;
+  font-weight: 700;
+  color: #66787f;
+}
