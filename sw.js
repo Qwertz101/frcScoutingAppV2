@@ -1,5 +1,5 @@
 // Bump this value when you want clients to evict old cached assets and load a fresh build
-const CACHE_NAME = 'frc-scout-v5';
+const CACHE_NAME = 'frc-scout-v6';
 // Use relative paths so the service worker works under a sub-path (e.g. GitHub Pages)
 const urlsToCache = [
   './',
@@ -39,6 +39,9 @@ self.addEventListener('fetch', event => {
   // asset cache. A service worker exists to make the app's own files load
   // offline, not to sit in front of someone else's API.
   if (new URL(event.request.url).origin !== self.location.origin) return;
+  // Live worker state/logs must never fall back to an old offline asset copy.
+  const path = new URL(event.request.url).pathname;
+  if (path.startsWith('/api/') || path.startsWith('/logs/')) return;
 
   event.respondWith(
     fetch(event.request)
