@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { ScoutData } from '../scout/useScoutData';
 import { PicklistState } from '../scout/usePicklistState';
-import { AllianceSlot } from '../../services/picklistService';
+import { editAllianceSeat } from '../../services/allianceBoard';
 import {
   Scenario,
   acceptScenario,
@@ -151,54 +151,17 @@ export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
    * first so a mis-keyed number is corrected by retyping it in the right box.
    */
   const setSeat = (allianceIdx: number, seat: number, team: number | null) => {
-    const next: AllianceSlot[] = board.map((a) => ({ captain: a.captain, picks: [...a.picks] }));
-
-    if (team != null) {
-      next.forEach((a) => {
-        a.picks = a.picks.filter((p) => p !== team);
-        if (a.captain === team) {
-          // Promote rather than orphan: an alliance whose captain moves keeps
-          // its picks under the next robot in the slot.
-          a.captain = a.picks[0] ?? null;
-          a.picks = a.picks.slice(1);
-        }
-      });
-    }
-
-    const slot = next[allianceIdx];
-    if (seat === 0) {
-      slot.captain = team;
-    } else {
-      const picks = [...slot.picks];
-      if (team == null) picks.splice(seat - 1, 1);
-      else picks[seat - 1] = team;
-      slot.picks = picks.filter((p): p is number => p != null).slice(0, 2);
-      // A pick implies a captain. Seat the derived one so the row reads as a
-      // real alliance rather than a pick under an empty chair.
-      if (team != null && slot.captain == null) {
-        const derived = captains[allianceIdx];
-        if (derived != null && derived !== team) slot.captain = derived;
-      }
+    const current = seat === 0 ? board[allianceIdx].captain : board[allianceIdx].picks[seat - 1];
+    if (current === team) return;
+    const next = editAllianceSeat(board, captains, allianceIdx, seat, team);
+    if (next === board && team != null) {
+      setRejected({ key: allianceIdx + ':' + seat, text: 'Fill the first pick before the second; choose a team other than the captain.' });
+      return;
     }
     setBoard(next);
   };
 
-  /** Undo the most recently seated robot, wherever it landed. */
-  const undoLast = () => {
-    for (let i = board.length - 1; i >= 0; i--) {
-      const slot = board[i];
-      if (slot.picks.length) {
-        setSeat(i, slot.picks.length, null);
-        return;
-      }
-    }
-    for (let i = board.length - 1; i >= 0; i--) {
-      if (board[i].captain != null) {
-        setSeat(i, 0, null);
-        return;
-      }
-    }
-  };
+  const undoLast = pick.undoBoard;
 
   /** Move a 2nd-pick option to the front of its branch's order. */
   const promoteSecond = (branchId: number, team: number) =>
@@ -228,7 +191,7 @@ export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
       return;
     }
     const team = Number(trimmed);
-    if (!Number.isFinite(team) || team <= 0) {
+    if (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(team) || team <= 0) {
       setRejected({ key, text: `"${trimmed}" is not a team number` });
       return;
     }
@@ -323,8 +286,15 @@ export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
                       idx < 8 ? ' captainly' : ''
                     }`}
                     onClick={() =>
-                      effectiveClock >= 0 &&
-                      setSeat(effectiveClock, board[effectiveClock].picks.length + 1, t)
+                      effectiveClock >= 0 && (() => {
+                        const captainIndex = captains.indexOf(t);
+                        if (captainIndex >= 0 && (captainIndex <= effectiveClock || board[captainIndex].picks.length > 0)) {
+                          setRejected({ key: 'pool', text: t + ' is not available to this alliance.' });
+                          return;
+                        }
+                        setRejected(null);
+                        setSeat(effectiveClock, board[effectiveClock].picks.length + 1, t);
+                      })()
                     }
                     disabled={effectiveClock < 0}
                     title={
@@ -431,8 +401,6 @@ export function AllianceSelection({ data, pick }: AllianceSelectionProps) {
                           }}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') {
-                              commitCell(i, seat, (e.target as HTMLInputElement).value, key);
-                              setEditing(null);
                               (e.target as HTMLInputElement).blur();
                             } else if (e.key === 'Escape') {
                               setEditing(null);

@@ -2,6 +2,7 @@ import { CvMatchLog, CvQuality, CvRawRead, TimelineScoutingData } from '../types
 import { uuidv4 } from '../utils/uuid';
 import supabase from './supabaseClient';
 import { DataService } from './dataService';
+import { WORKER_BASE } from './cv/captureWorker';
 
 /**
  * Storage for the two BPS streams.
@@ -40,6 +41,64 @@ function writeJson(key: string, value: unknown): void {
   }
 }
 
+function inEvent(matchKey: string, eventKey: string): boolean {
+  return matchKey.startsWith(eventKey + '_');
+}
+
+/** Supabase defaults to 1000 rows; a full event can exceed that easily. */
+async function fetchPages(table: string, eventKey?: string): Promise<any[]> {
+  const rows: any[] = [];
+  for (let from = 0; ; from += 1000) {
+    let query = supabase!.from(table).select('*').order(table === 'cv_logs' ? 'match_key' : 'id');
+    if (eventKey) query = query.like('match_key', eventKey.replace(/[\\%_]/g, '\\$&') + '\\_%');
+    const { data, error } = await query.range(from, from + 999).abortSignal(AbortSignal.timeout(10_000));
+    if (error) throw error;
+    rows.push(...(data ?? []));
+    if (!data || data.length < 1000) return rows;
+  }
+}
+
+/** Completed worker captures are also available locally when Supabase is down.
+ * Unidentified captures are never attached to a match by guessing.
+ */
+export async function fetchLocalWorkerLogs(eventKey: string): Promise<CvMatchLog[]> {
+  const response = await fetch(WORKER_BASE + '/api/state', { signal: AbortSignal.timeout(10_000), cache: 'no-store' });
+  if (!response.ok) throw new Error('Worker unavailable');
+  const state = await response.json();
+  const pending = new Set(readJson<string[]>(KEYS.PENDING_CV, []));
+  const all = readJson<CvMatchLog[]>(KEYS.CV_LOGS, []);
+  const byMatch = new Map(all.map((l) => [l.matchKey, l]));
+  for (const row of state.rows ?? []) {
+    if (!row.match_key || !inEvent(row.match_key, eventKey) || !row.local_file || pending.has(row.match_key)) continue;
+    const previous = byMatch.get(row.match_key);
+    const updated = Date.parse(row.updated_at);
+    if (previous && Number.isFinite(updated) && (previous.updatedAt ?? previous.createdAt) >= updated) continue;
+    try {
+      const res = await fetch(WORKER_BASE + '/api/logs/' + encodeURIComponent(row.local_file), {
+        signal: AbortSignal.timeout(10_000), cache: 'no-store',
+      });
+      if (!res.ok) continue;
+      const log = parseCvJson(await res.text(), eventKey);
+      if (log.matchKey !== row.match_key) continue;
+      // Re-read pending state after network I/O so a concurrent manual edit wins.
+      if (readJson<string[]>(KEYS.PENDING_CV, []).includes(log.matchKey)) continue;
+      byMatch.set(log.matchKey, { ...log, updatedAt: Number.isFinite(updated) ? updated : log.createdAt });
+    } catch { /* A malformed/unreachable capture must not block the others. */ }
+  }
+  // Include anything saved while the worker requests were in flight.
+  const latestPending = new Set(readJson<string[]>(KEYS.PENDING_CV, []));
+  for (const log of readJson<CvMatchLog[]>(KEYS.CV_LOGS, [])) {
+    const fetched = byMatch.get(log.matchKey);
+    if (!fetched || latestPending.has(log.matchKey) || (log.updatedAt ?? log.createdAt) > (fetched.updatedAt ?? fetched.createdAt)) byMatch.set(log.matchKey, log);
+  }
+  writeJson(KEYS.CV_LOGS, [...byMatch.values()]);
+  return getCvLogs();
+}
+
+function notifyChanged(): void {
+  window.dispatchEvent(new Event('bps-data-updated'));
+}
+
 /* ------------------------------------------------------------------ *
  * Stream 1 — human action timelines
  * ------------------------------------------------------------------ */
@@ -72,6 +131,7 @@ export function saveTimeline(record: Omit<TimelineScoutingData, 'id'> & { id?: s
   pending.add(full.id);
   writeJson(KEYS.PENDING_TIMELINES, [...pending]);
 
+  notifyChanged();
   void pushTimelines();
   return full;
 }
@@ -83,7 +143,15 @@ export function findTimeline(matchKey: string, teamKey: string, scouter: string)
 }
 
 /** Push any unsynced timelines. Safe to call repeatedly; no-ops when offline. */
-export async function pushTimelines(): Promise<{ pushed: number; error?: string }> {
+type PushResult = { pushed: number; error?: string };
+let timelinePush: Promise<PushResult> | null = null;
+let cvPush: Promise<PushResult> | null = null;
+export function pushTimelines(): Promise<PushResult> {
+  if (!supabase || !navigator.onLine) return Promise.resolve({ pushed: 0, error: 'offline' });
+  return timelinePush ?? (timelinePush = pushTimelineBatch().finally(() => { timelinePush = null; }));
+}
+
+async function pushTimelineBatch(): Promise<PushResult> {
   if (!supabase || !navigator.onLine) return { pushed: 0, error: 'offline' };
 
   const pending = readJson<string[]>(KEYS.PENDING_TIMELINES, []);
@@ -116,9 +184,13 @@ export async function pushTimelines(): Promise<{ pushed: number; error?: string 
   }
 
   try {
-    const { error } = await supabase.from('timeline_records').upsert(rows, { onConflict: 'id' });
+    const { error } = await supabase.from('timeline_records').upsert(rows, { onConflict: 'id' }).abortSignal(AbortSignal.timeout(10_000));
     if (error) throw error;
-    writeJson(KEYS.PENDING_TIMELINES, []);
+    // A scout may save another robot (or re-edit this one) during the request.
+    // Acknowledge only the exact versions actually sent, never the whole queue.
+    const sent = new Map(all.filter((t) => pending.includes(t.id)).map((t) => [t.id, JSON.stringify(t)]));
+    const acknowledged = new Set(getTimelines().filter((t) => sent.get(t.id) === JSON.stringify(t)).map((t) => t.id));
+    writeJson(KEYS.PENDING_TIMELINES, readJson<string[]>(KEYS.PENDING_TIMELINES, []).filter((id) => !acknowledged.has(id)));
     return { pushed: rows.length };
   } catch (e: any) {
     console.warn('bpsStore: timeline push failed, will retry', e);
@@ -127,14 +199,10 @@ export async function pushTimelines(): Promise<{ pushed: number; error?: string 
 }
 
 /** Pull server timelines and merge them over the local copy. */
-export async function fetchTimelines(): Promise<TimelineScoutingData[]> {
+export async function fetchTimelines(eventKey?: string): Promise<TimelineScoutingData[]> {
   if (!supabase) return getTimelines();
 
-  const { data, error } = await supabase
-    .from('timeline_records')
-    .select('*')
-    .order('timestamp', { ascending: false });
-  if (error) throw error;
+  const data = await fetchPages('timeline_records', eventKey);
 
   const server: TimelineScoutingData[] = (data ?? []).map((r: any) => ({
     id: r.id,
@@ -152,10 +220,13 @@ export async function fetchTimelines(): Promise<TimelineScoutingData[]> {
 
   // Local pending rows win — they have not reached the server yet.
   const pending = new Set(readJson<string[]>(KEYS.PENDING_TIMELINES, []));
-  const local = getTimelines().filter((t) => pending.has(t.id));
+  const local = getTimelines();
   const merged = new Map<string, TimelineScoutingData>();
   for (const t of server) merged.set(t.id, t);
-  for (const t of local) merged.set(t.id, t);
+  for (const t of local) {
+    const remote = merged.get(t.id);
+    if (!remote || pending.has(t.id) || t.timestamp > remote.timestamp) merged.set(t.id, t);
+  }
 
   const out = [...merged.values()];
   writeJson(KEYS.TIMELINES, out);
@@ -192,6 +263,7 @@ export function saveCvLog(log: CvMatchLog): CvMatchLog {
   pending.add(full.matchKey);
   writeJson(KEYS.PENDING_CV, [...pending]);
 
+  notifyChanged();
   void pushCvLogs();
   return full;
 }
@@ -205,10 +277,15 @@ export function deleteCvLog(matchKey: string): void {
   const pending = new Set(readJson<string[]>(KEYS.PENDING_CV, []));
   pending.add(matchKey);
   writeJson(KEYS.PENDING_CV, [...pending]);
+  notifyChanged();
   void pushCvLogs();
 }
 
-export async function pushCvLogs(): Promise<{ pushed: number; error?: string }> {
+export function pushCvLogs(): Promise<PushResult> {
+  if (!supabase || !navigator.onLine) return Promise.resolve({ pushed: 0, error: 'offline' });
+  return cvPush ?? (cvPush = pushCvBatch().finally(() => { cvPush = null; }));
+}
+async function pushCvBatch(): Promise<PushResult> {
   if (!supabase || !navigator.onLine) return { pushed: 0, error: 'offline' };
 
   const pending = readJson<string[]>(KEYS.PENDING_CV, []);
@@ -232,9 +309,12 @@ export async function pushCvLogs(): Promise<{ pushed: number; error?: string }> 
   }
 
   try {
-    const { error } = await supabase.from('cv_logs').upsert(rows, { onConflict: 'match_key' });
+    const { error } = await supabase.from('cv_logs').upsert(rows, { onConflict: 'match_key' }).abortSignal(AbortSignal.timeout(10_000));
     if (error) throw error;
-    writeJson(KEYS.PENDING_CV, []);
+    const sent = new Map(all.filter((l) => pending.includes(l.matchKey)).map((l) => [l.matchKey, JSON.stringify(l)]));
+    const current = readJson<CvMatchLog[]>(KEYS.CV_LOGS, []);
+    const acknowledged = new Set(current.filter((l) => sent.get(l.matchKey) === JSON.stringify(l)).map((l) => l.matchKey));
+    writeJson(KEYS.PENDING_CV, readJson<string[]>(KEYS.PENDING_CV, []).filter((key) => !acknowledged.has(key)));
     return { pushed: rows.length };
   } catch (e: any) {
     console.warn('bpsStore: CV log push failed, will retry', e);
@@ -242,11 +322,10 @@ export async function pushCvLogs(): Promise<{ pushed: number; error?: string }> 
   }
 }
 
-export async function fetchCvLogs(): Promise<CvMatchLog[]> {
+export async function fetchCvLogs(eventKey?: string): Promise<CvMatchLog[]> {
   if (!supabase) return getCvLogs();
 
-  const { data, error } = await supabase.from('cv_logs').select('*');
-  if (error) throw error;
+  const data = await fetchPages('cv_logs', eventKey);
 
   const server: CvMatchLog[] = (data ?? []).map((r: any) => ({
     matchKey: r.match_key,
@@ -263,13 +342,18 @@ export async function fetchCvLogs(): Promise<CvMatchLog[]> {
     quality: r.quality ?? undefined,
     flagged: Boolean(r.flagged),
     rawReads: r.raw_reads ?? undefined,
+    video: r.video ?? undefined,
   }));
 
   const pending = new Set(readJson<string[]>(KEYS.PENDING_CV, []));
-  const local = readJson<CvMatchLog[]>(KEYS.CV_LOGS, []).filter((l) => pending.has(l.matchKey));
+  const local = readJson<CvMatchLog[]>(KEYS.CV_LOGS, []);
   const merged = new Map<string, CvMatchLog>();
   for (const l of server) merged.set(l.matchKey, l);
-  for (const l of local) merged.set(l.matchKey, l);
+  for (const l of local) {
+    const remote = merged.get(l.matchKey);
+    if (!remote || pending.has(l.matchKey) ||
+      (l.updatedAt ?? l.createdAt) > (remote.updatedAt ?? remote.createdAt)) merged.set(l.matchKey, l);
+  }
 
   const out = [...merged.values()];
   writeJson(KEYS.CV_LOGS, out);
@@ -289,6 +373,10 @@ export function cvLogToJson(log: CvMatchLog): string {
       source: log.source,
       createdAt: log.createdAt,
       samples: log.samples,
+      quality: log.quality,
+      flagged: log.flagged,
+      video: log.video,
+      rawReads: log.rawReads,
     },
     null,
     2

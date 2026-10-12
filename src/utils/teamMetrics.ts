@@ -383,6 +383,7 @@ export function buildTeamMetrics(
   if (report) {
     teamTimelines.forEach((t) => {
       if (!solvedMatches.has(t.matchKey)) return;
+      if (report.attribution && !report.attribution.byRobot[matchPointsKey(t.matchKey, t.teamKey)]) return;
       bpsByMatch[t.matchKey] = bpsByMatch[t.matchKey] || [];
       bpsByMatch[t.matchKey].push(t);
     });

@@ -65,7 +65,15 @@ export function Picklist({ data, pick }: PicklistProps) {
       return {
         label: b.label,
         color: b.color,
-        teams: field.filter((t) => {
+        teams: [...field].sort((a, b) => {
+          const priority = (n: number) => {
+            const first = pick.tier1.indexOf(n);
+            if (first >= 0) return first;
+            const second = pick.tier2.indexOf(n);
+            return second >= 0 ? pick.tier1.length + second : Infinity;
+          };
+          return priority(a.teamNumber) - priority(b.teamNumber) || b.adjMean - a.adjMean;
+        }).filter((t) => {
           if (dnpTeams.has(t.teamNumber)) return last;
           if (!t.hasData) return false;
           return t.adjMean >= b.min && (i === 0 ? true : t.adjMean < upper);
@@ -79,7 +87,7 @@ export function Picklist({ data, pick }: PicklistProps) {
     return unscouted.length
       ? [...tiers, { label: 'NOT SCOUTED YET', color: '#8a9aa2', teams: unscouted }]
       : tiers;
-  }, [field, dnpTeams]);
+  }, [field, dnpTeams, pick.tier1, pick.tier2]);
 
   const scaleMax = useMemo(() => {
     const top = Math.max(...field.map((t) => t.ceiling), 0);

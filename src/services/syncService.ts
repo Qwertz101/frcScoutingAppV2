@@ -1,6 +1,7 @@
 import { DataService } from './dataService';
 import supabase, { getSupabaseInfo } from './supabaseClient';
 import { uuidv4 } from '../utils/uuid';
+import { pushTimelines, pushCvLogs } from './bpsStore';
 
 function getSupabaseClient() {
   return supabase;
@@ -1685,6 +1686,12 @@ let _storageDebounceTimer: any = null;
 export function initializeSyncService() {
   if (initialized) return;
   initialized = true;
+  // Timeline/CV queues are independent of legacy scouting and must retry even
+  // when the legacy migration is stalled. Saves already attempt an immediate push.
+  const pushBps = () => { void Promise.allSettled([pushTimelines(), pushCvLogs()]); };
+  pushBps();
+  window.addEventListener('online', pushBps);
+  setInterval(pushBps, 15_000);
 
   // attempt sync now if online. If a service worker is controlling the page, delay startup sync briefly
   if (DataService.isOnline()) {
@@ -1701,6 +1708,7 @@ export function initializeSyncService() {
 
   // cross-tab updates: if other tab modified pending queue, react (debounced)
   window.addEventListener('storage', (e) => {
+    if (e.key === 'frc-bps-pending-timelines' || e.key === 'frc-bps-pending-cv') pushBps();
     if (e.key === 'frc-pending-scouting') {
       if (!DataService.isOnline()) return;
       if (_storageDebounceTimer) clearTimeout(_storageDebounceTimer);

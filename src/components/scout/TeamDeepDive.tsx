@@ -1,3 +1,4 @@
+import { comparisonText } from '../../services/teamComparison';
 import { useMemo } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { TeamMetrics } from '../../utils/teamMetrics';
@@ -161,7 +162,13 @@ export function TeamDeepDive({ team, data, pick, onBack, onFocusTeam }: TeamDeep
 
         <div className="pl-rank-actions" style={{ alignSelf: 'flex-end' }}>
           <button className={`pl-act${inPick ? ' on' : ''}`} title="Add to 1st-pick shortlist" onClick={() => pick.addToPicklist(team.teamNumber)}>+</button>
-          <button className={`pl-act${inCmp ? ' on' : ''}`} title="Add to compare" onClick={() => pick.toggleCompare(team.teamNumber)}>‖</button>
+          <button className={`pl-act${inCmp ? ' on' : ''}`} title="Add to compare" onClick={() => {
+            const selected = pick.compare.includes(team.teamNumber)
+              ? pick.compare.filter((t) => t !== team.teamNumber)
+              : [...pick.compare, team.teamNumber];
+            pick.setCompare(selected);
+            if (selected.length) window.alert(comparisonText(selected.map((n) => data.metricsFor(n)).filter((t): t is typeof team => !!t)));
+          }}>‖</button>
           <button className={`pl-act${isDnp ? ' on danger' : ''}`} title="Do not pick" onClick={() => pick.toggleDnp(team.teamNumber)}>×</button>
         </div>
       </div>

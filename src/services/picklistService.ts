@@ -13,6 +13,7 @@ const STORAGE_KEYS = {
   BOARD: 'frc-picklist-board',
   BRANCHES: 'frc-picklist-branches',
   OUR_TEAM: 'frc-picklist-our-team',
+  HISTORY: 'frc-picklist-history',
 } as const;
 
 /** Team 6560 — matches the `admin6560` login convention. */
@@ -75,6 +76,9 @@ export const emptyBoard = (): AllianceSlot[] =>
   Array.from({ length: 8 }, () => ({ captain: null, picks: [] }));
 
 export class PicklistService {
+  static getHistory(): AllianceSlot[][] { return read(STORAGE_KEYS.HISTORY, []); }
+  static setHistory(history: AllianceSlot[][]): void { write(STORAGE_KEYS.HISTORY, history.slice(-100)); }
+
   static getTier1(): number[] {
     return read<number[]>(STORAGE_KEYS.TIER1, []);
   }

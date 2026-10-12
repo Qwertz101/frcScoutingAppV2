@@ -99,7 +99,8 @@ function capsOf(
       caps.push(seated[0]);
       continue;
     }
-    const next = ranked.find((t) => !gone[t] && caps.indexOf(t) < 0);
+    const reserved = (rosters ?? base).flat();
+    const next = ranked.find((t) => !gone[t] && !reserved.includes(t) && caps.indexOf(t) < 0);
     caps.push(next ?? null);
   }
   return caps;
@@ -149,6 +150,9 @@ export function runDraft(
   let caps = seatCaptains();
   if (opts.poseSlot) {
     const i = opts.poseSlot - 1;
+    rosters.forEach((r, j) => {
+      if (j !== i && r.includes(pose)) rosters[j] = r.filter((t) => t !== pose);
+    });
     if (rosters[i].indexOf(pose) < 0) rosters[i].push(pose);
     gone[pose] = true;
   }
@@ -157,16 +161,16 @@ export function runDraft(
   for (let n = 1; n <= 8; n++) order.push(n);
   for (let n = 8; n >= 1; n--) order.push(n);
 
-  order.forEach((n) => {
+  order.forEach((n, turn) => {
     caps = seatCaptains();
     const i = n - 1;
-    if (caps[i] == null || rosters[i].length >= 3) return;
+    if (caps[i] == null || rosters[i].length >= (turn < 8 ? 2 : 3)) return;
     const above = caps.slice(0, i).filter((c): c is number => c != null);
     const pool = ranked.filter((t) => {
       if (onBoard[t] || gone[t]) return false;
       if (above.indexOf(t) >= 0) return false;
       if (t === pose && !opts.poseFree) return false;
-      if (t === pose && opts.forbidSlot === n) return false;
+      if (t === pose && opts.forbidSlot != null) return false;
       const ci = caps.indexOf(t);
       if (ci >= 0) {
         // A lower captain can be drafted — their slot then vacates — but only

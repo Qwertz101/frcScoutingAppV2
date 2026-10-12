@@ -29,18 +29,11 @@ interface Projection {
 /**
  * A robot's expected match points.
  *
- * Where the solver has a rate for this robot we prefer it: rate × the time the
- * robot typically spends scoring is a direct estimate of its contribution,
- * built from the scoreboard itself rather than from a scout's fuel tally.
- * Everything else — and every legacy team, which is the whole current season —
- * keeps the existing adjusted mean.
+ * The adjusted mean uses observed allocations for fused matches and the
+ * scout's fuel tally for legacy matches, including tower credit in both paths.
  */
 function expectedPoints(t: TeamMetrics): number {
-  if (!t.hasBps) return t.adjMean || 0;
-  const solved = t.matches.filter((m) => m.source === 'bps');
-  if (!solved.length) return t.adjMean || 0;
-  const secs = solved.reduce((s, m) => s + m.shootSeconds, 0) / solved.length;
-  return t.bps * secs || t.adjMean || 0;
+  return t.adjMean || 0;
 }
 
 /**
@@ -256,7 +249,7 @@ export function RankForecast({ data, pick, onOpenTeam }: RankForecastProps) {
             {' '}
             Robots carrying a <span className="pl-src-badge bps">BPS</span> or{' '}
             <span className="pl-src-badge mixed">MIXED</span> badge have their expected points taken
-            from the solver (rate × typical scoring time) instead of their scouted average; the
+            from their attributed match scores rather than fuel tallies; the
             floor and ceiling cases still come from the observed match spread.
           </>
         )}

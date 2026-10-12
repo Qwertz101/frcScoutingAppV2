@@ -20,6 +20,7 @@ interface StatsImportControlProps {
  */
 export function StatsImportControl({ onImported, rows }: StatsImportControlProps) {
   const fileRef = useRef<HTMLInputElement>(null);
+  const importInFlight = useRef(false);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
@@ -38,7 +39,8 @@ export function StatsImportControl({ onImported, rows }: StatsImportControlProps
   };
 
   const confirm = async () => {
-    if (!preview) return;
+    if (!preview || importInFlight.current) return;
+    importInFlight.current = true;
     try {
       const { created, keptReal, synced, syncError } = await commitImport(preview.aggregates);
       setResult(
@@ -51,6 +53,7 @@ export function StatsImportControl({ onImported, rows }: StatsImportControlProps
     } catch (err: any) {
       setError(String(err?.message || err));
     } finally {
+      importInFlight.current = false;
       setPreview(null);
     }
   };

@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { User, Match } from './types';
 import { DataService } from './services/dataService';
 import { performFullRefresh } from './services/syncService';
+import { readSession, saveSession, clearSession } from './services/session';
 import { LoginPage } from './components/LoginPage';
 import { MatchList } from './components/MatchList';
 import { LiveMatch } from './components/LiveMatch';
@@ -11,6 +12,8 @@ import { PitScouting } from './components/PitScouting';
 type AppState = 'login' | 'matches' | 'scouting' | 'admin' | 'pit';
 
 function App() {
+  const loginVersion = useRef(0);
+  const activateRequested = useRef(false);
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [waitingWorker, setWaitingWorker] = useState<ServiceWorker | null>(null);
 
@@ -35,10 +38,13 @@ function App() {
       });
     });
     // listen for controllerchange to clear the update flag when active
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
+    const onControllerChange = () => {
       setUpdateAvailable(false);
       setWaitingWorker(null);
-    });
+      if (activateRequested.current) window.location.reload();
+    };
+    navigator.serviceWorker.addEventListener('controllerchange', onControllerChange);
+    return () => navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
   }, []);
 
   // show a one-time cleanup success popup if present after a Force Refresh
@@ -66,11 +72,15 @@ function App() {
   const activateUpdate = () => {
     if (!waitingWorker) return;
     try {
+      activateRequested.current = true;
       waitingWorker.postMessage({ type: 'SKIP_WAITING' });
     } catch (e) {}
   };
-  const [currentState, setCurrentState] = useState<AppState>('login');
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(readSession);
+  const [currentState, setCurrentState] = useState<AppState>(() => {
+    const saved = readSession();
+    return saved ? (saved.isAdmin ? 'admin' : 'matches') : 'login';
+  });
   const [matches, setMatches] = useState<Match[]>([]);
   const [selectedMatch, setSelectedMatch] = useState<Match | null>(null);
   const [selectedScouting, setSelectedScouting] = useState<any | null>(null);
@@ -91,9 +101,26 @@ function App() {
     const onServer = () => {
       const s = (DataService.getMatches() || []).filter((m: any) => !m.deletedAt);
       setMatches(s);
+      const saved = readSession();
+      if (saved && !saved.isAdmin) {
+        const scout = DataService.getScouters().find((s) => !s.deletedAt && s.name.toLowerCase() === saved.username.toLowerCase());
+        if (scout) {
+          const next = { ...saved, alliance: scout.alliance, position: scout.position };
+          saveSession(next);
+          setUser(next);
+        }
+      }
     };
     window.addEventListener('server-scouting-updated', onServer as EventListener);
-    window.addEventListener('storage', (e) => { if (e.key === 'frc-matches') onServer(); });
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'frc-matches' || e.key === 'frc-scouters') onServer();
+    };
+    window.addEventListener('storage', onStorage);
+    if (readSession()) void performFullRefresh({ reload: false }).catch(() => {});
+    return () => {
+      window.removeEventListener('server-scouting-updated', onServer as EventListener);
+      window.removeEventListener('storage', onStorage);
+    };
   }, []);
 
   // Ensure matches are reloaded whenever we transition to the matches view (e.g., after logout/login or role switch)
@@ -105,6 +132,8 @@ function App() {
   }, [currentState]);
 
   const handleLogin = async (userData: User) => {
+    const version = ++loginVersion.current;
+    saveSession(userData);
     setUser(userData);
     try {
       // Ensure we pull authoritative server state before showing matches so
@@ -121,6 +150,7 @@ function App() {
       // eslint-disable-next-line no-console
       console.warn('handleLogin: performFullRefresh failed', e);
     }
+    if (version !== loginVersion.current) return;
     if (userData.isAdmin) {
       setCurrentState('admin');
     } else {
@@ -132,7 +162,10 @@ function App() {
   };
 
   const handleLogout = () => {
+    loginVersion.current++;
+    clearSession();
     setUser(null);
+    setSelectedScouting(null);
     setSelectedMatch(null);
     setCurrentState('login');
   };

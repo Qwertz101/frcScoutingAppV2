@@ -20,6 +20,7 @@ export function usePicklistState(rankedTeams: number[], ready: boolean) {
   const [tier2, setTier2State] = useState<number[]>(() => PicklistService.getTier2());
   const [dnp, setDnpState] = useState<DnpEntry[]>(() => PicklistService.getDnp());
   const [board, setBoardState] = useState<AllianceSlot[]>(() => PicklistService.getBoard());
+  const [history, setHistory] = useState<AllianceSlot[][]>(() => PicklistService.getHistory());
   const [branches, setBranchesState] = useState<TreeBranch[]>(() =>
     PicklistService.getBranches()
   );
@@ -44,12 +45,43 @@ export function usePicklistState(rankedTeams: number[], ready: boolean) {
   /** The team the Alliance Selection board's assign row is about to place. */
   const [markTeam, setMarkTeam] = useState<number | null>(null);
 
+  useEffect(() => {
+    const reload = (e: StorageEvent) => {
+      if (!e.key?.startsWith('frc-picklist-')) return;
+      setTier1State(PicklistService.getTier1());
+      setTier2State(PicklistService.getTier2());
+      setDnpState(PicklistService.getDnp());
+      setBoardState(PicklistService.getBoard());
+      setHistory(PicklistService.getHistory());
+      setBranchesState(PicklistService.getBranches());
+      setOurTeamState(PicklistService.getOurTeam());
+    };
+    window.addEventListener('storage', reload);
+    return () => window.removeEventListener('storage', reload);
+  }, []);
+
   const seeded = useRef(false);
 
   const setTier1 = (v: number[]) => { setTier1State(v); PicklistService.setTier1(v); };
   const setTier2 = (v: number[]) => { setTier2State(v); PicklistService.setTier2(v); };
   const setDnp = (v: DnpEntry[]) => { setDnpState(v); PicklistService.setDnp(v); };
-  const setBoard = (v: AllianceSlot[]) => { setBoardState(v); PicklistService.setBoard(v); };
+  const setBoard = (v: AllianceSlot[]) => {
+    if (JSON.stringify(board) === JSON.stringify(v)) return;
+    const next = [...history, board].slice(-100);
+    setHistory(next);
+    PicklistService.setHistory(next);
+    setBoardState(v);
+    PicklistService.setBoard(v);
+  };
+  const undoBoard = () => {
+    if (!history.length) return;
+    const previous = history[history.length - 1];
+    const next = history.slice(0, -1);
+    setHistory(next);
+    PicklistService.setHistory(next);
+    setBoardState(previous);
+    PicklistService.setBoard(previous);
+  };
   const setBranches = (v: TreeBranch[]) => { setBranchesState(v); PicklistService.setBranches(v); };
   const setOurTeam = (v: number) => { setOurTeamState(v); PicklistService.setOurTeam(v); };
 
@@ -161,7 +193,11 @@ export function usePicklistState(rankedTeams: number[], ready: boolean) {
   /** Add to the 1st-pick shortlist from the Field Ranking table. */
   const addToPicklist = (team: number) => {
     if (tier1.includes(team)) setTier1(tier1.filter((t) => t !== team));
-    else setTier1([...tier1, team]);
+    else {
+      setTier1([...tier1, team]);
+      setTier2(tier2.filter((t) => t !== team));
+      setDnp(dnp.filter((d) => d.team !== team));
+    }
   };
 
   const toggleCompare = (team: number) =>
@@ -228,7 +264,7 @@ export function usePicklistState(rankedTeams: number[], ready: boolean) {
    * they were tapped in as the priority order.
    */
   const tapCard = (team: number) => {
-    if (team === ourTeam) return;
+    if (team === ourTeam || takenTeams.has(team) || dnpTeams.has(team)) return;
     if (builderFirst == null) {
       setBuilderFirst(team);
       setBuilderSeconds([]);
@@ -253,12 +289,15 @@ export function usePicklistState(rankedTeams: number[], ready: boolean) {
 
   const saveBranch = () => {
     if (builderFirst == null || builderSeconds.length === 0) return;
+    if (takenTeams.has(builderFirst) || dnpTeams.has(builderFirst)) { clearBuilder(); return; }
+    const seconds = builderSeconds.filter((t) => t !== ourTeam && !takenTeams.has(t) && !dnpTeams.has(t));
+    if (!seconds.length) return;
     setBranches([
       ...branches,
       {
         id: branches.reduce((m, b) => Math.max(m, b.id), 0) + 1,
         first: builderFirst,
-        seconds: builderSeconds,
+        seconds,
       },
     ]);
     clearBuilder();
@@ -271,7 +310,7 @@ export function usePicklistState(rankedTeams: number[], ready: boolean) {
     tier1, setTier1,
     tier2, setTier2,
     dnp, setDnp, dnpTeams, toggleDnp, restoreDnp,
-    board, setBoard, takenTeams, pool, onTheClock, addToClock, removePick, resetBoard,
+    board, setBoard, undoBoard, takenTeams, pool, onTheClock, addToClock, removePick, resetBoard,
     assignTo, unassign, markTeam, setMarkTeam,
     defenseLine, setDefenseLine,
     branches, setBranches, removeBranch,

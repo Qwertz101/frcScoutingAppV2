@@ -5,45 +5,18 @@ import {
   TimelineScoutingData,
 } from '../../types';
 import type { BpsReport } from './index';
+import type { ScoreAttribution } from './attribution';
 
 /**
- * From solved rates to a robot's POINTS in one match.
+ * Per-robot match points from the joined streams.
  *
- * Three stages, in order:
- *
- *   1. RAW — the solver's rate times the seconds this robot was flagged
- *      shooting, split auto/teleop. This is fuel scoring only.
- *   2. ANCHOR — rescale the alliance's three raw figures so they sum to the
- *      alliance's published auto+teleop total from TBA. Climb and fouls are
- *      excluded from that target, so this stage stays purely about fuel.
- *   3. CLIMB — add this robot's own auto + endgame tower points, straight
- *      from TBA's per-robot attribution.
- *
- * WHY ANCHOR
- * ==========
- * A robot's predicted points are rate x flagged-seconds, and both factors are
- * estimated from noisy scouting. Their errors are largely COMMON across an
- * alliance — same scoreboard lag, same crew, same habits — so the three
- * predictions rarely sum to what the alliance really scored. They do not have
- * to: that total is published.
- *
- *     scaled_i = raw_i * (published_fuel_total / SUM_j raw_j)
- *
- * One multiplicative factor applied to all three, so every robot's SHARE of
- * the alliance score is preserved EXACTLY — a robot credited with 30% of the
- * work still has 30% afterwards. Only the common magnitude changes, which is
- * the part the model is worst at and the scoreboard already knows. The model
- * is demoted from "estimate the points" to "estimate the split".
- *
- * THE COVERAGE GUARD — not optional
- * =================================
- * Scaling assumes the robots being predicted for are the robots that produced
- * the score. If one of three is unscouted, its points have nowhere to go and
- * get redistributed onto its teammates, inflating them by roughly half. In
- * simulation this was the single worst failure measured — 57% error unguarded
- * against 19% guarded at partial coverage. So an alliance is anchored ONLY
- * when all three of its robots have a timeline for that match. Skipping is
- * always safe; the unanchored raw figure is simply used as-is.
+ * Live workspace: use per-second observed score allocations from attribution.ts.
+ * Older callers without an attribution report retain rate × shooting duration.
+ * TBA's fuel total calibrates a completely scouted alliance; if any observed
+ * score is unassigned, calibration can only reduce the assigned total, never
+ * spread that unexplained score over the known shooters. Tower credit is added
+ * separately from TBA's per-robot breakdown. Before TBA publishes, scoreboard
+ * shares are provisional: the overlay itself cannot separate fuel/fouls/climbs.
  */
 
 /** Fuel points a robot is credited with in one match, before anchoring. */
@@ -71,6 +44,8 @@ export interface MatchPointsEntry {
   anchored: boolean;
   /** The multiplicative factor applied. 1 when unanchored. */
   scaleFactor: number;
+  /** Observed scoreboard allocation, when both streams have been joined. */
+  source?: 'scoreboard' | 'rate';
 }
 
 /** "matchKey|teamKey" -> that robot's points for that match. */
@@ -111,10 +86,12 @@ export function buildMatchPoints(
   timelines: TimelineScoutingData[],
   report: BpsReport | null,
   anchorByAlliance: Record<string, number> = {},
-  climbByMatch: ClimbByMatch = {}
+  climbByMatch: ClimbByMatch = {},
+  attribution?: ScoreAttribution
 ): MatchPointsMap {
   const out: MatchPointsMap = {};
   if (!report) return out;
+  attribution ??= report.attribution;
 
   // Only matches the solver fused can be scored at all.
   const solved = new Set(report.windows.map((w) => w.matchKey));
@@ -142,6 +119,11 @@ export function buildMatchPoints(
 
     const raws: RawSplit[] = [];
     for (const [teamKey, tls] of byTeam) {
+      if (attribution) {
+        const split = attribution.byRobot[matchPointsKey(matchKey, teamKey)];
+        if (split) raws.push({ teamKey, ...split });
+        continue;
+      }
       const rates = report.byTeam[teamKey];
       // Average across duplicate coverage of the same robot.
       let auto = 0;
@@ -156,10 +138,12 @@ export function buildMatchPoints(
 
     const target = anchorByAlliance[`${matchKey}|${alliance}`];
     const rawTotal = raws.reduce((s, r) => s + r.auto + r.teleop, 0);
-    const fullCoverage = raws.length >= ALLIANCE_SIZE;
+    const fullCoverage = raws.length === ALLIANCE_SIZE;
     const canAnchor =
-      fullCoverage && typeof target === 'number' && target > 0 && rawTotal > 1e-9;
-    const factor = canAnchor ? target / rawTotal : 1;
+      fullCoverage && Number.isFinite(target) && target >= 0 && rawTotal > 1e-9;
+    // A missing/unexplained score must never be redistributed to known shooters.
+    const hasUnassigned = (attribution?.byAlliance[unitKey]?.unassigned ?? 0) > 1e-9;
+    const factor = canAnchor ? (hasUnassigned ? Math.min(1, target / rawTotal) : target / rawTotal) : 1;
 
     for (const r of raws) {
       const auto = r.auto * factor;
@@ -178,6 +162,7 @@ export function buildMatchPoints(
         total: round2(auto + teleop + climb),
         anchored: canAnchor,
         scaleFactor: round2(factor),
+        source: attribution ? 'scoreboard' : 'rate',
       };
     }
   }

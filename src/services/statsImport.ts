@@ -176,11 +176,21 @@ export async function commitImport(aggregates: TeamAggregate[]): Promise<{
 
   let synced = false;
   let syncError: string | null = null;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    await migrateLocalToServer();
+    // Local saving is already complete. Let the existing sync queue keep
+    // retrying without trapping the import dialog during a cloud outage.
+    await Promise.race([
+      migrateLocalToServer(),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('server has not confirmed within 8 seconds')), 8000);
+      }),
+    ]);
     synced = true;
   } catch (e: any) {
     syncError = String(e?.message || e);
+  } finally {
+    clearTimeout(timeout);
   }
 
   return { created: rows.length, keptReal: keptReal.length, synced, syncError };

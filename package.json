@@ -32,7 +32,9 @@
     "worker:serve": "node worker/src/server.mjs",
     "server": "node worker/src/server.mjs",
     "test:cv": "npm run worker:build && node --test worker/tools/check-socal.test.mjs",
-    "worker:socal": "node worker/src/live.mjs https://www.youtube.com/watch?v=uyGS9UNrbTY --event 2026cass --no-dashboard"
+    "worker:socal": "node worker/src/live.mjs https://www.youtube.com/watch?v=uyGS9UNrbTY --event 2026cass --no-dashboard",
+    "test:workspace": "node scripts/check-workspace.mjs",
+    "test:fusion": "node scripts/check-fusion.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",

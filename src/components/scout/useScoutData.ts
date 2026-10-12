@@ -8,12 +8,16 @@ import {
   fetchTimelines,
   getCvLogs,
   getTimelines,
+  fetchLocalWorkerLogs,
+  pushTimelines,
+  pushCvLogs,
 } from '../../services/bpsStore';
 import {
   BpsReport,
   MatchPointsMap,
   anchorSummary,
   buildMatchPoints,
+  buildScoreAttribution,
   runFuzzyPipeline,
 } from '../../services/bps';
 import {
@@ -46,6 +50,12 @@ export function useScoutData() {
   const [tba, setTba] = useState<TbaMatchScores>({ climbByMatch: {}, fuelByAlliance: {} });
   const [reloadToken, setReloadToken] = useState(0);
 
+  useEffect(() => {
+    const reload = () => setReloadToken((t) => t + 1);
+    window.addEventListener('server-scouting-updated', reload);
+    return () => window.removeEventListener('server-scouting-updated', reload);
+  }, []);
+
   const matches = useMemo(
     () => (DataService.getMatches() || []).filter((m: any) => !m.deletedAt),
     [reloadToken]
@@ -57,14 +67,6 @@ export function useScoutData() {
     setLoading(true);
     (async () => {
       const { rows: loaded, error } = await loadScoutingRows();
-
-      // The BPS streams are best-effort: a server that is down or a schema
-      // that predates these tables must not take the legacy screens with it,
-      // so each falls back to the local copy exactly as scouting rows do.
-      const [tl, cv] = await Promise.all([
-        fetchTimelines().catch(() => getTimelines()),
-        fetchCvLogs().catch(() => getCvLogs()),
-      ]);
 
       if (!mounted) return;
       // The server holds timelines/CV logs for every event any device has
@@ -78,16 +80,53 @@ export function useScoutData() {
       const selectedEvent = DataService.getSelectedEvent();
       const inSelectedEvent = (matchKey: string) =>
         !selectedEvent || DataService.matchBelongsToEvent({ key: matchKey }, selectedEvent);
-      setRows(loaded);
-      setTimelines(tl.filter((t) => inSelectedEvent(t.matchKey)));
-      setCvLogs(cv.filter((c) => inSelectedEvent(c.matchKey)));
+      setRows(loaded.filter((r) => inSelectedEvent(r.matchKey)));
       setDataError(error);
       setLoading(false);
     })();
     return () => {
       mounted = false;
     };
-  }, [reloadToken]);
+  }, [reloadToken, eventKey]);
+
+  // Keep both live streams fresh without reloading the whole workspace or
+  // blocking its initial render on cloud availability. Never overlap polls.
+  useEffect(() => {
+    let mounted = true;
+    let busy = false;
+    const publish = () => {
+      if (!mounted) return;
+      const inEvent = (key: string) => !eventKey || key.startsWith(eventKey + '_');
+      const tl = getTimelines().filter((t) => inEvent(t.matchKey));
+      const cv = getCvLogs().filter((c) => inEvent(c.matchKey));
+      setTimelines((prev) => JSON.stringify(prev) === JSON.stringify(tl) ? prev : tl);
+      setCvLogs((prev) => JSON.stringify(prev) === JSON.stringify(cv) ? prev : cv);
+    };
+    const pull = async () => {
+      if (busy || !mounted) return;
+      busy = true;
+      try {
+        await Promise.allSettled([pushTimelines(), pushCvLogs()]);
+        await Promise.allSettled([fetchTimelines(eventKey || undefined), fetchCvLogs(eventKey || undefined)]);
+        if (eventKey) await fetchLocalWorkerLogs(eventKey).catch(() => {});
+        publish();
+      } finally { busy = false; }
+    };
+    const storage = (e: StorageEvent) => { if (e.key?.startsWith('frc-bps-')) publish(); };
+    publish();
+    void pull();
+    const timer = window.setInterval(() => { void pull(); }, 15_000);
+    window.addEventListener('bps-data-updated', publish);
+    window.addEventListener('storage', storage);
+    window.addEventListener('online', pull);
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+      window.removeEventListener('bps-data-updated', publish);
+      window.removeEventListener('storage', storage);
+      window.removeEventListener('online', pull);
+    };
+  }, [eventKey, reloadToken]);
 
   useEffect(() => {
     if (!eventKey) return;
@@ -96,7 +135,7 @@ export function useScoutData() {
     return () => {
       mounted = false;
     };
-  }, [eventKey]);
+  }, [eventKey, reloadToken]);
 
   /**
    * TBA's published results: per-robot climb credit, and each alliance's
@@ -143,12 +182,14 @@ export function useScoutData() {
   const bpsReport = useMemo<BpsReport | null>(() => {
     if (!timelines.length || !cvLogs.length) return null;
     try {
-      return runFuzzyPipeline(timelines, cvLogs);
+      const report = runFuzzyPipeline(timelines, cvLogs);
+      report.attribution = buildScoreAttribution(timelines, cvLogs, report, matches);
+      return report;
     } catch (e) {
       console.error('useScoutData: BPS solve failed, falling back to legacy', e);
       return null;
     }
-  }, [timelines, cvLogs]);
+  }, [timelines, cvLogs, matches]);
 
   /**
    * Per-robot, per-match points: solved fuel rates, rescaled to TBA's
@@ -158,21 +199,16 @@ export function useScoutData() {
    * matches it was actually scouted in — scouting an event reveals its TBA
    * data match by match instead of exposing every future result at once.
    */
+  const scoreAttribution = bpsReport?.attribution;
   const matchPoints = useMemo<MatchPointsMap>(
-    () => buildMatchPoints(timelines, bpsReport, tba.fuelByAlliance, tba.climbByMatch),
-    [timelines, bpsReport, tba]
+    () => buildMatchPoints(timelines, bpsReport, tba.fuelByAlliance, tba.climbByMatch, scoreAttribution),
+    [timelines, bpsReport, tba, scoreAttribution]
   );
 
   const metrics = useMemo(
-    // By request: the workspace shows ONLY BPS (timeline + CV scoreboard)
-    // data now, not the legacy fuel-count form. Passing no legacy rows means
-    // buildTeamMetrics has nothing to fall back to, so a team with no fused
-    // BPS match is "unscouted" rather than showing old-form or CSV-imported
-    // season stats. `rows` itself is untouched and still returned from this
-    // hook — CSV export/backup (StatsImportControl) still needs the real
-    // scouting_records — only the metrics/ranking build stops reading it.
-    () => buildAllTeamMetrics([], teamKeys, matches, timelines, bpsReport, matchPoints),
-    [teamKeys, matches, timelines, bpsReport, matchPoints]
+    // Fused matches take priority; regular/imported scouting remains usable without CV.
+    () => buildAllTeamMetrics(rows, teamKeys, matches, timelines, bpsReport, matchPoints),
+    [rows, teamKeys, matches, timelines, bpsReport, matchPoints]
   );
 
   const metricsByTeam = useMemo(() => {
@@ -221,6 +257,7 @@ export function useScoutData() {
     cvLogs,
     bpsReport,
     matchPoints,
+    scoreAttribution,
     anchoring,
     hasBps,
     loading,

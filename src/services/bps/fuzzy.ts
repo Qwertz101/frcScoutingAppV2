@@ -1,5 +1,6 @@
 import {
   AUTO_LEN,
+  AUTO_TELEOP_DELAY,
   BpsResult,
   BpsWindow,
   CvMatchLog,
@@ -170,10 +171,11 @@ export function occupancy(
 function deltaSeries(log: CvMatchLog, alliance: 'red' | 'blue'): Float64Array {
   const out = new Float64Array(MATCH_LEN + 1);
   for (const s of log.samples) {
+    if ((alliance === 'blue' ? s.blueAccepted : s.redAccepted) === false) continue;
     const sec = Math.round(s.sec);
-    if (sec < 1 || sec > MATCH_LEN) continue;
+    if (!Number.isFinite(sec) || sec < 1 || sec > MATCH_LEN) continue;
     const d = alliance === 'blue' ? s.db : s.dr;
-    if (d > 0) out[sec] += d;
+    if (Number.isFinite(d) && d > 0) out[sec] += d;
   }
   return out;
 }
@@ -191,7 +193,7 @@ export function buildUnits(
 ): AllianceUnit[] {
   const logByMatch = new Map<string, CvMatchLog>();
   for (const l of cvLogs) {
-    if (l.deletedAt || !l.samples?.length) continue;
+    if (l.deletedAt || l.flagged || l.quality?.flagged || !l.samples?.length) continue;
     logByMatch.set(l.matchKey, l);
   }
 
@@ -306,7 +308,7 @@ function buildDesign(
         y,
         w,
         unitKey,
-        phase: sec <= AUTO_LEN ? 'auto' : 'teleop',
+        phase: sec < AUTO_LEN + AUTO_TELEOP_DELAY ? 'auto' : 'teleop',
         background: 0,
       });
     }
@@ -502,7 +504,10 @@ export function runFuzzyPipeline(
   cvLogs: CvMatchLog[]
 ): BpsReport {
   const activeLogs = cvLogs.filter((l) => !l.deletedAt && l.samples?.length);
-  const units = buildUnits(timelines, activeLogs);
+  // An unscouted teammate's score has no explanatory column and would
+  // inflate the observed teammates' fitted rates. Wait for complete coverage.
+  const units = buildUnits(timelines, activeLogs).filter((u) => u.timelines.length === 3 &&
+    u.timelines.every((t) => !t.endedEarly));
 
   const teams = [...new Set(units.flatMap((u) => u.timelines.map((t) => t.teamKey)))].sort();
   const teamIndex = new Map(teams.map((t, i) => [t, i]));

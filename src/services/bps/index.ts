@@ -21,6 +21,8 @@ export type { SolveOptions, SolveOutput } from './solver';
 export { runFuzzyPipeline, occupancy, buildUnits } from './fuzzy';
 export { buildMatchPoints, matchPointsKey, anchorSummary } from './matchPoints';
 export type { MatchPointsMap, MatchPointsEntry } from './matchPoints';
+export { buildScoreAttribution } from './attribution';
+export type { ScoreAttribution, ScoreAllocation } from './attribution';
 
 /**
  * The full BPS pipeline: fuse the two streams, then run the four optimisation
@@ -50,6 +52,7 @@ export interface BpsPipelineOptions extends SolveOptions {
 }
 
 export interface BpsReport {
+  attribution?: import('./attribution').ScoreAttribution;
   results: BpsResult[];
   byTeam: Record<string, BpsResult>;
   windows: BpsWindow[];

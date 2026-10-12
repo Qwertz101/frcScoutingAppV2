@@ -50,8 +50,8 @@ export function BpsFootnote() {
       Two scouting models are live at once. <strong>Legacy</strong> numbers come from the match
       scouting form — fuel counts, climb level and defense rating, scored by the 2026 rules.{' '}
       <strong>BPS</strong> numbers are solved: a scout's second-by-second action timeline is fused
-      with the CV scoreboard log, and each robot gets a points-per-second rate multiplied by the
-      time it was flagged scoring. The choice is made per match, so a team can be
+      with the CV scoreboard log, and observed score changes are shared among the robots
+      plausibly shooting at those timestamps. The choice is made per match, so a team can be
       <strong> mixed</strong>. Anything carrying a <span className="pl-src-badge bps">BPS</span>{' '}
       badge came from the solver; everything else is legacy. BPS matches have no fuel breakdown —
       the solver attributes scoreboard points, not game pieces. Climb points are not scouted at
