@@ -34,7 +34,7 @@ import {
 } from './core.mjs';
 import { frames, probe } from './ffmpeg.mjs';
 import { isRemoteSource, resolveVodUrl } from './sources.mjs';
-import { resolveLayout } from './layouts.mjs';
+import { resolveLayout, eventQuads } from './layouts.mjs';
 import { createPool, defaultWorkers } from './ocr.mjs';
 import { scoreQuality } from './quality.mjs';
 
@@ -104,7 +104,7 @@ export async function findQuads(input, t0, meta, layout = FRC_BROADCAST) {
  */
 export async function processMatch(input, t0, opts = {}) {
   const meta = opts.meta ?? (await probe(input));
-  const quads = opts.quads ?? (await findQuads(input, t0, meta, opts.layout ?? FRC_BROADCAST));
+  const quads = opts.quads ?? (opts.layout ? null : eventQuads(opts.eventKey)) ?? (await findQuads(input, t0, meta, opts.layout ?? FRC_BROADCAST));
   if (!quads) throw new Error('could not locate the scoreboard');
 
   const pool = opts.pool ?? (await createPool(opts.workers ?? defaultWorkers()));
@@ -118,8 +118,9 @@ export async function processMatch(input, t0, opts = {}) {
     height: meta.height,
   });
 
-  const result = await recognizeWindow(source, quads, { pool, t0 });
-  if (ownPool) await pool.terminate();
+  let result;
+  try { result = await recognizeWindow(source, quads, { pool, t0 }); }
+  finally { if (ownPool) await pool.terminate(); }
 
   return {
     log: {
@@ -205,6 +206,9 @@ export async function recognizeWindow(source, quads, opts) {
       continue;
     }
 
+    // Pre-match graphics can still contain the previous match's final score.
+    // Do not let them anchor this match's monotonic gates.
+    if (!clock.state.started && !fallback) { blueGate.override(0); redGate.override(0); }
     const bg = blueGate.feed(r.blueRaw);
     const rg = redGate.feed(r.redRaw);
     const blue = bg.value;
@@ -245,7 +249,7 @@ export async function recognizeWindow(source, quads, opts) {
       sec = Math.round(clock.elapsedAt(r.at));
 
       if (state.ended) {
-        if (blue === settle.blue && red === settle.red) {
+        if (bg.accepted && rg.accepted && r.timer.remaining === 0 && blue === settle.blue && red === settle.red) {
           settle.held++;
         } else {
           settle.blue = blue;
@@ -294,7 +298,7 @@ export async function recognizeWindow(source, quads, opts) {
     const idx = samples.findIndex((s) => s.sec === sec);
     // `at` is carried so a late clock recovery can re-time what came before it;
     // it is stripped before the log is returned.
-    const row = { sec, phase, blue, red, db: 0, dr: 0, at: r.at };
+    const row = { sec, phase, blue, red, db: 0, dr: 0, at: r.at, videoSec: r.at, blueAccepted: bg.accepted, redAccepted: rg.accepted };
     if (idx >= 0) samples[idx] = row;
     else samples.push(row);
 
@@ -321,6 +325,7 @@ export async function recognizeWindow(source, quads, opts) {
     rawReads,
     diagnostics: {
       skipped,
+      greenFlagAt: clock.greenFlagAt,
       timerFallback: fallback,
       timerAccepted: clock.accepted,
       timerOffered: clock.offered,

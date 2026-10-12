@@ -27,20 +27,20 @@ import {
   MatchClock,
   isOverlayPresent,
   detectScoreRegionsStable,
-  rectQuad,
   rectifyToGray,
   recognizeTimer,
   SCORE_RECT_W,
   SCORE_RECT_H,
-  FRC_BROADCAST,
 } from './core.mjs';
-import { liveFrames, probeLiveFormat } from './sources.mjs';
+import { liveFrames } from './sources.mjs';
+import { resolveLayout, eventQuads } from './layouts.mjs';
 import { recognizeWindow } from './process.mjs';
 import { voteTeams, matchBySet } from './identify.mjs';
 import { scoreQuality } from './quality.mjs';
 import { fetchQualSchedule } from './tba.mjs';
 import { upsertCvLog, checkSchema } from './supabase.mjs';
 import { createPool, defaultWorkers } from './ocr.mjs';
+import { saveLocalLog } from './localLogs.mjs';
 import { startDashboard } from './dashboard.mjs';
 
 /** Lead-in kept before a locked green flag, matching the VOD path's PREROLL. */
@@ -61,21 +61,6 @@ const QUAD_SAMPLES = 7;
  * (which does not), just with a smaller margin.
  */
 const LIVE_MIN_VOTES = 3;
-
-/**
- * A crude, wide net used only until the real quads are found.
- *
- * `isOverlayPresent` needs *some* quad to test colour under; before the first
- * `detectScoreRegionsStable` succeeds there is no real one yet. This is
- * deliberately generous -- roughly "somewhere in the top-left eighth of the
- * frame is blue, somewhere in the top-right eighth is red" -- because a false
- * positive here only triggers an extra (cheap) quad-detection attempt, while a
- * false negative would mean never looking for the scoreboard at all.
- */
-const BOOTSTRAP_QUAD = {
-  blue: rectQuad(0.05, 0.02, 0.45, 0.16),
-  red: rectQuad(0.55, 0.02, 0.95, 0.16),
-};
 
 /**
  * A fixed-horizon, time-indexed frame buffer.
@@ -100,16 +85,13 @@ export class RingBuffer {
   }
   /** Frames from `from` to `to` (inclusive), in order. Missing ones are skipped. */
   slice(from, to) {
-    const out = [];
-    for (let t = Math.ceil(from); t <= Math.floor(to); t++) {
-      const f = this.map.get(t);
-      if (f) out.push(f);
-    }
-    return out;
+    return [...this.map.values()]
+      .filter((f) => f.at >= from && f.at <= to)
+      .sort((a, b) => a.at - b.at);
   }
   oldestAt() {
     let min = Infinity;
-    for (const k of this.map.keys()) min = Math.min(min, k);
+    for (const f of this.map.values()) min = Math.min(min, f.at);
     return Number.isFinite(min) ? min : null;
   }
 }
@@ -144,25 +126,40 @@ function readTimerGray(frame, quads) {
  */
 export async function assembleAndProcess({ source, ring, gaps, quads, t0, windowFrom, windowTo, pool, signal, log }) {
   const preroll = ring.slice(windowFrom, windowTo);
+  const teamShots = [];
+  const rememberTeams = (f) => {
+    if (f.at >= t0 + 20 && f.at <= t0 + MATCH_LEN - 10 &&
+        (!teamShots.length || f.at - teamShots.at(-1).at >= 10)) teamShots.push(f);
+  };
   let lastYielded = preroll.at(-1)?.at ?? windowFrom;
 
   async function* windowFrames() {
-    for (const f of preroll) yield f;
+    for (const f of preroll) { rememberTeams(f); yield f; }
 
-    for await (const f of source) {
-      if (signal?.aborted) return;
+    // Borrow the shared iterator without calling return() at window end.
+    // for-await would close the entire broadcast after the first match.
+    for (;;) {
+      const { value: f, done } = await source.next();
+      if (done || signal?.aborted) return;
       ring.push(f);
       if (f.at <= lastYielded) continue; // already covered by the preroll slice
       const gap = gaps.overlaps(lastYielded, f.at);
       if (gap) throw new GapDuringWindow();
       lastYielded = f.at;
       if (f.at > windowTo) return;
+      rememberTeams(f);
       yield f;
     }
   }
 
   try {
-    return await recognizeWindow(windowFrames(), quads, { pool, t0 });
+    const result = await recognizeWindow(windowFrames(), quads, { pool, t0 });
+    if (signal?.aborted) return 'aborted';
+    if (!result.diagnostics.finished) {
+      log('incomplete match window: final score did not settle');
+      return 'gap';
+    }
+    return { ...result, teamShots };
   } catch (e) {
     if (e instanceof GapDuringWindow) return 'gap';
     if (signal?.aborted) return 'aborted';
@@ -187,18 +184,22 @@ export async function monitorLive(url, opts = {}) {
   const log = opts.log ?? (() => {});
   const onMatch = opts.onMatch ?? (() => {});
 
-  const format = opts.format ?? (await probeLiveFormat(url, opts));
-  log('source: ' + format.platform + '  ' + format.width + 'x' + format.height + '  "' + format.title + '"');
+  const format = opts.format;
+  const layout = opts.layout ?? resolveLayout(eventKey);
+  log('source: ' + url);
 
   const schema = write ? await checkSchema().catch(() => ({ ok: false, message: 'Supabase unreachable' })) : null;
   if (write && !schema.ok) log('cannot write yet: ' + schema.message);
 
-  const schedule = eventKey ? await fetchQualSchedule(eventKey) : null;
+  const schedule = opts.schedule ?? (eventKey ? await fetchQualSchedule(eventKey).catch((e) => {
+    log('match identification unavailable: ' + e.message + '; continuing OCR without assigning match keys');
+    return null;
+  }) : null);
   log(
     schedule
       ? eventKey + ': ' + schedule.length + ' qual matches on TBA'
       : eventKey
-        ? eventKey + ' not on TBA'
+        ? eventKey + ': no schedule available; logs remain unidentified'
         : 'no --event given, matches will not be identified'
   );
 
@@ -209,14 +210,15 @@ export async function monitorLive(url, opts = {}) {
   const ring = new RingBuffer(RING_SECONDS);
 
   let clock = new MatchClock();
-  let quads = null;
-  let overlaySeenAt = null;
+  const initialQuads = opts.quads ?? (opts.layout && opts.layout.name !== resolveLayout(eventKey).name ? null : eventQuads(eventKey));
+  let quads = initialQuads;
+  let overlayMissingAt = null;
   let matchesProcessed = 0;
 
   const resetForNextMatch = () => {
     clock = new MatchClock();
-    quads = null;
-    overlaySeenAt = null;
+    quads = initialQuads;
+    overlayMissingAt = null;
   };
 
   // `opts.frameSource` is the seam that lets this whole loop be exercised in
@@ -224,6 +226,7 @@ export async function monitorLive(url, opts = {}) {
   // see worker/tools/check-live-monitor.mjs. Production just leaves it unset
   // and gets the real reconnecting live source.
   const makeSource = opts.frameSource ?? liveFrames;
+  opts.onSourceStatus?.('checking whether the stream is online');
   const source = makeSource(url, {
     ...opts,
     format,
@@ -231,8 +234,18 @@ export async function monitorLive(url, opts = {}) {
       gaps.record(g);
       log('gap: ' + g.seconds.toFixed(1) + 's starting at video t=' + g.start.toFixed(1));
     },
-    onReconnecting: (r) => log('reconnecting in ' + r.afterMs + 'ms (attempt ' + r.attempt + ')'),
-    onError: (e) => log('source error: ' + e.message),
+    onFormat: (f) => {
+      opts.onSourceStatus?.('stream online — waiting for a match');
+      opts.onFormat?.(f);
+    },
+    onReconnecting: (r) => {
+      opts.onSourceStatus?.('stream unavailable — retrying automatically');
+      log('reconnecting in ' + r.afterMs + 'ms (attempt ' + r.attempt + ')');
+    },
+    onError: (e) => {
+      opts.onSourceStatus?.('stream unavailable — waiting for it to start');
+      log('source error: ' + e.message);
+    },
   });
 
   let framesSeen = 0;
@@ -241,6 +254,7 @@ export async function monitorLive(url, opts = {}) {
   try {
     for await (const frame of source) {
       if (opts.signal?.aborted) break;
+      opts.onSourceStatus?.(clock.state.started ? 'match in progress' : 'stream online — waiting for a match');
       ring.push(frame);
       framesSeen++;
 
@@ -254,22 +268,18 @@ export async function monitorLive(url, opts = {}) {
         log('watching... ' + framesSeen + ' frames seen, video t=' + frame.at.toFixed(0) + (quads ? ' (scoreboard visible)' : ' (no scoreboard on screen)'));
       }
 
-      const present = isOverlayPresent(frame, quads?.blue ?? BOOTSTRAP_QUAD.blue, quads?.red ?? BOOTSTRAP_QUAD.red);
-      if (present && overlaySeenAt === null) overlaySeenAt = frame.at;
-      if (!present) overlaySeenAt = null;
-
-      // (Re)acquire quads once the overlay has been up for a moment. Cheap --
-      // it only runs when there is a reason to, and the consensus check
-      // rejects a single-frame fluke on its own.
-      if (present && !quads) {
+      // Discover before testing colour: SoCal has RED on the left. A fixed
+      // blue-left bootstrap prevented discovery entirely on this broadcast.
+      if (!quads) {
         const shots = ring.slice(frame.at - QUAD_SAMPLES + 1, frame.at);
-        if (shots.length >= 3) {
-          const found = detectScoreRegionsStable(shots, opts.layout ?? FRC_BROADCAST);
-          if (found) {
-            quads = found;
-            log('scoreboard located');
-          }
-        }
+        if (shots.length >= 3) quads = detectScoreRegionsStable(shots, layout);
+        if (quads) log('scoreboard located');
+      }
+      const present = quads && isOverlayPresent(frame, quads.blue, quads.red);
+      if (present) overlayMissingAt = null;
+      else {
+        overlayMissingAt ??= frame.at;
+        if (frame.at - overlayMissingAt > 5) resetForNextMatch();
       }
 
       if (!present || !quads) continue;
@@ -286,6 +296,7 @@ export async function monitorLive(url, opts = {}) {
       const t0 = clock.greenFlagAt;
       const windowFrom = t0 - PREROLL;
       const windowTo = t0 + MATCH_LEN + POSTROLL;
+      opts.onSourceStatus?.('match in progress — collecting scoreboard data');
       log('clock locked: green flag at video t=' + t0.toFixed(1));
 
       const gapBefore = gaps.overlaps(windowFrom, frame.at);
@@ -321,11 +332,11 @@ export async function monitorLive(url, opts = {}) {
 
       let ident = null;
       if (schedule) {
-        const teamShots = ring.slice(t0 + 20, t0 + MATCH_LEN - 10);
+        const teamShots = result.teamShots;
         if (teamShots.length >= 2) {
           const seen = await voteTeams(teamShots, quads, pool, {
             minVotes: LIVE_MIN_VOTES,
-            layout: opts.layout ?? FRC_BROADCAST,
+            layout,
           });
           ident = matchBySet(schedule, seen);
         } else {
@@ -337,11 +348,16 @@ export async function monitorLive(url, opts = {}) {
         matchKey: ident?.matchKey ?? '',
         eventKey,
         samples,
-        source: 'auto-worker - live: ' + format.title,
+        source: 'auto-worker - live: ' + url,
+        video: { url, timeBase: frame.timeBase ?? 'source-media', greenFlagAt: t0 },
         createdAt: Date.now(),
       };
 
       const quality = scoreQuality(matchLog, diagnostics, ident);
+      quality.signals.videoUrl = url;
+      quality.signals.timeBase = matchLog.video.timeBase;
+      quality.signals.greenFlagAt = diagnostics.greenFlagAt ?? t0;
+      matchLog.video.greenFlagAt = diagnostics.greenFlagAt ?? t0;
       matchLog.quality = quality;
       matchLog.flagged = quality.flagged;
       matchLog.rawReads = rawReads;
@@ -354,16 +370,22 @@ export async function monitorLive(url, opts = {}) {
           (quality.flagged ? ' FLAGGED' : '')
       );
 
+      const localPath = await saveLocalLog(matchLog, opts.logDir);
+      log('saved local match log: ' + localPath);
       let writeResult = { written: false, reason: 'dry run' };
       if (write && schema?.ok) {
-        writeResult = await upsertCvLog(matchLog, { force });
+        writeResult = await upsertCvLog(matchLog, { force }).catch((e) => ({
+          written: false, reason: 'write failed: ' + e.message,
+        }));
         if (!writeResult.written) log('  ! ' + writeResult.reason);
       }
 
-      onMatch({ log: matchLog, quality, write: writeResult });
+      onMatch({ log: matchLog, quality, write: writeResult, localPath });
       resetForNextMatch();
+      opts.onSourceStatus?.('stream online — waiting for the next match');
     }
   } finally {
+    await source.return?.();
     if (ownPool) await pool.terminate();
   }
 

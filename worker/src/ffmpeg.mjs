@@ -106,6 +106,8 @@ export async function probe(input) {
  */
 export async function* frames(input, opts = {}) {
   const { start = 0, duration, fps = 1, scaleWidth, stdin } = opts;
+  if (opts.signal?.aborted) return;
+  if (!Number.isFinite(fps) || fps <= 0) throw new Error('fps must be positive');
 
   let width = opts.width;
   let height = opts.height;
@@ -119,17 +121,23 @@ export async function* frames(input, opts = {}) {
     width = scaleWidth;
   }
 
-  const filters = ['fps=' + fps];
+  // select retains genuine PTS gaps; fps would fabricate duplicate frames
+  // across missing HLS segments and hide missing observations.
+  const filters = [opts.preservePts ? 'select=isnan(prev_selected_t)+gte(t-prev_selected_t\\,' + (1 / fps) + ')' : 'fps=' + fps];
   if (scaleWidth) filters.push('scale=' + width + ':' + height);
 
-  const args = ['-hide_banner', '-loglevel', 'error'];
+  if (opts.preservePts) filters.push('showinfo');
+  const args = ['-hide_banner', '-loglevel', opts.preservePts ? 'info' : 'error'];
+  if (opts.preservePts) args.push('-copyts');
+  if (/^https?:/.test(input)) args.push('-rw_timeout', '20000000');
   // `-ss` BEFORE `-i` is input seeking: ffmpeg jumps in the container rather
   // than decoding and discarding everything up to `start`. On a 6-hour VOD that
   // is the difference between instant and minutes.
   if (start > 0) args.push('-ss', String(start));
+  if (opts.liveStartIndex != null) args.push('-live_start_index', String(opts.liveStartIndex));
   args.push('-i', input);
   if (duration != null) args.push('-t', String(duration));
-  args.push('-vf', filters.join(','), '-f', 'rawvideo', '-pix_fmt', 'rgba', '-');
+  args.push('-vf', filters.join(','), '-fps_mode', 'passthrough', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-');
 
   const child = spawn(resolveBin('ffmpeg'), args, {
     stdio: [stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
@@ -146,8 +154,20 @@ export async function* frames(input, opts = {}) {
     stdin.pipe(child.stdin);
   }
 
+  const timestamps = new Map();
+  let lines = '';
   let stderr = '';
   child.stderr.on('data', (b) => {
+    if (opts.preservePts) {
+      lines += b.toString();
+      const complete = lines.split('\n');
+      lines = complete.pop();
+      for (const line of complete) {
+        const m = /\bn:\s*(\d+).*?\bpts_time:([\d.e+-]+)/.exec(line);
+        if (m) timestamps.set(Number(m[1]), Number(m[2]));
+      }
+      notify();
+    }
     stderr += b.toString();
     if (stderr.length > 8192) stderr = stderr.slice(-8192);
   });
@@ -172,13 +192,18 @@ export async function* frames(input, opts = {}) {
     if (pending >= frameBytes) child.stdout.pause();
     notify();
   });
-  child.stdout.on('end', () => { done = true; notify(); });
+  // Wait for close so a decoder failure cannot masquerade as clean EOF.
+  child.stdout.on('end', notify);
   child.on('error', (e) => { failure = e; done = true; notify(); });
   child.on('close', (code) => {
     if (code && !failure) failure = new Error('ffmpeg exited ' + code + ': ' + stderr.trim());
     done = true;
     notify();
   });
+
+  const abort = () => { child.kill('SIGKILL'); done = true; notify(); };
+  opts.signal?.addEventListener('abort', abort, { once: true });
+  if (opts.signal?.aborted) abort();
 
   /** Pull exactly one frame's worth of bytes out of the chunk queue. */
   const take = () => {
@@ -207,21 +232,33 @@ export async function* frames(input, opts = {}) {
         child.stdout.resume();
         await new Promise((r) => { wake = r; });
       }
+      if (opts.signal?.aborted) return;
       if (failure) throw failure;
+      while (opts.preservePts && pending >= frameBytes && !timestamps.has(index) && !done) {
+        await new Promise((r) => { wake = r; });
+      }
+      if (opts.signal?.aborted) return;
+      if (opts.preservePts && pending >= frameBytes && !timestamps.has(index)) {
+        throw new Error('decoder produced a frame without a media timestamp');
+      }
       // A trailing partial frame is discarded rather than padded: half a frame
       // of pixels would read as a plausible-looking wrong number.
       if (pending < frameBytes) break;
 
       const buf = take();
+      const at = opts.preservePts ? timestamps.get(index) : start + index / fps;
+      timestamps.delete(index);
       yield {
         data: new Uint8ClampedArray(buf.buffer, buf.byteOffset, frameBytes),
         width,
         height,
-        at: start + index / fps,
+        at,
         index: index++,
       };
     }
   } finally {
+    opts.signal?.removeEventListener('abort', abort);
+    if (stdin) stdin.unpipe(child.stdin);
     if (!child.killed) child.kill('SIGKILL');
   }
 }

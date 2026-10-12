@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { User } from '../types';
 import { ScouterManagement } from './ScouterManagement';
 import { performFullRefresh, fetchServerScouters } from '../services/syncService';
@@ -7,6 +7,12 @@ import { MatchSelection } from './MatchSelection';
 import { ScoutShell } from './scout/ScoutShell';
 import { CvTracker } from './cv/CvTracker';
 import { AdminHeader, AdminTab } from './cc/CCChrome';
+import {
+  cancelJob as stopCaptureWorker,
+  getWorkerState,
+  submitJob,
+  WorkerState,
+} from '../services/cv/captureWorker';
 import '../styles/cc.css';
 
 interface AdminPanelProps {
@@ -20,6 +26,119 @@ interface AdminPanelProps {
  * needs the width for its video stage and per-second log.
  */
 type AdminView = AdminTab | 'picklist' | 'cv';
+
+function LiveWorkerControl({ eventKey }: { eventKey: string | null }) {
+  const [worker, setWorker] = useState<WorkerState | null>(null);
+  const [url, setUrl] = useState('');
+  const [event, setEvent] = useState(eventKey || '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const refresh = async () => {
+    try {
+      const next = await getWorkerState();
+      setWorker(next);
+      setUrl((current) => current || next.job?.url || next.configuredStreamUrl || '');
+      setEvent((current) => current || next.eventKey || '');
+      setError('');
+    } catch (e: any) {
+      setWorker(null);
+      setError(e?.message || 'Capture server is unavailable.');
+    }
+  };
+
+  useEffect(() => {
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 2000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const running = worker?.job?.status === 'running' || worker?.job?.status === 'cancelling';
+
+  const start = async () => {
+    if (!url.trim()) return;
+    setBusy(true);
+    setError('');
+    try {
+      await submitJob({
+        url: url.trim(),
+        eventKey: event.trim(),
+        mode: 'live',
+        write: Boolean(worker?.allowWrite),
+      });
+      await refresh();
+    } catch (e: any) {
+      setError(e?.message || 'Could not start the livestream worker.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stop = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await stopCaptureWorker();
+      await refresh();
+    } catch (e: any) {
+      setError(e?.message || 'Could not stop the livestream worker.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="cc-card" style={{ marginBottom: 20, padding: 18 }}>
+      <div className="cc-card-head">
+        <div>
+          <strong>LIVESTREAM WORKER</strong>
+          <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>
+            {worker
+              ? worker.source.status
+              : 'The capture server is not reachable from this page.'}
+          </div>
+        </div>
+        <span className={`cc-tag ${running ? 'red' : 'blue'}`}>
+          {running ? 'RUNNING' : 'STOPPED'}
+        </span>
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 14 }}>
+        <input
+          className="cc-input"
+          style={{ flex: '1 1 360px' }}
+          value={url}
+          disabled={Boolean(running) || busy}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="YouTube livestream link"
+          aria-label="YouTube livestream link"
+        />
+        <input
+          className="cc-input"
+          style={{ flex: '0 1 150px' }}
+          value={event}
+          disabled={Boolean(running) || busy}
+          onChange={(e) => setEvent(e.target.value)}
+          placeholder="Event key"
+          aria-label="Event key"
+        />
+        {running ? (
+          <button className="cc-btn-danger" disabled={busy} onClick={stop}>Stop worker</button>
+        ) : (
+          <button className="cc-btn-primary" disabled={busy || !url.trim() || !worker} onClick={start}>
+            Start worker
+          </button>
+        )}
+      </div>
+      {worker?.job && (
+        <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 10 }}>
+          {worker.job.matches} match{worker.job.matches === 1 ? '' : 'es'} captured this run
+          {worker.job.lastLine ? ` · ${worker.job.lastLine}` : ''}
+        </div>
+      )}
+      {error && <div style={{ color: 'var(--red-600)', fontSize: 13, marginTop: 10 }}>{error}</div>}
+    </div>
+  );
+}
 
 export function AdminPanel({ user, onLogout }: AdminPanelProps) {
   const [view, setView] = useState<AdminView>('menu');
@@ -74,6 +193,8 @@ export function AdminPanel({ user, onLogout }: AdminPanelProps) {
           Refresh
         </button>
       </div>
+
+      <LiveWorkerControl eventKey={eventKey} />
 
       <div className="cc-tiles">
         <button className="cc-tile blue" onClick={() => setView('scouters')}>

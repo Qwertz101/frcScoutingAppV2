@@ -29,7 +29,10 @@
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist",
     "postinstall": "npm run tesseract:sync",
-    "worker:serve": "node worker/src/server.mjs"
+    "worker:serve": "node worker/src/server.mjs",
+    "server": "node worker/src/server.mjs",
+    "test:cv": "npm run worker:build && node --test worker/tools/check-socal.test.mjs",
+    "worker:socal": "node worker/src/live.mjs https://www.youtube.com/watch?v=uyGS9UNrbTY --event 2026cass --no-dashboard"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",

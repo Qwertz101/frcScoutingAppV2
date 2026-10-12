@@ -11,6 +11,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { REPO_ROOT, WORKER_DIR } from './core.mjs';
+import { readServerConfigValue } from './config.mjs';
 
 const BASE = 'https://www.thebluealliance.com/api/v3';
 
@@ -23,6 +24,8 @@ const BASE = 'https://www.thebluealliance.com/api/v3';
  */
 export function readEnv(name) {
   if (process.env[name]) return process.env[name];
+  const configured = readServerConfigValue(name);
+  if (configured) return configured;
   const files = [
     join(WORKER_DIR, '.env'),
     join(REPO_ROOT, '.env.local'),

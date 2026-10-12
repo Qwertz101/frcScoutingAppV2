@@ -123,6 +123,10 @@ export class MatchClock {
 
   /** Consecutive reads that look like the post-AUTO reset to 2:20. */
   private teleopHits = 0;
+  private teleopRemaining = -1;
+  private teleopAt = -1;
+  private zeroHits = 0;
+  private offeredAt = -Infinity;
 
   /** Readings offered vs readings accepted — surfaced as the timer read rate. */
   offered = 0;
@@ -196,7 +200,17 @@ export class MatchClock {
    */
   feed(remaining: number | null, at: number): ClockState | null {
     this.offered++;
-    if (remaining === null) return null;
+    if (!Number.isFinite(at) || at <= this.offeredAt) return null;
+    this.offeredAt = at;
+    if (this.ended) return this.state;
+    if (remaining === null || !Number.isInteger(remaining) || remaining < 0 || remaining > MAX_REMAINING) {
+      this.zeroHits = 0;
+      this.teleopHits = 0;
+      return null;
+    }
+    if (this.phase === 'teleop' && remaining === 0) {
+      if (++this.zeroHits < CORROBORATION) return null;
+    } else this.zeroHits = 0;
 
     // --- not started yet: wait for a clock that is demonstrably ticking ------
     // The intro banner, a frozen pre-match plate and a stray misread all read as
@@ -228,7 +242,12 @@ export class MatchClock {
 
     // --- AUTO -> TELEOP: the one place the clock legitimately jumps UP -------
     if (this.phase === 'auto' && remaining >= TELEOP_RESET_MIN) {
-      this.teleopHits++;
+      const dt = at - this.teleopAt;
+      const agrees = dt > 0 && dt <= 10 && remaining <= this.teleopRemaining &&
+        Math.abs(this.teleopRemaining - remaining - dt) <= TOLERANCE;
+      this.teleopHits = agrees ? this.teleopHits + 1 : 1;
+      this.teleopRemaining = remaining;
+      this.teleopAt = at;
       if (this.teleopHits >= CORROBORATION) {
         this.phase = 'teleop';
         this.teleopHits = 0;
@@ -257,7 +276,7 @@ export class MatchClock {
     // that are consistent with each other.
     if (this.candHits > 0 && this.isTicking(remaining, at, this.candRemaining, this.candAt)) {
       this.candHits++;
-      if (this.candHits >= RESYNC_AFTER) {
+      if (this.candHits >= RESYNC_AFTER && remaining <= this.lastRemaining) {
         this.commit(remaining, at);
         return this.state;
       }

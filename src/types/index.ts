@@ -191,6 +191,10 @@ export interface CvScoreSample {
   /** Seconds from match start. */
   sec: number;
   phase: 'auto' | 'teleop';
+  /** Timestamp of the observed video frame; absent on legacy/manual logs. */
+  videoSec?: number;
+  blueAccepted?: boolean;
+  redAccepted?: boolean;
   blue: number;
   red: number;
   /** Positive score change this second. */
@@ -249,6 +253,7 @@ export interface CvMatchLog {
   quality?: CvQuality;
   flagged?: boolean;
   rawReads?: CvRawRead[];
+  video?: { url: string; timeBase: string; greenFlagAt: number };
 }
 
 /**

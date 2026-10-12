@@ -1,0 +1,25 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 7654
+  },
+  "capture": {
+    "eventKey": "2026cass",
+    "streamUrl": "https://www.youtube.com/watch?v=EXAMPLE",
+    "autoStart": true,
+    "writeToSupabase": false,
+    "ocrWorkers": null
+  },
+  "supabase": {
+    "url": "",
+    "publishableKey": ""
+  },
+  "tba": {
+    "apiKey": ""
+  },
+  "tools": {
+    "ffmpegPath": "",
+    "ffprobePath": "",
+    "ytDlpPath": ""
+  }
+}

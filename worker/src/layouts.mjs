@@ -20,13 +20,16 @@
  * part of the overlay, which no summary statistic reveals.
  */
 
-import { LAYOUTS, FRC_BROADCAST } from './core.mjs';
+import { LAYOUTS, FRC_BROADCAST, rectQuad } from './core.mjs';
 
 /**
  * Event key -> layout name. Anything absent gets `frc-broadcast`, which is the
  * FRC-season layout and the behaviour that predates profiles existing.
  */
 export const EVENT_LAYOUTS = {
+  // Verified on the official Oct 10 stream uyGS9UNrbTY, 1920x1080.
+  // Red-left, blue-right; the detector infers alliance colours.
+  '2026cass': 'frc-broadcast',
   // Red on the left, a circular timer badge with the clock under the event
   // logo, and a score drawn wider than that badge. Verified 2026-08-24 against
   // the Saturday broadcast: red 613, clock 1:17, blue 301.
@@ -48,4 +51,15 @@ export function resolveLayout(eventKey, override) {
     );
   }
   return profile;
+}
+
+/** Fixed boxes verified against the official SoCal 1080p overlay. Fractions
+ * scale to other resolutions. Side fuel counters must never become totals. */
+export function eventQuads(eventKey) {
+  if (String(eventKey).toLowerCase() !== '2026cass') return null;
+  return {
+    red: rectQuad(780 / 1920, 65 / 1080, 899 / 1920, 125 / 1080),
+    blue: rectQuad(1021 / 1920, 65 / 1080, 1140 / 1920, 125 / 1080),
+    timer: rectQuad(904 / 1920, 70 / 1080, 1015 / 1920, 120 / 1080),
+  };
 }

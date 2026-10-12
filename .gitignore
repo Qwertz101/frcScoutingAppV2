@@ -50,3 +50,9 @@ worker/tools/serve.log
 
 # Kept VOD downloads (--keep-download). Large; never committed.
 worker/downloads/
+
+# Local derived capture logs (no footage).
+worker/logs/
+
+# Machine-specific web server settings and credentials.
+config/server.local.json

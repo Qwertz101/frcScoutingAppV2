@@ -1,5 +1,8 @@
 # Match capture worker
 
+For the combined web server, automatic livestream launch, local JSON
+configuration, and Linux service setup, see [docs/SERVER.md](../docs/SERVER.md).
+
 Unattended scoreboard reading for match day. Runs on the workshop PC; the
 scouting lead supervises over AnyDesk.
 

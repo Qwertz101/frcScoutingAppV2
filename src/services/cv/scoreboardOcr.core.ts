@@ -376,8 +376,8 @@ export interface GateResult {
  * happened" — far less damaging than a phantom 60-point swing.
  */
 export function gate(read: RawRead, prev: number): GateResult {
-  if (read.value === null) return { value: prev, accepted: false, reason: 'no-text' };
-  if (read.confidence < MIN_CONFIDENCE)
+  if (read.value === null || !Number.isSafeInteger(read.value)) return { value: prev, accepted: false, reason: 'no-text' };
+  if (!Number.isFinite(read.confidence) || read.confidence < MIN_CONFIDENCE)
     return { value: prev, accepted: false, reason: 'low-confidence' };
   if (read.value < 0) return { value: prev, accepted: false, reason: 'negative' };
   // FRC scores never go down mid-match; a drop means a dropped or merged digit.
@@ -469,7 +469,7 @@ export class ScoreGate {
 
     this.rejections++;
 
-    if (read.value !== null && read.value >= 0 && read.value >= this.prev) {
+    if (result.reason === 'jump' && read.value !== null) {
       const consistent =
         this.candidate !== null &&
         read.value >= this.candidate - 1 &&
@@ -487,6 +487,10 @@ export class ScoreGate {
       }
     }
 
+    if (result.reason !== 'jump') {
+      this.candidate = null;
+      this.candidateHits = 0;
+    }
     return result;
   }
 

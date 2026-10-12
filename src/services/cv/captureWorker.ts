@@ -32,12 +32,13 @@ const WORKER_PORT = '7654';
  */
 function resolveBase(): string {
   if (typeof window === 'undefined') return `http://127.0.0.1:${WORKER_PORT}`;
-  const { protocol, port } = window.location;
-  // Served over plain http from something that is not the Vite dev server: the
-  // worker is serving this page, so it is same-origin whatever port it chose.
-  // Matching on the port number alone was too brittle -- a worker started with
-  // --port then served an app that called back to 7654, i.e. a different worker.
-  if (protocol === 'http:' && port && port !== VITE_DEV_PORT) return '';
+  const { port, pathname } = window.location;
+  // The production Node server mounts the built app here. Use the same origin
+  // so LAN clients and a future HTTPS reverse proxy call the Linux server,
+  // rather than accidentally calling 127.0.0.1 on the viewer's own machine.
+  if (pathname.startsWith('/frcScoutingAppV2/')) return '';
+  // A non-Vite HTTP server is also the worker itself.
+  if (window.location.protocol === 'http:' && port && port !== VITE_DEV_PORT) return '';
   return `http://127.0.0.1:${WORKER_PORT}`;
 }
 
@@ -47,7 +48,10 @@ const VITE_DEV_PORT = '5173';
 export const WORKER_BASE = resolveBase();
 
 /** Where the operator can open the worker's own dashboard. */
-export const WORKER_DASHBOARD_URL = `http://127.0.0.1:${WORKER_PORT}`;
+export const WORKER_DASHBOARD_URL =
+  typeof window !== 'undefined' && WORKER_BASE === ''
+    ? window.location.origin + '/'
+    : `http://127.0.0.1:${WORKER_PORT}`;
 
 export type JobMode = 'vod' | 'live';
 export type JobStatus = 'running' | 'cancelling' | 'done' | 'cancelled' | 'error';
@@ -89,6 +93,8 @@ export interface WorkerState {
   unidentified: number;
   /** False when the worker was started without `--write`, so every job is dry. */
   allowWrite: boolean;
+  configuredStreamUrl?: string;
+  autoStart?: boolean;
   source: { label: string; status: string };
   job: WorkerJob | null;
   logLines: string[];

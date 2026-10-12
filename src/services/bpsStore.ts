@@ -319,6 +319,9 @@ export function parseCvJson(text: string, fallbackEventKey = ''): CvMatchLog {
     if (!Number.isFinite(sec)) throw new Error(`Sample ${i} has a non-numeric sec`);
     return {
       sec,
+      ...(Number.isFinite(s.videoSec) ? { videoSec: s.videoSec } : {}),
+      ...(typeof s.blueAccepted === 'boolean' ? { blueAccepted: s.blueAccepted } : {}),
+      ...(typeof s.redAccepted === 'boolean' ? { redAccepted: s.redAccepted } : {}),
       phase: s.phase === 'auto' ? 'auto' : 'teleop',
       blue: Number(s.blue) || 0,
       red: Number(s.red) || 0,
@@ -340,6 +343,8 @@ export function parseCvJson(text: string, fallbackEventKey = ''): CvMatchLog {
     createdAt: Number(obj.createdAt) || Date.now(),
     ...(obj.quality ? { quality: obj.quality as CvQuality } : {}),
     ...(typeof obj.flagged === 'boolean' ? { flagged: obj.flagged } : {}),
+    ...(obj.video && typeof obj.video.url === 'string' && typeof obj.video.timeBase === 'string' &&
+        Number.isFinite(obj.video.greenFlagAt) ? { video: { url: obj.video.url, timeBase: obj.video.timeBase, greenFlagAt: obj.video.greenFlagAt } } : {}),
     ...(Array.isArray(obj.rawReads) ? { rawReads: obj.rawReads as CvRawRead[] } : {}),
   };
 }

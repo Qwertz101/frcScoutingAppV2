@@ -1,5 +1,13 @@
 frcScoutingApp
 
+## Combined web server and livestream worker
+
+See [docs/SERVER.md](docs/SERVER.md) for the JSON configuration, automatic
+livestream launch, web UI controls, and Linux systemd setup.
+
+For a compact guide to using the app itself, see
+[docs/APP_QUICKSTART.md](docs/APP_QUICKSTART.md).
+
 ## The Blue Alliance API key
 
 This app can fetch events and matches from The Blue Alliance (TBA). To enable live TBA queries, provide your TBA API key as a Vite environment variable named `VITE_TBA_API_KEY`.

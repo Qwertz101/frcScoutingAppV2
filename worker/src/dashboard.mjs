@@ -5,10 +5,10 @@
  * remote-desktop session on venue wifi is painful to read, while a static page
  * that repaints every couple of seconds survives a bad connection fine.
  *
- * **Bound to 127.0.0.1 and nothing else.** There is no authentication here and
- * there should not be — AnyDesk is the auth boundary, and the person watching
- * has already authenticated to the machine. Binding this to 0.0.0.0 at a venue
- * would put an unauthenticated write endpoint on the event wifi.
+ * The default bind address is 127.0.0.1. A configured Linux deployment may
+ * bind to another interface, but this server intentionally does not pretend to
+ * be an internet-facing authentication layer; put remote access behind an
+ * authenticated HTTPS reverse proxy or VPN.
  *
  * The write endpoints are all things only a human can decide: starting a
  * capture from a link, cancelling one, assigning a match key the worker refused
@@ -30,10 +30,9 @@ import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { join, extname, normalize, sep } from 'node:path';
 import { fetchCvLogs, isWorkerRow, checkSchema } from './supabase.mjs';
-import { REPO_ROOT } from './core.mjs';
+import { REPO_ROOT, WORKER_DIR } from './core.mjs';
 
 export const DASHBOARD_PORT = 7654;
-const HOST = '127.0.0.1';
 
 const PAGE = `<!doctype html>
 <meta charset="utf-8">
@@ -228,7 +227,7 @@ $('job').onsubmit = async (e) => {
     duration: durMin ? Number(durMin) * 60 : undefined,
   };
   if (!body.url) return;
-  if (!durMin && !confirm(
+  if (body.mode === 'vod' && !durMin && !confirm(
     'No length set, so this scans the entire recording — potentially several hours. Start anyway?'
   )) return;
   $('go').disabled = true;
@@ -307,7 +306,10 @@ function render(s) {
       '<td>' + qualityPill(r) + '</td>' +
       '<td class="reasons">' + (r.source || '') + '</td>' +
       '<td class="reasons">' + reasons + '</td>' +
-      '<td><button data-reprocess="' + key + '" data-t0="' +
+      '<td>' + (r.local_file
+        ? '<a href="/logs/' + encodeURIComponent(r.local_file) + '" target="_blank">View data</a> · ' +
+          '<a href="/api/logs/' + encodeURIComponent(r.local_file) + '?download=1">Download</a> '
+        : '') + '<button data-reprocess="' + key + '" data-t0="' +
         (r.greenFlagAt ?? '') + '">Reprocess</button></td>' +
       '</tr>';
   }).join('');
@@ -426,7 +428,12 @@ const MIME = {
   '.gz': 'application/gzip',
 };
 
-async function serveApp(req, res, pathname) {
+function injectRuntimeConfig(html, publicConfig) {
+  const json = JSON.stringify(publicConfig ?? {}).replace(/</g, '\\u003c');
+  return html.replace('</head>', '<script>window.__SCOUT_CONFIG__=' + json + ';</script></head>');
+}
+
+async function serveApp(req, res, pathname, publicConfig) {
   let rel = pathname.slice(APP_BASE.length);
   if (rel === '' || rel.endsWith('/')) rel += 'index.html';
 
@@ -439,7 +446,8 @@ async function serveApp(req, res, pathname) {
   try {
     const info = await stat(target);
     if (!info.isFile()) throw new Error('not a file');
-    const body = await readFile(target);
+    let body = await readFile(target);
+    if (rel.endsWith('index.html')) body = Buffer.from(injectRuntimeConfig(body.toString('utf8'), publicConfig));
     res.writeHead(200, {
       'Content-Type': MIME[extname(target).toLowerCase()] ?? 'application/octet-stream',
       'Content-Length': body.length,
@@ -454,7 +462,7 @@ async function serveApp(req, res, pathname) {
     // should look like one rather than silently returning HTML.
     if (extname(rel)) return send(res, 404, { error: 'not found: ' + rel });
     try {
-      const html = await readFile(join(DIST, 'index.html'));
+      const html = injectRuntimeConfig(await readFile(join(DIST, 'index.html'), 'utf8'), publicConfig);
       res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-store' });
       res.end(html);
     } catch {
@@ -488,7 +496,9 @@ function readBody(req) {
  */
 export function startDashboard(opts = {}) {
   const port = opts.port ?? DASHBOARD_PORT;
+  const host = opts.host ?? '127.0.0.1';
   const eventKey = opts.eventKey ?? '';
+  const publicConfig = opts.publicConfig ?? {};
 
   const getState =
     opts.getState ??
@@ -504,12 +514,44 @@ export function startDashboard(opts = {}) {
     });
 
   const server = createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://' + HOST);
+    const url = new URL(req.url, 'http://' + host);
     try {
       if (req.method === 'OPTIONS') return send(res, 204, '', 'text/plain', req);
 
       if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
         return send(res, 200, PAGE, 'text/html; charset=utf-8', req);
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/logs/')) {
+        const name = url.pathname.slice('/logs/'.length);
+        if (!/^[a-zA-Z0-9_-]+\.json$/.test(name)) {
+          return send(res, 400, 'invalid log name', 'text/plain', req);
+        }
+        const body = await readFile(join(WORKER_DIR, 'logs', name), 'utf8').catch(() => null);
+        if (!body) return send(res, 404, 'log not found', 'text/plain', req);
+        const log = JSON.parse(body);
+        const samples = Array.isArray(log.samples) ? log.samples : [];
+        const last = samples.at(-1) ?? {};
+        const max = Math.max(1, ...samples.flatMap((s) => [Number(s.blue) || 0, Number(s.red) || 0]));
+        const points = (side) => samples.map((s) => {
+          const x = ((Number(s.sec) || 0) / 163) * 900;
+          const y = 260 - ((Number(s[side]) || 0) / max) * 240;
+          return x.toFixed(1) + ',' + y.toFixed(1);
+        }).join(' ');
+        const rows = samples.map((s) => '<tr><td>' + s.sec + '</td><td>' +
+          (s.videoSec == null ? '—' : Number(s.videoSec).toFixed(3)) + '</td><td>' +
+          s.phase + '</td><td>' + s.blue + '</td><td>' + s.red + '</td><td>' +
+          s.db + '</td><td>' + s.dr + '</td><td>' +
+          (s.blueAccepted === false ? 'held' : 'read') + '</td><td>' +
+          (s.redAccepted === false ? 'held' : 'read') + '</td></tr>').join('');
+        const page = `<!doctype html><meta charset="utf-8"><title>Scouting capture data</title>
+<style>body{margin:24px;background:#12141a;color:#e7e9ee;font:14px/1.5 system-ui,sans-serif}a{color:#7dd3fc}h1{font-size:21px}.cards{display:flex;gap:12px;flex-wrap:wrap}.card{background:#1b1e26;border:1px solid #2b303c;border-radius:9px;padding:10px 14px;min-width:130px}.k{color:#9aa1b1;font-size:11px;text-transform:uppercase}.v{font-size:20px;font-weight:650}svg{width:100%;max-width:900px;background:#0d0f14;border:1px solid #2b303c;border-radius:8px;margin:18px 0}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{padding:5px 8px;border-bottom:1px solid #2b303c;text-align:right}th{position:sticky;top:0;background:#1b1e26;color:#9aa1b1}th:nth-child(3),td:nth-child(3){text-align:left}.legend{color:#9aa1b1}.blue{color:#60a5fa}.red{color:#f87171}</style>
+<h1>SoCal Showdown capture</h1><p class="legend">Captured by the live monitor at about one observation per match second. “Video sec” is the frame’s position from the start of the YouTube broadcast, so that same moment can be reopened later in the archived replay.</p>
+<div class="cards"><div class="card"><div class="k">Samples</div><div class="v">${samples.length}</div></div><div class="card"><div class="k">Final</div><div class="v"><span class="blue">${last.blue ?? '—'}</span>–<span class="red">${last.red ?? '—'}</span></div></div><div class="card"><div class="k">Quality</div><div class="v">${Number(log.quality?.score ?? 0).toFixed(3)}</div></div><div class="card"><div class="k">Green flag</div><div class="v">${Number(log.video?.greenFlagAt ?? 0).toFixed(3)}s</div></div></div>
+<svg viewBox="0 0 900 280" role="img" aria-label="Blue and red alliance score over match time"><line x1="0" y1="260" x2="900" y2="260" stroke="#475569"/><polyline points="${points('blue')}" fill="none" stroke="#60a5fa" stroke-width="3"/><polyline points="${points('red')}" fill="none" stroke="#f87171" stroke-width="3"/></svg>
+<p class="legend"><span class="blue">Blue score</span> · <span class="red">Red score</span></p>
+<p><a href="/api/logs/${encodeURIComponent(name)}?download=1">Download original JSON</a></p>
+<table><thead><tr><th>Match sec</th><th>Video sec</th><th>Phase</th><th>Blue</th><th>Red</th><th>Blue Δ</th><th>Red Δ</th><th>Blue OCR</th><th>Red OCR</th></tr></thead><tbody>${rows}</tbody></table>`;
+        return send(res, 200, page, 'text/html; charset=utf-8', req);
       }
       // The scouting app, served from here so it is same-origin with the API.
       if (req.method === 'GET' && (url.pathname === '/app' || url.pathname === '/app/')) {
@@ -517,7 +559,17 @@ export function startDashboard(opts = {}) {
         return res.end();
       }
       if (req.method === 'GET' && url.pathname.startsWith(APP_BASE)) {
-        return serveApp(req, res, url.pathname);
+        return serveApp(req, res, url.pathname, publicConfig);
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/api/logs/')) {
+        const name = url.pathname.slice('/api/logs/'.length);
+        if (!/^[a-zA-Z0-9_-]+\.json$/.test(name)) return send(res, 400, { error: 'invalid log name' }, 'application/json', req);
+        const body = await readFile(join(WORKER_DIR, 'logs', name), 'utf8').catch(() => null);
+        if (!body) return send(res, 404, { error: 'log not found' }, 'application/json', req);
+        if (url.searchParams.get('download') === '1') {
+          res.setHeader('Content-Disposition', 'attachment; filename="' + name + '"');
+        }
+        return send(res, 200, body, 'application/json', req);
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
         return send(res, 200, await getState(), 'application/json', req);
@@ -562,8 +614,7 @@ export function startDashboard(opts = {}) {
   });
 
   return new Promise((resolve) => {
-    // Loopback only. See the header — this is a security boundary, not a default.
-    server.listen(port, HOST, () => resolve({ server, url: 'http://' + HOST + ':' + port }));
+    server.listen(port, host, () => resolve({ server, url: 'http://' + host + ':' + port }));
   });
 }
 

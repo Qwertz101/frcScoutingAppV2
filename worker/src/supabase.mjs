@@ -35,13 +35,17 @@ function config() {
   return { url: url.replace(/\/$/, ''), key };
 }
 
+export function supabaseHeaders(key) {
+  // Publishable keys are API keys, not JWT bearer tokens.
+  return { apikey: key, ...(key.startsWith('sb_') ? {} : { Authorization: 'Bearer ' + key }) };
+}
+
 async function rest(path, init = {}) {
   const { url, key } = config();
   const res = await fetch(url + '/rest/v1' + path, {
     ...init,
     headers: {
-      apikey: key,
-      Authorization: 'Bearer ' + key,
+      ...supabaseHeaders(key),
       'Content-Type': 'application/json',
       ...(init.headers ?? {}),
     },

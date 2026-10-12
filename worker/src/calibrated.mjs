@@ -13,6 +13,7 @@
  */
 
 import { rectQuad } from './core.mjs';
+import { supabaseHeaders } from './supabase.mjs';
 import { readEnv } from './tba.mjs';
 
 /** `2026iri` -> 2026. 0 when the key does not start with a season. */
@@ -41,7 +42,7 @@ export async function fetchCalibratedLayout(eventKey) {
   try {
     const res = await fetch(
       cfg.url + '/rest/v1/cv_layouts?event_key=eq.' + encodeURIComponent(eventKey) + '&select=*',
-      { headers: { apikey: cfg.key, Authorization: 'Bearer ' + cfg.key } }
+      { headers: supabaseHeaders(cfg.key) }
     );
     if (!res.ok) return null;
     const rows = await res.json();

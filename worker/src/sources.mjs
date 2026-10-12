@@ -409,11 +409,13 @@ export async function probeLiveFormat(url, opts = {}) {
     const { stdout } = await execFileAsync(
       resolveBin('yt-dlp'),
       ['-J', '--no-warnings', '-f', YT_FORMAT(maxHeight), url],
-      { maxBuffer: 1 << 24 }
+      { maxBuffer: 1 << 24, timeout: 30000, signal: opts.signal }
     );
     const j = JSON.parse(stdout);
     if (!j.width || !j.height) throw new Error('yt-dlp reported no dimensions for ' + url);
-    return { platform, width: j.width, height: j.height, title: j.title ?? '' };
+    if (j.live_status !== 'is_live') throw new Error('This YouTube video is not live; use Read Recording.');
+    if (!j.url || !String(j.protocol).startsWith('m3u8')) throw new Error('Live capture requires an HLS video format.');
+    return { platform, width: j.width, height: j.height, title: j.title ?? '', directUrl: j.url, videoId: j.id };
   }
 
   // streamlink --json describes the stream table but not pixel dimensions
@@ -424,7 +426,7 @@ export async function probeLiveFormat(url, opts = {}) {
   const { stdout } = await execFileAsync(
     resolveBin('streamlink'),
     ['--json', url, 'best'],
-    { maxBuffer: 1 << 24 }
+    { maxBuffer: 1 << 24, timeout: 30000, signal: opts.signal }
   );
   const j = JSON.parse(stdout);
   const res = j?.metadata?.title ? null : null; // streamlink rarely exposes this cleanly
@@ -464,6 +466,16 @@ const BACKOFF_STEPS = [1000, 2000, 4000, 8000, 16000, 30000];
  * into a single continuous wall-clock timeline across reconnects.
  */
 async function* oneAttempt(url, platform, format, opts) {
+  if (platform === 'youtube') {
+    // Decode the HLS manifest directly: piping through yt-dlp discards the
+    // broadcast timeline. Refresh the signed URL on every reconnect.
+    const current = await probeLiveFormat(url, opts);
+    yield* frames(current.directUrl, {
+      width: current.width, height: current.height, fps: opts.fps ?? 1,
+      scaleWidth: opts.scaleWidth, preservePts: true, signal: opts.signal, liveStartIndex: opts.liveStartIndex,
+    });
+    return;
+  }
   const child = spawnDownloader(url, platform, opts);
   let stderr = '';
   child.stderr.on('data', (b) => {
@@ -483,6 +495,7 @@ async function* oneAttempt(url, platform, format, opts) {
       height: format.height,
       fps: opts.fps ?? 1,
       scaleWidth: opts.scaleWidth,
+      signal: opts.signal,
     });
   } finally {
     if (!child.killed) child.kill('SIGKILL');
@@ -490,78 +503,58 @@ async function* oneAttempt(url, platform, format, opts) {
   if (stderr.trim()) opts.onStderr?.(stderr.trim());
 }
 
-/**
- * The live frame source: reconnects forever, and tells the caller about every
- * gap rather than papering over it.
- *
- * `at` is seconds since this generator started, continuous across reconnects.
- * A frame immediately after a gap does NOT resume where the dropped stream's
- * internal clock left off -- it picks up at real wall-clock time, because
- * that is the only clock a viewer watching live actually has. Any match
- * window whose frames span a gap must be rejected outright by the caller: see
- * `live.mjs`, and the plan this implements, on why stitching across one would
- * produce a plausible-looking but wrong timeline.
- *
- * Ends only when `opts.signal` aborts. A live monitor is meant to run for the
- * length of an event, so "the source is unreachable" is handled by retrying
- * forever with backoff, not by giving up.
- */
+/** Abortable retry delay, including shutdown while no frames are arriving. */
+export async function retryDelay(ms, signal) {
+  if (signal?.aborted) return;
+  await new Promise((resolve) => {
+    const finish = () => { clearTimeout(timer); signal?.removeEventListener('abort', finish); resolve(); };
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener('abort', finish, { once: true });
+    if (signal?.aborted) finish();
+  });
+}
+
+/** Media time never depends on OCR latency or network delivery speed. */
 export async function* liveFrames(url, opts = {}) {
   const platform = detectPlatform(url);
-  const format = opts.format ?? (await probeLiveFormat(url, opts));
-  opts.onFormat?.(format);
-
-  const started = Date.now();
-  const at = () => (Date.now() - started) / 1000;
-
+  let format = opts.format;
   let backoff = 0;
-  let lastGoodAt = null;
-
-  for (;;) {
-    if (opts.signal?.aborted) return;
-
-    const attemptStartedAt = at();
+  let lastAt = null;
+  let disconnected = false;
+  const step = 1 / (opts.fps ?? 1);
+  const attempt = opts.attemptSource ?? oneAttempt;
+  const pause = opts.retryDelay ?? retryDelay;
+  while (!opts.signal?.aborted) {
     let gotAny = false;
-
     try {
-      for await (const f of oneAttempt(url, platform, format, opts)) {
+      format ??= await probeLiveFormat(url, opts);
+      opts.onFormat?.(format);
+      // Twitch has no verified broadcast offset. Give it a session content
+      // timeline; never claim those positions are YouTube replay links.
+      const base = platform === 'youtube' ? 0 : (lastAt === null ? 0 : lastAt + step);
+      for await (const f of attempt(url, platform, format, opts)) {
         if (opts.signal?.aborted) return;
+        const at = base + f.at;
+        if (!Number.isFinite(at)) throw new Error('invalid media timestamp');
+        if (lastAt !== null && at <= lastAt) continue; // repeated HLS segments
+        if (lastAt !== null && (disconnected || at - lastAt > step * 1.5)) {
+          opts.onGap?.({ start: lastAt, seconds: at - lastAt });
+        }
+        disconnected = false;
         gotAny = true;
         backoff = 0;
-        lastGoodAt = at();
-        // Re-timestamped to wall clock AT ARRIVAL, not to `attemptStartedAt +
-        // f.at`. That looked like the same thing and is not: `f.at` is
-        // video-content-relative-to-this-attempt, which only tracks wall time
-        // 1:1 when the source is paced to real time. A genuinely live,
-        // low-latency broadcast is; but this was measured against an archived
-        // VOD served through a "live" URL, which yt-dlp downloads as fast as
-        // bandwidth allows -- five-plus times faster than playback. Adding a
-        // content-relative offset to a wall-clock base produced a timeline
-        // that was neither, and drifted differently on every reconnect: gap
-        // bookkeeping (which already used pure `at()`) and the frame timeline
-        // handed to callers disagreed about what "now" meant, so a live
-        // monitor's ring buffer and gap-overlap checks could not trust
-        // `frame.at` to mean the same thing twice. `lastGoodAt` above is
-        // already the correct value for this; the frame timeline should match
-        // it exactly, so it does.
-        yield { ...f, at: lastGoodAt };
+        lastAt = at;
+        yield { ...f, at, timeBase: platform === 'youtube' ? 'youtube-media' : 'session-media' };
       }
+      if (!opts.signal?.aborted) throw new Error(gotAny ? 'live source ended; reconnecting' : 'live source returned no frames');
     } catch (e) {
+      if (opts.signal?.aborted) return;
       opts.onError?.(e);
     }
-
-    if (opts.signal?.aborted) return;
-
-    const gapStart = lastGoodAt ?? attemptStartedAt;
-    const gapSeconds = at() - gapStart;
-    if (gotAny || gapSeconds > 0.5) {
-      opts.onGap?.({ start: gapStart, seconds: gapSeconds });
-    }
-
-    const wait = BACKOFF_STEPS[Math.min(backoff, BACKOFF_STEPS.length - 1)];
-    backoff++;
+    disconnected = true;
+    const wait = BACKOFF_STEPS[Math.min(backoff++, BACKOFF_STEPS.length - 1)];
     opts.onReconnecting?.({ afterMs: wait, attempt: backoff });
-    await new Promise((r) => setTimeout(r, wait));
+    await pause(wait, opts.signal);
   }
 }
 

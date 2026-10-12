@@ -17,14 +17,16 @@
  * right answer to "it's already running" is almost always to wait, not to line
  * something up behind it.
  *
- * **Still loopback-only, and still dry unless told otherwise.** See
- * `dashboard.mjs` on why the bind address is a security boundary. `--write` is
- * the server-wide default for jobs; a job can ask for a dry run regardless, but
+ * **Loopback by default, and still dry unless told otherwise.** The bind host
+ * can be changed for a managed Linux deployment; see `docs/SERVER.md` before
+ * exposing it. `--write` is the server-wide default for jobs; a job can ask for a dry run regardless, but
  * it cannot turn writing *on* if the server was not started with it. That
  * asymmetry is on purpose: a web form should not be able to escalate what the
  * process was launched to be allowed to do.
  */
 
+import { basename } from 'node:path';
+import { listLocalLogs } from './localLogs.mjs';
 import { startDashboard } from './dashboard.mjs';
 import { runVod, reprocessOne } from './run.mjs';
 import { monitorLive } from './live.mjs';
@@ -33,6 +35,7 @@ import { isRemoteSource, detectPlatform, resolveVodUrl } from './sources.mjs';
 import { probe, grabJpegs } from './ffmpeg.mjs';
 import { createPool, defaultWorkers } from './ocr.mjs';
 import { checkSchema, fetchCvLogs } from './supabase.mjs';
+import { loadServerConfig, DEFAULT_CONFIG_PATH } from './config.mjs';
 
 function flag(name, fallbackValue) {
   const i = process.argv.indexOf('--' + name);
@@ -40,13 +43,34 @@ function flag(name, fallbackValue) {
 }
 const has = (name) => process.argv.includes('--' + name);
 
-const defaultEventKey = flag('event', '');
-const allowWrite = has('write');
+const configPath = flag('config', process.env.SCOUT_SERVER_CONFIG || DEFAULT_CONFIG_PATH);
+process.env.SCOUT_SERVER_CONFIG = configPath;
+const loadedConfig = loadServerConfig(configPath);
+const serverConfig = loadedConfig.value.server ?? {};
+const captureConfig = loadedConfig.value.capture ?? {};
+const toolConfig = loadedConfig.value.tools ?? {};
+for (const [name, value] of [
+  ['FFMPEG_PATH', toolConfig.ffmpegPath],
+  ['FFPROBE_PATH', toolConfig.ffprobePath],
+  ['YT_DLP_PATH', toolConfig.ytDlpPath],
+]) {
+  if (!process.env[name] && value) process.env[name] = String(value);
+}
+
+const defaultEventKey = flag('event', captureConfig.eventKey ?? '');
+const configuredStreamUrl = flag('stream', captureConfig.streamUrl ?? '');
+const streamProvidedAtLaunch = has('stream');
+const autoStart =
+  !has('no-auto-start') &&
+  (streamProvidedAtLaunch || has('auto-start') || captureConfig.autoStart === true);
+const allowWrite = has('write') || (!has('no-write') && captureConfig.writeToSupabase === true);
 const allowForce = has('force');
-const workers = Number(flag('workers', String(defaultWorkers())));
+const configuredWorkers = captureConfig.ocrWorkers == null ? defaultWorkers() : captureConfig.ocrWorkers;
+const workers = Number(flag('workers', String(configuredWorkers)));
 // Lets a second worker run alongside one already serving -- useful for trying a
 // change without stopping a capture someone else is watching.
-const port = Number(flag('port', '7654'));
+const port = Number(flag('port', String(serverConfig.port ?? 7654)));
+const host = String(flag('host', serverConfig.host ?? '127.0.0.1'));
 
 /** How many log lines to keep. Enough to see a whole run, bounded so an
  *  all-day process cannot grow without limit. */
@@ -58,6 +82,8 @@ const state = {
   unmigrated: false,
   unidentified: 0,
   allowWrite,
+  configuredStreamUrl,
+  autoStart,
   source: { label: 'idle', status: 'waiting for a link' },
   job: null,
   logLines: [],
@@ -143,8 +169,9 @@ async function startJob(body) {
   };
 
   state.job = job;
-  state.rows = [];
-  state.unidentified = 0;
+  // Keep earlier event results visible when an operator stops and restarts the
+  // monitor. Each job still has its own match counter; the dashboard is the
+  // accumulated local event history.
   state.logLines = [];
   state.source = { label: url, status: mode === 'live' ? 'watching live' : 'reading recording' };
   touch();
@@ -196,12 +223,18 @@ async function startJob(body) {
           eventKey, write, force: allowForce, layout, pool,
           signal: controller.signal,
           log,
-          onMatch: ({ log: matchLog, quality, write: w }) => {
+          onSourceStatus: (status) => {
+            state.source.status = status;
+            touch();
+          },
+          onMatch: ({ log: matchLog, quality, write: w, localPath }) => {
             const last = matchLog.samples[matchLog.samples.length - 1];
             const row = {
               match_key: matchLog.matchKey || '',
               event_key: eventKey,
               source: matchLog.source,
+              local_file: localPath ? basename(localPath) : null,
+              greenFlagAt: matchLog.video?.greenFlagAt,
               quality,
               flagged: quality.flagged,
               final: last ? { blue: last.blue, red: last.red } : null,
@@ -344,7 +377,7 @@ async function grabFrames(body) {
  * ------------------------------------------------------------------ */
 
 const schema = await checkSchema().catch(() => ({ ok: false, message: 'Supabase unreachable' }));
-state.unmigrated = !schema.ok;
+state.unmigrated = Boolean(schema.missing);
 if (allowWrite && !schema.ok) {
   console.error('warning: --write was passed but ' + schema.message);
   console.error('jobs will run as dry runs until that is fixed.\n');
@@ -354,11 +387,17 @@ if (allowWrite && !schema.ok) {
 // thing a bare `node worker/src/dashboard.mjs` shows. Otherwise the page is
 // blank on a fresh start and looks broken rather than idle.
 const seeded = await fetchCvLogs(defaultEventKey).catch(() => []);
-state.rows = seeded;
+state.rows = [...seeded, ...await listLocalLogs(defaultEventKey)];
+state.unidentified = state.rows.filter((r) => !r.match_key).length;
 
 const dash = await startDashboard({
   port,
+  host,
   eventKey: defaultEventKey,
+  publicConfig: {
+    supabaseUrl: loadedConfig.value.supabase?.url ?? '',
+    supabasePublishableKey: loadedConfig.value.supabase?.publishableKey ?? '',
+  },
   getState: async () => ({ ...state, job: jobView() }),
   onSubmitJob: startJob,
   onCancelJob: async () => cancelJob(),
@@ -368,5 +407,39 @@ const dash = await startDashboard({
 
 console.error('capture worker ready on ' + dash.url);
 console.error('  · paste a link in the app\'s CV tab, or use the form on that page');
-console.error('  · ' + (allowWrite ? 'WRITING to Supabase' : 'dry run — pass --write to persist'));
-console.error('  · loopback only; reach it over AnyDesk, not over the network.');
+console.error('  · ' + (allowWrite ? 'WRITING to Supabase' : 'local JSON logs enabled; database sync disabled'));
+console.error('  · listening on ' + host + ':' + port);
+
+if (autoStart && configuredStreamUrl) {
+  startJob({
+    url: configuredStreamUrl,
+    eventKey: defaultEventKey,
+    mode: 'live',
+    write: allowWrite,
+  }).catch((error) => {
+    log('automatic live monitor failed to start: ' + (error.message ?? error));
+  });
+} else if (autoStart) {
+  log('automatic start is enabled, but capture.streamUrl is blank');
+}
+
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.error(signal + ': stopping web server and capture worker…');
+  if (current) {
+    current.controller.abort();
+    current.job.status = 'cancelling';
+  }
+  await Promise.allSettled([
+    current?.work,
+    new Promise((resolve) => dash.server.close(resolve)),
+  ]);
+}
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    shutdown(signal).then(() => process.exit(0), () => process.exit(1));
+  });
+}
